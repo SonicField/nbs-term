@@ -17,8 +17,13 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _nbsterm
-from nbs_ssh import SSHConnection, HostKeyPolicy
-from nbs_ssh.testing.mock_server import MockSSHServer, MockServerConfig
+
+try:
+    from nbs_ssh import SSHConnection, HostKeyPolicy
+    from nbs_ssh.testing.mock_server import MockSSHServer, MockServerConfig
+    HAS_NBS_SSH = True
+except ImportError:
+    HAS_NBS_SSH = False
 
 # --- Test infrastructure ---
 
@@ -143,6 +148,9 @@ def test_alt_screen():
 @test("ssh_mock_server_data_flow")
 async def test_ssh_data_flow():
     """Data flows correctly from mock SSH server to terminal."""
+    if not HAS_NBS_SSH:
+        print("SKIP (nbs-ssh not installed)")
+        return
     config = MockServerConfig(username="test", password="test")
 
     async with MockSSHServer(config) as server:

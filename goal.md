@@ -250,4 +250,4 @@ nbs-term/
 - Python runtime + Tk
 - C11 compiler (clang or gcc)
 - phc (Phoenics preprocessor)
-- nbs-ssh (Python SSH module at ~/local/nbs-ssh/)
+- nbs-ssh (Python SSH transport module)

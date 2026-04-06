@@ -15,10 +15,16 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _nbsterm
-from nbs_ssh import SSHConnection, HostKeyPolicy
-from nbs_ssh.testing.mock_server import MockSSHServer, MockServerConfig
+
+try:
+    from nbs_ssh import SSHConnection, HostKeyPolicy
+    from nbs_ssh.testing.mock_server import MockSSHServer, MockServerConfig
+    HAS_NBS_SSH = True
+except ImportError:
+    HAS_NBS_SSH = False
 
 
+@unittest.skipUnless(HAS_NBS_SSH, "nbs-ssh not installed")
 class TestSSHDataFlow(unittest.TestCase):
     """Test data flow through the threading model without Tk."""
 
