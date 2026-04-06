@@ -732,6 +732,20 @@ TEST(incomplete_utf8_then_esc) {
  * Section 7b: CSI Parameter Defaults (zero vs missing)
  * ================================================================ */
 
+TEST(csi_explicit_zero_vs_default) {
+    /* ESC[0A (explicit zero) vs ESC[A (default 1) — different behaviour.
+     * Explicit zero means move 0 lines (noop). Default means move 1 line.
+     * This exercises the -1 sentinel fix in csi_param. */
+    TestCtx c = make_ctx(24, 80);
+    feed_str(c.parser, "\x1b[5;1H");  /* move to row 5 */
+    ASSERT_EQ(c.term->active->cursor.row, 4);
+    feed_str(c.parser, "\x1b[0A");    /* explicit zero: move up 0 — noop */
+    ASSERT_EQ(c.term->active->cursor.row, 4);
+    feed_str(c.parser, "\x1b[A");     /* default: move up 1 */
+    ASSERT_EQ(c.term->active->cursor.row, 3);
+    free_ctx(&c);
+}
+
 TEST(csi_leading_semicolon) {
     /* ESC[;5H — missing first param, explicit second */
     TestCtx c = make_ctx(24, 80);
@@ -1354,6 +1368,7 @@ TEST_MAIN(
     RUN_TEST(incomplete_utf8_then_esc);
 
     /* Section 7b: CSI parameter defaults */
+    RUN_TEST(csi_explicit_zero_vs_default);
     RUN_TEST(csi_leading_semicolon);
     RUN_TEST(csi_missing_second_param);
     RUN_TEST(csi_both_params_missing);
