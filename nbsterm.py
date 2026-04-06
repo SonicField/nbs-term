@@ -17,9 +17,7 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 
-# Add nbs-ssh and its dependencies to path
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/src"))
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/venv/lib/python3.15/site-packages"))
+# nbs-ssh must be installed: pip install ~/local/nbs-ssh/ (or from PyPI when available)
 
 import _nbsterm
 from nbs_ssh import SSHConnection, HostKeyPolicy

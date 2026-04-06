@@ -5,8 +5,10 @@
 # via --emit-types. Files that use phc_match on those types consume manifests
 # via --type-manifest.
 
+# phc preprocessor (only needed for 'make regenerate' or 'make test' from .phc sources)
 # phc is built with ASan; suppress leak detection for large files
-PHC := ASAN_OPTIONS=detect_leaks=0 $(HOME)/local/phc/build/phc
+PHC_DIR ?= $(HOME)/local/phc
+PHC := ASAN_OPTIONS=detect_leaks=0 $(PHC_DIR)/build/phc
 CC ?= gcc
 PYTHON := python3
 
@@ -74,7 +76,7 @@ $(EXTENSION_SO): $(BUILDDIR)/extension.o
 # --- Test targets ---
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
-TEST_INCLUDES := -I$(SRCDIR) -I$(HOME)/local/phc/tests
+TEST_INCLUDES := -I$(SRCDIR) -I$(PHC_DIR)/tests
 
 $(BUILDDIR)/test_parser: $(TESTDIR)/test_parser.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/input.phc | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_parser.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@

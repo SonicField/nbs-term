@@ -11,10 +11,8 @@ import threading
 import time
 import unittest
 
-# Add paths
+# Ensure project root is on path for _nbsterm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/src"))
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/venv/lib/python3.15/site-packages"))
 
 import _nbsterm
 from nbs_ssh import SSHConnection, HostKeyPolicy

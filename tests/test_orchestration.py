@@ -13,9 +13,7 @@ import asyncio
 import threading
 import time
 
-# Add paths
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/src"))
-sys.path.insert(0, os.path.expanduser("~/local/nbs-ssh/venv/lib/python3.15/site-packages"))
+# Ensure project root is on path for _nbsterm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _nbsterm
