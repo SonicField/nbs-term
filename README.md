@@ -54,7 +54,7 @@ The C extension is only called from the main thread. Raw bytes cross the thread 
 
 ## Development
 
-Requires [phc](https://github.com/SonicField/phc) (Phoenics preprocessor) for modifying `.phc` source files. It's included as a git submodule.
+Requires [phc](https://github.com/SonicField/phoenics) (Phoenics preprocessor) for modifying `.phc` source files. It's included as a git submodule.
 
 ```bash
 git clone --recurse-submodules https://github.com/SonicField/nbs-term.git
