@@ -1,0 +1,3 @@
+[submodule "deps/phc"]
+	path = deps/phc
+	url = https://github.com/SonicField/phoenics.git

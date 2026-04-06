@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,12 +25,8 @@ jobs:
       - name: Run Python integration tests
         run: python tests/test_integration.py
 
-      - name: Check generated/extension.c is up to date
-        run: |
-          python -c "
-          import _nbsterm
-          t = _nbsterm.Terminal(24, 80)
-          t.feed(b'\x1b[31mHello\x1b[0m')
-          assert t.get_cell(0, 0)[0] == ord('H'), 'Extension not working'
-          print('Extension OK')
-          "
+      - name: Build phc from submodule
+        run: make phc
+
+      - name: Verify generated/extension.c is current
+        run: make verify-regenerate

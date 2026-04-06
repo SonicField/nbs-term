@@ -8,6 +8,7 @@
 #include <assert.h>
 
 extern void abort(void);
+#define phc_free(pp) do { free(*(pp)); *(pp) = ((void*)0); } while(0)
 /*
  * sgr.phc — SGR (Select Graphic Rendition) attribute types
  *
