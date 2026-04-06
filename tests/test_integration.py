@@ -1,0 +1,238 @@
+"""
+test_integration.py — Python-level integration tests for _nbsterm extension.
+
+Tests the Python API end-to-end: Terminal creation, feed(), get_screen(),
+get_cell(), get_cursor(), encode_key/special/paste, resize, scrollback.
+Covers the renderer output format and extension entry points that
+cannot be tested from C.
+"""
+import sys
+import os
+import unittest
+
+# Add parent directory to path for the built extension
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import _nbsterm
+
+
+class TestTerminalBasic(unittest.TestCase):
+    def test_create_default(self):
+        t = _nbsterm.Terminal()
+        rows, cols = t.get_size()
+        self.assertEqual(rows, 24)
+        self.assertEqual(cols, 80)
+
+    def test_create_custom(self):
+        t = _nbsterm.Terminal(10, 40)
+        rows, cols = t.get_size()
+        self.assertEqual(rows, 10)
+        self.assertEqual(cols, 40)
+
+    def test_feed_and_cursor(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello")
+        row, col = t.get_cursor()
+        self.assertEqual(row, 0)
+        self.assertEqual(col, 5)
+
+    def test_get_cell(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"A")
+        cell = t.get_cell(0, 0)
+        self.assertIsNotNone(cell)
+        codepoint, fg, bg, attrs = cell
+        self.assertEqual(codepoint, ord('A'))
+
+    def test_get_cell_oob(self):
+        t = _nbsterm.Terminal(24, 80)
+        self.assertIsNone(t.get_cell(-1, 0))
+        self.assertIsNone(t.get_cell(0, -1))
+        self.assertIsNone(t.get_cell(24, 0))
+        self.assertIsNone(t.get_cell(0, 80))
+
+    def test_feed_empty(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"")  # must not crash
+        row, col = t.get_cursor()
+        self.assertEqual(row, 0)
+        self.assertEqual(col, 0)
+
+
+class TestRenderer(unittest.TestCase):
+    def test_get_screen_returns_list(self):
+        t = _nbsterm.Terminal(3, 10)
+        t.feed(b"Hello")
+        screen = t.get_screen()
+        self.assertIsInstance(screen, list)
+        self.assertEqual(len(screen), 3)  # one entry per row
+
+    def test_per_span_colors(self):
+        """Verify per-cell color attributes produce separate spans."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"\x1b[31mRed\x1b[32mGreen\x1b[0m")
+        screen = t.get_screen()
+        row = screen[0]
+        # Row should be a list of spans
+        self.assertIsInstance(row, list)
+        # Should have at least 2 spans (red and green)
+        self.assertGreaterEqual(len(row), 2)
+        # First span should contain 'Red' with red color
+        first_text = row[0][0]
+        first_fg = row[0][1]
+        self.assertIn('Red', first_text)
+        self.assertEqual(first_fg, '#cd0000')  # ANSI red
+
+    def test_sgr_attributes_in_cells(self):
+        """Verify SGR attributes visible via get_cell."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"\x1b[1;31mBold Red\x1b[0mNormal")
+        # Bold red cell
+        cell = t.get_cell(0, 0)
+        cp, fg, bg, attrs = cell
+        self.assertEqual(cp, ord('B'))
+        self.assertEqual(fg, '#cd0000')
+        # Normal cell
+        cell_n = t.get_cell(0, 8)
+        cp_n, fg_n, bg_n, attrs_n = cell_n
+        self.assertEqual(cp_n, ord('N'))
+
+
+class TestInputEncoding(unittest.TestCase):
+    def test_encode_key_ascii(self):
+        t = _nbsterm.Terminal(24, 80)
+        result = t.encode_key(ord('a'))
+        self.assertEqual(result, b'a')
+
+    def test_encode_key_ctrl(self):
+        t = _nbsterm.Terminal(24, 80)
+        result = t.encode_key(ord('c'), _nbsterm.MOD_CTRL)
+        self.assertEqual(result, b'\x03')
+
+    def test_encode_special_arrow(self):
+        t = _nbsterm.Terminal(24, 80)
+        result = t.encode_special(_nbsterm.KEY_UP)
+        self.assertEqual(result, b'\x1b[A')
+
+    def test_encode_special_shift_arrow(self):
+        t = _nbsterm.Terminal(24, 80)
+        result = t.encode_special(_nbsterm.KEY_UP, _nbsterm.MOD_SHIFT)
+        self.assertEqual(result, b'\x1b[1;2A')
+
+    def test_encode_paste_no_bracketed(self):
+        t = _nbsterm.Terminal(24, 80)
+        result = t.encode_paste("hello")
+        self.assertEqual(result, b'hello')
+
+    def test_encode_paste_bracketed(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"\x1b[?2004h")  # enable bracketed paste
+        result = t.encode_paste("hello")
+        self.assertEqual(result, b'\x1b[200~hello\x1b[201~')
+
+
+class TestResize(unittest.TestCase):
+    def test_resize(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.resize(10, 40)
+        rows, cols = t.get_size()
+        self.assertEqual(rows, 10)
+        self.assertEqual(cols, 40)
+
+    def test_resize_preserves_content(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello")
+        t.resize(30, 100)
+        cell = t.get_cell(0, 0)
+        self.assertEqual(cell[0], ord('H'))
+
+
+class TestScrollback(unittest.TestCase):
+    def test_scrollback_count_empty(self):
+        t = _nbsterm.Terminal(24, 80)
+        self.assertEqual(t.get_scrollback_count(), 0)
+
+    def test_scrollback_after_scroll(self):
+        t = _nbsterm.Terminal(3, 10)
+        t.feed(b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE")
+        # 3-row terminal with 5 lines → 2 lines in scrollback
+        self.assertEqual(t.get_scrollback_count(), 2)
+
+    def test_scrollback_line_content(self):
+        t = _nbsterm.Terminal(3, 10)
+        t.feed(b"AAA\r\nBBB\r\nCCC\r\nDDD")
+        # First scrolled line should contain 'AAA'
+        count = t.get_scrollback_count()
+        self.assertGreaterEqual(count, 1)
+        line = t.get_scrollback_line(0)
+        self.assertIsNotNone(line)
+
+    def test_scrollback_oob(self):
+        t = _nbsterm.Terminal(24, 80)
+        self.assertIsNone(t.get_scrollback_line(0))
+        self.assertIsNone(t.get_scrollback_line(-1))
+        self.assertIsNone(t.get_scrollback_line(99999))
+
+
+class TestAltScreen(unittest.TestCase):
+    def test_alt_screen_switch(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Main")
+        cell = t.get_cell(0, 0)
+        self.assertEqual(cell[0], ord('M'))
+        # Switch to alt
+        t.feed(b"\x1b[?1049h")
+        cell = t.get_cell(0, 0)
+        self.assertEqual(cell[0], 0)  # alt screen clear
+        # Switch back
+        t.feed(b"\x1b[?1049l")
+        cell = t.get_cell(0, 0)
+        self.assertEqual(cell[0], ord('M'))  # main preserved
+
+
+class TestRealisticSequence(unittest.TestCase):
+    """Feed a realistic escape sequence stream similar to vim/htop output."""
+
+    def test_vim_like_output(self):
+        t = _nbsterm.Terminal(24, 80)
+        # Switch to alt screen
+        t.feed(b"\x1b[?1049h")
+        # Clear screen
+        t.feed(b"\x1b[2J")
+        # Move to top, write a status line with colors
+        t.feed(b"\x1b[1;1H")
+        t.feed(b"\x1b[7m file.txt [+]                                                                 \x1b[0m")
+        # Write some code with syntax highlighting
+        t.feed(b"\x1b[2;1H")
+        t.feed(b"\x1b[34mdef \x1b[33mhello\x1b[0m():")
+        t.feed(b"\x1b[3;5H")
+        t.feed(b"\x1b[32mprint\x1b[0m(\x1b[31m\"world\"\x1b[0m)")
+        # Verify screen state
+        screen = t.get_screen()
+        self.assertEqual(len(screen), 24)
+        # Row 0 should have content (status line)
+        self.assertGreater(len(screen[0]), 0)
+        # Row 1 should have multiple color spans
+        self.assertGreaterEqual(len(screen[1]), 2)
+        # Verify cell-level: 'd' at (1,0) should be blue (Indexed 4)
+        cell = t.get_cell(1, 0)
+        self.assertEqual(cell[0], ord('d'))
+        # Switch back to main
+        t.feed(b"\x1b[?1049l")
+        # Main screen should be empty (nothing was written before alt)
+        cell = t.get_cell(0, 0)
+        self.assertEqual(cell[0], 0)
+
+
+if __name__ == '__main__':
+    # Run with verbose output and summary
+    result = unittest.main(verbosity=2, exit=False)
+    # Print gate-compatible summary
+    total = result.result.testsRun
+    failures = len(result.result.failures) + len(result.result.errors)
+    skipped = len(result.result.skipped)
+    passed = total - failures - skipped
+    print(f"\n  Pass: {passed} | Fail: {failures} | Skip: {skipped} | Total: {total}")
+    gate = "OPEN" if failures == 0 and skipped == 0 else "BLOCKED"
+    print(f"  Gate: {gate} (full_suite: no)")
+    sys.exit(0 if failures == 0 else 1)

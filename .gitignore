@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+*.so
+*.o
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+
+# NBS team infrastructure
+.nbs/

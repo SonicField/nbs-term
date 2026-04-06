@@ -1,0 +1,629 @@
+/*
+ * vt_parser.phc — VT terminal escape sequence parser
+ *
+ * State machine for parsing VT100/xterm escape sequences.
+ * Processes raw bytes and drives screen buffer operations.
+ */
+#ifndef NBSTERM_VT_PARSER_H
+#define NBSTERM_VT_PARSER_H
+
+#include <stdint.h>
+#include <string.h>
+
+#include "sgr.phc"
+#include "screen.phc"
+
+/* --- Parser state machine --- */
+
+phc_descr VTState {
+    Ground {},
+    Escape {},
+    EscapeIntermediate { char intermediate; },
+    CSI { int params[16]; int param_count; int priv; },
+    OSC { char buf[512]; int len; int esc_seen; },
+    DCS { char buf[512]; int len; }
+};
+
+/* --- UTF-8 decoder state --- */
+
+typedef struct {
+    uint32_t codepoint;
+    int remaining;   /* bytes remaining in sequence */
+    int expected;    /* total bytes for this sequence (2, 3, or 4) */
+} Utf8Decoder;
+
+/* --- Parser context --- */
+
+typedef struct {
+    VTState state;
+    Utf8Decoder utf8;
+    Terminal *term;
+} VTParser;
+
+static VTParser *vt_parser_new(Terminal *term) {
+    VTParser *p = calloc(1, sizeof(VTParser));
+    if (!p) return NULL;
+    p->state = VTState_mk_Ground();
+    p->term = term;
+    return p;
+}
+
+static void vt_parser_free(VTParser *p) {
+    free(p);
+}
+
+/* --- Forward declarations for handlers --- */
+
+static void handle_csi_dispatch(Terminal *term, int *params, int param_count, int priv, char final);
+static void handle_osc_dispatch(Terminal *term, const char *buf, int len);
+static void handle_esc_dispatch(Terminal *term, char ch, char intermediate);
+
+/* --- UTF-8 decoding --- */
+
+/*
+ * Returns:
+ *   1  = complete codepoint in *out
+ *   0  = incomplete, need more bytes
+ *  -1  = replacement char (U+FFFD) in *out, caller must re-feed this byte
+ */
+static int utf8_decode_byte(Utf8Decoder *dec, uint8_t byte, uint32_t *out) {
+    if (dec->remaining > 0) {
+        if ((byte & 0xC0) != 0x80) {
+            /* Invalid continuation — emit U+FFFD for the broken sequence,
+             * signal caller to re-feed this byte as a new sequence start */
+            dec->remaining = 0;
+            *out = 0xFFFD;
+            return -1;
+        }
+        dec->codepoint = (dec->codepoint << 6) | (byte & 0x3F);
+        dec->remaining--;
+        if (dec->remaining == 0) {
+            uint32_t cp = dec->codepoint;
+            /* Reject overlong encodings and surrogates */
+            if ((dec->expected == 2 && cp < 0x80) ||
+                (dec->expected == 3 && cp < 0x800) ||
+                (dec->expected == 4 && cp < 0x10000) ||
+                (cp >= 0xD800 && cp <= 0xDFFF) ||
+                cp > 0x10FFFF) {
+                *out = 0xFFFD;
+            } else {
+                *out = cp;
+            }
+            return 1;
+        }
+        return 0;
+    }
+
+    if (byte < 0x80) {
+        *out = byte;
+        return 1;
+    } else if ((byte & 0xE0) == 0xC0) {
+        dec->codepoint = byte & 0x1F;
+        dec->remaining = 1;
+        dec->expected = 2;
+    } else if ((byte & 0xF0) == 0xE0) {
+        dec->codepoint = byte & 0x0F;
+        dec->remaining = 2;
+        dec->expected = 3;
+    } else if ((byte & 0xF8) == 0xF0) {
+        dec->codepoint = byte & 0x07;
+        dec->remaining = 3;
+        dec->expected = 4;
+    } else {
+        /* Invalid start byte (0x80-0xBF, 0xFE, 0xFF) — emit replacement */
+        *out = 0xFFFD;
+        return 1;
+    }
+    return 0;
+}
+
+/* --- DEC Special Graphics character set --- */
+/* Maps ASCII 0x60-0x7E to Unicode box-drawing and other characters */
+static const uint32_t dec_special_graphics[] = {
+    /* 0x60 */ 0x25C6, /* ◆ */
+    /* 0x61 */ 0x2592, /* ▒ */
+    /* 0x62 */ 0x2409, /* HT symbol */
+    /* 0x63 */ 0x240C, /* FF symbol */
+    /* 0x64 */ 0x240D, /* CR symbol */
+    /* 0x65 */ 0x240A, /* LF symbol */
+    /* 0x66 */ 0x00B0, /* ° */
+    /* 0x67 */ 0x00B1, /* ± */
+    /* 0x68 */ 0x2424, /* NL symbol */
+    /* 0x69 */ 0x240B, /* VT symbol */
+    /* 0x6A */ 0x2518, /* ┘ */
+    /* 0x6B */ 0x2510, /* ┐ */
+    /* 0x6C */ 0x250C, /* ┌ */
+    /* 0x6D */ 0x2514, /* └ */
+    /* 0x6E */ 0x253C, /* ┼ */
+    /* 0x6F */ 0x23BA, /* ⎺ scan 1 */
+    /* 0x70 */ 0x23BB, /* ⎻ scan 3 */
+    /* 0x71 */ 0x2500, /* ─ */
+    /* 0x72 */ 0x23BC, /* ⎼ scan 7 */
+    /* 0x73 */ 0x23BD, /* ⎽ scan 9 */
+    /* 0x74 */ 0x251C, /* ├ */
+    /* 0x75 */ 0x2524, /* ┤ */
+    /* 0x76 */ 0x2534, /* ┴ */
+    /* 0x77 */ 0x252C, /* ┬ */
+    /* 0x78 */ 0x2502, /* │ */
+    /* 0x79 */ 0x2264, /* ≤ */
+    /* 0x7A */ 0x2265, /* ≥ */
+    /* 0x7B */ 0x03C0, /* π */
+    /* 0x7C */ 0x2260, /* ≠ */
+    /* 0x7D */ 0x00A3, /* £ */
+    /* 0x7E */ 0x00B7, /* · */
+};
+
+static uint32_t translate_charset(Terminal *term, uint32_t cp) {
+    int charset = term->charset_active == 0 ? term->charset_g0 : term->charset_g1;
+    if (charset == 1 && cp >= 0x60 && cp <= 0x7E) {
+        return dec_special_graphics[cp - 0x60];
+    }
+    return cp;
+}
+
+/* --- Ground state: printable characters and C0 controls --- */
+
+static void handle_c0(Terminal *term, uint8_t byte) {
+    ScreenBuffer *scr = term->active;
+    switch (byte) {
+    case 0x07: /* BEL */
+        /* Could trigger bell callback — ignore for now */
+        break;
+    case 0x08: /* BS */
+        screen_cursor_back(scr, 1);
+        break;
+    case 0x09: /* HT */
+        screen_tab(scr);
+        break;
+    case 0x0A: /* LF */
+    case 0x0B: /* VT */
+    case 0x0C: /* FF */
+        if (scr->cursor.row == scr->scroll_bottom) {
+            Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+            screen_scroll_up(scr, sb, 1);
+        } else {
+            screen_cursor_down(scr, 1);
+        }
+        break;
+    case 0x0D: /* CR */
+        scr->cursor.col = 0;
+        scr->cursor.wrap_pending = 0;
+        break;
+    case 0x0E: /* SO — shift out: activate G1 */
+        term->charset_active = 1;
+        break;
+    case 0x0F: /* SI — shift in: activate G0 */
+        term->charset_active = 0;
+        break;
+    }
+}
+
+/* --- CSI dispatch --- */
+
+static void apply_sgr(Terminal *term, int *params, int param_count) {
+    Pen *pen = &term->active->cursor.pen;
+    if (param_count == 0) {
+        *pen = pen_default();
+        return;
+    }
+    for (int i = 0; i < param_count; i++) {
+        int p = params[i] == -1 ? 0 : params[i]; /* -1 (not provided) = 0 (reset) for SGR */
+        if (p == 38 || p == 48) {
+            int is_bg = (p == 48);
+            int consumed = pen_apply_sgr_extended(pen, &params[i], param_count - i, is_bg);
+            i += consumed - 1;
+        } else {
+            pen_apply_sgr(pen, p);
+        }
+    }
+}
+
+static int csi_param(int *params, int param_count, int index, int default_val) {
+    if (index >= param_count || params[index] == -1)
+        return default_val;
+    return params[index];
+}
+
+static void handle_csi_dispatch(Terminal *term, int *params, int param_count, int priv, char final) {
+    ScreenBuffer *scr = term->active;
+    Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+    int n;
+
+    if (priv) {
+        /* Private mode sequences (CSI ? ...) */
+        switch (final) {
+        case 'h': /* DECSET */
+            for (int i = 0; i < param_count; i++) {
+                switch (params[i]) {
+                case 1: scr->mode_app_cursor = 1; break;        /* DECCKM */
+                case 7: scr->cursor.autowrap = 1; break;         /* DECAWM */
+                case 25: /* cursor visible — TODO */ break;
+                case 47:
+                case 1047: terminal_switch_alt(term, 1); break;
+                case 1049:
+                    scr->saved_cursor = scr->cursor;
+                    terminal_switch_alt(term, 1);
+                    break;
+                case 2004: scr->mode_bracketed_paste = 1; break;
+                }
+            }
+            break;
+        case 'l': /* DECRST */
+            for (int i = 0; i < param_count; i++) {
+                switch (params[i]) {
+                case 1: scr->mode_app_cursor = 0; break;
+                case 7: scr->cursor.autowrap = 0; break;         /* DECAWM */
+                case 25: /* cursor hidden — TODO */ break;
+                case 47:
+                case 1047: terminal_switch_alt(term, 0); break;
+                case 1049:
+                    terminal_switch_alt(term, 0);
+                    scr->cursor = scr->saved_cursor;
+                    break;
+                case 2004: scr->mode_bracketed_paste = 0; break;
+                }
+            }
+            break;
+        }
+        return;
+    }
+
+    switch (final) {
+    case 'A': /* CUU - Cursor Up */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_up(scr, n);
+        break;
+    case 'B': /* CUD - Cursor Down */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_down(scr, n);
+        break;
+    case 'C': /* CUF - Cursor Forward */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_forward(scr, n);
+        break;
+    case 'D': /* CUB - Cursor Back */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_back(scr, n);
+        break;
+    case 'E': /* CNL - Cursor Next Line */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_down(scr, n);
+        scr->cursor.col = 0;
+        break;
+    case 'F': /* CPL - Cursor Previous Line */
+        n = csi_param(params, param_count, 0, 1);
+        screen_cursor_up(scr, n);
+        scr->cursor.col = 0;
+        break;
+    case 'G': /* CHA - Cursor Horizontal Absolute */
+        n = csi_param(params, param_count, 0, 1);
+        scr->cursor.col = n - 1;
+        screen_cursor_clamp(scr);
+        break;
+    case 'H': /* CUP - Cursor Position */
+    case 'f': /* HVP - same as CUP */
+        screen_cursor_set(scr,
+            csi_param(params, param_count, 0, 1) - 1,
+            csi_param(params, param_count, 1, 1) - 1);
+        break;
+    case 'J': /* ED - Erase in Display */
+        screen_erase_display(scr, csi_param(params, param_count, 0, 0));
+        break;
+    case 'K': /* EL - Erase in Line */
+        screen_erase_line(scr, csi_param(params, param_count, 0, 0));
+        break;
+    case 'L': /* IL - Insert Lines */
+        n = csi_param(params, param_count, 0, 1);
+        screen_insert_lines(scr, n);
+        break;
+    case 'M': /* DL - Delete Lines */
+        n = csi_param(params, param_count, 0, 1);
+        screen_delete_lines(scr, sb, n);
+        break;
+    case 'P': /* DCH - Delete Characters */
+        n = csi_param(params, param_count, 0, 1);
+        screen_delete_chars(scr, n);
+        break;
+    case 'S': /* SU - Scroll Up */
+        n = csi_param(params, param_count, 0, 1);
+        screen_scroll_up(scr, sb, n);
+        break;
+    case 'T': /* SD - Scroll Down */
+        n = csi_param(params, param_count, 0, 1);
+        screen_scroll_down(scr, n);
+        break;
+    case 'X': /* ECH - Erase Characters */
+        n = csi_param(params, param_count, 0, 1);
+        for (int i = 0; i < n && scr->cursor.col + i < scr->cols; i++) {
+            *screen_cell(scr, scr->cursor.row, scr->cursor.col + i) = cell_empty();
+        }
+        break;
+    case '@': /* ICH - Insert Characters */
+        n = csi_param(params, param_count, 0, 1);
+        screen_insert_chars(scr, n);
+        break;
+    case 'd': /* VPA - Line Position Absolute */
+        n = csi_param(params, param_count, 0, 1);
+        scr->cursor.row = n - 1;
+        screen_cursor_clamp(scr);
+        break;
+    case 'm': /* SGR - Select Graphic Rendition */
+        apply_sgr(term, params, param_count);
+        break;
+    case 'r': /* DECSTBM - Set Scrolling Region */
+        {
+            int top = csi_param(params, param_count, 0, 1) - 1;
+            int bottom = csi_param(params, param_count, 1, scr->rows) - 1;
+            if (top < 0) top = 0;
+            if (bottom >= scr->rows) bottom = scr->rows - 1;
+            if (top < bottom) {
+                scr->scroll_top = top;
+                scr->scroll_bottom = bottom;
+                screen_cursor_set(scr, 0, 0);
+            }
+        }
+        break;
+    case 's': /* SCP - Save Cursor Position */
+        scr->saved_cursor = scr->cursor;
+        break;
+    case 'u': /* RCP - Restore Cursor Position */
+        scr->cursor = scr->saved_cursor;
+        screen_cursor_clamp(scr);
+        break;
+    }
+}
+
+/* --- Escape sequence dispatch --- */
+
+static void handle_esc_dispatch(Terminal *term, char ch, char intermediate) {
+    ScreenBuffer *scr = term->active;
+    if (intermediate == 0) {
+        switch (ch) {
+        case '7': /* DECSC - Save Cursor */
+            scr->saved_cursor = scr->cursor;
+            break;
+        case '8': /* DECRC - Restore Cursor */
+            scr->cursor = scr->saved_cursor;
+            screen_cursor_clamp(scr);
+            break;
+        case 'D': /* IND - Index (line feed) */
+            if (scr->cursor.row == scr->scroll_bottom) {
+                Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+                screen_scroll_up(scr, sb, 1);
+            } else {
+                screen_cursor_down(scr, 1);
+            }
+            break;
+        case 'E': /* NEL - Next Line */
+            scr->cursor.col = 0;
+            if (scr->cursor.row == scr->scroll_bottom) {
+                Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+                screen_scroll_up(scr, sb, 1);
+            } else {
+                screen_cursor_down(scr, 1);
+            }
+            break;
+        case 'M': /* RI - Reverse Index */
+            screen_reverse_index(scr);
+            break;
+        case 'c': /* RIS - Full Reset */
+            screen_erase_display(scr, 2);
+            scr->cursor.row = 0;
+            scr->cursor.col = 0;
+            scr->cursor.pen = pen_default();
+            scr->scroll_top = 0;
+            scr->scroll_bottom = scr->rows - 1;
+            scr->mode_app_cursor = 0;
+            scr->mode_bracketed_paste = 0;
+            break;
+        }
+    } else if (intermediate == '#') {
+        switch (ch) {
+        case '8': /* DECALN - Alignment Test (fill screen with E) */
+            for (int r = 0; r < scr->rows; r++)
+                for (int c = 0; c < scr->cols; c++)
+                    screen_cell(scr, r, c)->codepoint = 'E';
+            break;
+        }
+    } else if (intermediate == '(') {
+        /* Designate G0 character set */
+        if (ch == '0') term->charset_g0 = 1;       /* DEC special graphics */
+        else if (ch == 'B') term->charset_g0 = 0;  /* ASCII */
+    } else if (intermediate == ')') {
+        /* Designate G1 character set */
+        if (ch == '0') term->charset_g1 = 1;
+        else if (ch == 'B') term->charset_g1 = 0;
+    }
+}
+
+/* --- OSC dispatch --- */
+
+static void handle_osc_dispatch(Terminal *term, const char *buf, int len) {
+    (void)term;
+    (void)buf;
+    (void)len;
+    /* OSC 0;title ST — window title. We store it but don't act on it in C.
+     * The Python layer can query it for Tk window title updates. */
+}
+
+/* --- Main parser: feed one byte --- */
+
+static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
+    Terminal *term = parser->term;
+    VTState state = parser->state;
+
+    /* ESC is an 'anywhere' control — aborts current sequence.
+     * Exception: OSC handles ESC internally for ST detection (ESC \). */
+    if (byte == 0x1B && state.tag != VTState_OSC) {
+        if (parser->utf8.remaining > 0) {
+            /* Emit U+FFFD for the abandoned partial UTF-8 sequence */
+            Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+            screen_put_char(term->active, sb, 0xFFFD);
+        }
+        parser->utf8.remaining = 0;
+        return VTState_mk_Escape();
+    }
+
+    /* C0 controls execute in any state without disturbing the current sequence.
+     * Exception: OSC/DCS treat C0 bytes as string content (except BEL which
+     * terminates OSC). */
+    if (byte < 0x20 && byte != 0x1B &&
+        state.tag != VTState_OSC && state.tag != VTState_DCS) {
+        handle_c0(term, byte);
+        return state;  /* preserve current parser state */
+    }
+
+    phc_match(VTState, state) {
+        case Ground: {
+            /* Printable — decode UTF-8 and emit */
+            uint32_t cp;
+            int rc = utf8_decode_byte(&parser->utf8, byte, &cp);
+            Scrollback *sb = term->using_alt ? NULL : term->scrollback;
+            if (rc == -1) {
+                /* Replacement char for broken sequence, then re-process byte */
+                screen_put_char(term->active, sb, cp);
+                /* Re-feed: the byte might be a valid start byte or ASCII */
+                if (utf8_decode_byte(&parser->utf8, byte, &cp) == 1) {
+                    cp = translate_charset(term, cp);
+                    screen_put_char(term->active, sb, cp);
+                }
+            } else if (rc == 1) {
+                cp = translate_charset(term, cp);
+                screen_put_char(term->active, sb, cp);
+            }
+            return VTState_mk_Ground();
+        } break;
+
+        case Escape: {
+            if (byte == '[') {
+                VTState s = VTState_mk_CSI(0, 0);
+                memset(s.CSI.params, -1, sizeof(s.CSI.params));
+                s.CSI.param_count = 0;
+                s.CSI.priv = 0;
+                return s;
+            }
+            if (byte == ']') {
+                VTState s = VTState_mk_OSC(0, 0);
+                memset(s.OSC.buf, 0, sizeof(s.OSC.buf));
+                s.OSC.len = 0;
+                s.OSC.esc_seen = 0;
+                return s;
+            }
+            if (byte == 'P') {
+                VTState s = VTState_mk_DCS(0);
+                memset(s.DCS.buf, 0, sizeof(s.DCS.buf));
+                s.DCS.len = 0;
+                return s;
+            }
+            if (byte == '#' || byte == '(' || byte == ')') {
+                return VTState_mk_EscapeIntermediate((char)byte);
+            }
+            /* Single-character escape */
+            handle_esc_dispatch(term, (char)byte, 0);
+            return VTState_mk_Ground();
+        } break;
+
+        case EscapeIntermediate(intermediate): {
+            handle_esc_dispatch(term, (char)byte, intermediate);
+            return VTState_mk_Ground();
+        } break;
+
+        case CSI(params, param_count, priv): {
+            if (byte == '?' && param_count == 0) {
+                /* Private mode indicator */
+                VTState s = state;
+                s.CSI.priv = 1;
+                return s;
+            }
+            if (byte >= '0' && byte <= '9') {
+                /* Accumulate digit into current parameter */
+                VTState s = state;
+                int idx = s.CSI.param_count > 0 ? s.CSI.param_count - 1 : 0;
+                if (s.CSI.param_count == 0) s.CSI.param_count = 1;
+                /* First digit: transition from -1 (not provided) to the digit */
+                if (s.CSI.params[idx] == -1) s.CSI.params[idx] = 0;
+                s.CSI.params[idx] = s.CSI.params[idx] * 10 + (byte - '0');
+                return s;
+            }
+            if (byte == ';') {
+                VTState s = state;
+                if (s.CSI.param_count == 0) {
+                    /* Leading semicolon: implicit first param + new second */
+                    s.CSI.param_count = 2;
+                    s.CSI.params[0] = -1;
+                    s.CSI.params[1] = -1;
+                } else if (s.CSI.param_count < 16) {
+                    s.CSI.param_count++;
+                    s.CSI.params[s.CSI.param_count - 1] = -1;
+                }
+                return s;
+            }
+            if (byte >= 0x40 && byte <= 0x7E) {
+                /* Final byte — dispatch */
+                handle_csi_dispatch(term, params, param_count, priv, (char)byte);
+                return VTState_mk_Ground();
+            }
+            /* Intermediate bytes (0x20-0x2F) — ignore for now */
+            return state;
+        } break;
+
+        case OSC(buf, len, esc_seen): {
+            /* OSC terminated by BEL (0x07) or ST (ESC \) */
+            if (byte == 0x07) {
+                handle_osc_dispatch(term, buf, len);
+                return VTState_mk_Ground();
+            }
+            if (byte == 0x1B) {
+                /* Might be start of ST (ESC \) */
+                VTState s = parser->state;
+                s.OSC.esc_seen = 1;
+                return s;
+            }
+            if (esc_seen == 1 && byte == '\\') {
+                handle_osc_dispatch(term, buf, len);
+                return VTState_mk_Ground();
+            }
+            if (esc_seen == 1) {
+                /* ESC followed by non-backslash: abort OSC, start new Escape.
+                 * Re-process the current byte in Escape state. */
+                parser->state = VTState_mk_Escape();
+                return vt_feed_byte(parser, byte);
+            }
+            /* Accumulate */
+            VTState s = parser->state;
+            if (s.OSC.len < 511) {
+                s.OSC.buf[s.OSC.len++] = (char)byte;
+            }
+            return s;
+        } break;
+
+        case DCS(buf, len): {
+            (void)buf;
+            (void)len;
+            /* DCS terminated by ST (ESC \), or ESC starts new sequence */
+            if (byte == 0x1B) {
+                return VTState_mk_Escape();
+            }
+            if (byte == 0x9C) { /* ST (8-bit) */
+                return VTState_mk_Ground();
+            }
+            /* Accumulate (but we don't process DCS yet) */
+            VTState s = state;
+            if (s.DCS.len < 511) {
+                s.DCS.buf[s.DCS.len++] = (char)byte;
+            }
+            return s;
+        } break;
+    }
+
+    return VTState_mk_Ground();
+}
+
+/* Feed a buffer of bytes through the parser */
+static void vt_parser_feed(VTParser *parser, const uint8_t *data, int len) {
+    for (int i = 0; i < len; i++) {
+        parser->state = vt_feed_byte(parser, data[i]);
+    }
+}
+
+#endif /* NBSTERM_VT_PARSER_H */

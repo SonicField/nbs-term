@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nbs-term"
+version = "0.1.0"
+description = "Terminal emulator with Phoenics-powered VT parser"
+requires-python = ">=3.12"
+dependencies = [
+    "nbs-ssh",
+]
+
+[project.scripts]
+nbs-term = "nbsterm:main"
+
+[tool.setuptools]
+py-modules = ["nbsterm"]

@@ -1,0 +1,5 @@
+Script started on 2026-04-05 15:04:36-07:00 [<not executed on terminal>]
+hello
+[0m[01;34mbuild[0m  goal.md  Makefile  [01;32m_nbsterm.cpython-315-x86_64-linux-gnu.so[0m  [01;34msrc[0m  [01;34mtests[0m
+
+Script done on 2026-04-05 15:04:36-07:00 [COMMAND_EXIT_CODE="0"]
