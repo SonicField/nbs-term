@@ -1944,7 +1944,11 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
 /* --- feed(data: bytes) --- */
 
 static PyObject *Terminal_feed(TerminalObject *self, PyObject *args) {
-    assert(PyGILState_Check());  /* Must be called from main thread with GIL held */
+    if (!PyGILState_Check()) {
+        PyErr_SetString(PyExc_RuntimeError,
+            "feed() must be called from the main thread with the GIL held");
+        return NULL;
+    }
     const char *data;
     Py_ssize_t len;
     if (!PyArg_ParseTuple(args, "y#", &data, &len))
