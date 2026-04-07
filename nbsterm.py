@@ -662,14 +662,7 @@ class TerminalApp:
         self.root.title(f"nbs-term — {host}")
         self._config = config or TerminalConfig()
 
-        # Menu bar
-        menubar = tk.Menu(self.root)
-        terminal_menu = tk.Menu(menubar, tearoff=0)
-        terminal_menu.add_command(label="Preferences...", command=self._show_preferences)
-        terminal_menu.add_separator()
-        terminal_menu.add_command(label="Quit", command=self._on_close)
-        menubar.add_cascade(label="Terminal", menu=terminal_menu)
-        self.root.config(menu=menubar)
+        # No visible menu bar — preferences accessed via Cmd+, (Mac) or Ctrl+, (Linux)
 
         # Terminal widget with config
         if config:
