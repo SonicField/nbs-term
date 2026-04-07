@@ -556,6 +556,7 @@ class SSHTransport:
                 None,  # shell
                 term_type="xterm-256color",
                 term_size=(cols, rows),
+                encoding=None,  # binary mode — we handle raw bytes
             )
             self._process = process
             log.info("PTY session started")
@@ -567,7 +568,7 @@ class SSHTransport:
                     if not data:
                         break
                     if self._on_data:
-                        self._on_data(data.encode() if isinstance(data, str) else data)
+                        self._on_data(data if isinstance(data, bytes) else data.encode("utf-8", errors="replace"))
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -586,8 +587,7 @@ class SSHTransport:
     async def _async_write(self, data):
         """Write data to SSH stdin from the asyncio thread."""
         if self._process:
-            self._process.stdin.write(data.decode("utf-8", errors="replace")
-                                     if isinstance(data, bytes) else data)
+            self._process.stdin.write(data if isinstance(data, bytes) else data.encode("utf-8"))
 
     def resize(self, rows, cols):
         """Resize the PTY. Thread-safe."""
