@@ -43,7 +43,7 @@ type
 var config : TerminalConfig = (
   font   : (family : 'Menlo'; size : 14);
   cursor : (style : Block; blink : True);
-  gamma  : 0.85;
+  gamma  : 1.20;
   fg     : '#d0d0d0';
   bg     : '#000000';
   rows   : 24;
@@ -68,7 +68,7 @@ class CursorConfig:
 class TerminalConfig:
     font: FontConfig = None
     cursor: CursorConfig = None
-    gamma: float = 0.85 if sys.platform == "darwin" else 1.0
+    gamma: float = 1.2 if sys.platform == "darwin" else 1.0
     fg: str = "#d0d0d0"
     bg: str = "#000000"
     rows: int = 24
