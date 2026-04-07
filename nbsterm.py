@@ -157,12 +157,11 @@ class TerminalWidget:
             y0 = r * self.char_height
             x1 = (c1 + 1) * self.char_width
             y1 = y0 + self.char_height
-            # Draw highlight behind text (lower in stacking order)
+            # Draw highlight on top (above background rects and text)
             item = self.canvas.create_rectangle(
                 x0, y0, x1, y1,
-                fill="#4488cc", outline="",
+                fill="#4488cc", outline="", stipple="gray50",
             )
-            self.canvas.lower(item)
             self._sel_items.append(item)
 
     def get_selected_text(self):
