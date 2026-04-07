@@ -329,18 +329,18 @@ class TkInteractionHandler(SSHInteractionHandler):
     def __init__(self, root):
         self._root = root
 
-    def _ask_on_main_thread(self, fn, *args):
-        """Run fn(*args) on the Tk main thread and return the result."""
+    def _ask_on_main_thread(self, fn, *args, **kwargs):
+        """Run fn(*args, **kwargs) on the Tk main thread and return the result."""
         future = concurrent.futures.Future()
-        self._root.after(0, self._run_and_set, future, fn, args)
+        self._root.after(0, self._run_and_set, future, fn, args, kwargs)
         try:
             return future.result(timeout=120)
         except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
             return None
 
     @staticmethod
-    def _run_and_set(future, fn, args):
-        future.set_result(fn(*args))
+    def _run_and_set(future, fn, args, kwargs=None):
+        future.set_result(fn(*args, **(kwargs or {})))
 
     def on_host_key(self, host, port, key_info):
         from tkinter import messagebox
