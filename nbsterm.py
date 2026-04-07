@@ -325,6 +325,7 @@ class SSHTransport:
         self._on_data = None  # callback for received data (called from asyncio thread)
         self._on_close = None
         self._on_auth_prompt = None  # callback for auth prompts (called from main thread)
+        self._on_host_key_prompt = None  # callback for unknown host key acceptance
         self._on_error = None  # callback for error messages
         self._running = False
 
@@ -339,6 +340,12 @@ class SSHTransport:
         cb(prompt_text, echo) -> response string, or None to cancel.
         Called on the Tk main thread via root.after()."""
         self._on_auth_prompt = cb
+
+    def set_host_key_prompt_callback(self, cb):
+        """Set callback for unknown host key acceptance.
+        cb(message) -> bool (True=accept, False=reject).
+        Called on the Tk main thread."""
+        self._on_host_key_prompt = cb
 
     def set_error_callback(self, cb):
         self._on_error = cb
@@ -391,6 +398,17 @@ class SSHTransport:
             responses.append(response)
         return responses
 
+    def _prompt_host_key(self, message):
+        """Ask user to accept an unknown host key. Bridges to Tk main thread."""
+        if not self._on_host_key_prompt:
+            return False
+        future = concurrent.futures.Future()
+        self._on_host_key_prompt(message, future)
+        try:
+            return future.result(timeout=120)
+        except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+            return False
+
     async def _ssh_session(self, rows, cols):
         """Connect and run the SSH shell session."""
         transport = self
@@ -411,13 +429,34 @@ class SSHTransport:
 
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
-        async with asyncssh.connect(
-            host=self.host,
-            port=self.port or 22,
-            username=self.username,
-            known_hosts=None,
-            client_factory=_AuthClient,
-        ) as conn:
+
+        # Try with default known_hosts (~/.ssh/known_hosts) first
+        try:
+            conn = await asyncssh.connect(
+                host=self.host,
+                port=self.port or 22,
+                username=self.username,
+                client_factory=_AuthClient,
+            )
+        except (OSError, asyncssh.DisconnectError, asyncssh.KeyExchangeFailed) as e:
+            err = str(e)
+            log.debug("Initial connect failed: %s", err)
+            # If host key verification failed, offer TOFU
+            if not self._prompt_host_key(
+                f"Unknown host key for {self.host}.\n\n{err}\n\n"
+                "Accept and connect anyway?"
+            ):
+                raise
+            log.info("User accepted unknown host key — connecting with TOFU")
+            conn = await asyncssh.connect(
+                host=self.host,
+                port=self.port or 22,
+                username=self.username,
+                known_hosts=None,
+                client_factory=_AuthClient,
+            )
+
+        async with conn:
             self._conn = conn
             process = await conn.create_process(
                 None,  # shell
@@ -507,6 +546,7 @@ class TerminalApp:
         self.ssh.set_data_callback(self._on_ssh_data)
         self.ssh.set_close_callback(self._on_ssh_close)
         self.ssh.set_auth_prompt_callback(self._on_auth_prompt)
+        self.ssh.set_host_key_prompt_callback(self._on_host_key_prompt)
         self.ssh.set_error_callback(self._on_ssh_error)
 
         # Bind keyboard
@@ -541,6 +581,16 @@ class TerminalApp:
             data = self.widget.term.encode_paste(text.encode("utf-8"))
             self.ssh.write(data)
         return "break"
+
+    def _on_host_key_prompt(self, message, future):
+        """Show host key acceptance dialog. Called from asyncio thread."""
+        self.root.after(0, self._show_host_key_dialog, message, future)
+
+    def _show_host_key_dialog(self, message, future):
+        """Display a Tk dialog for host key acceptance."""
+        from tkinter import messagebox
+        result = messagebox.askyesno("Unknown Host Key", message, parent=self.root)
+        future.set_result(result)
 
     def _on_auth_prompt(self, prompt_text, echo, future):
         """Show auth dialog on the Tk main thread. Called from asyncio thread."""
