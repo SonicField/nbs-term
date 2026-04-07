@@ -438,14 +438,17 @@ class SSHTransport:
             response_callback=tk_kbdint_callback,
         )]
 
-        conn = SSHConnection(
-            host=self.host,
-            port=self.port,
-            username=self.username,
-            auth=auth,
-            host_key_policy=HostKeyPolicy.ASK,
-            on_unknown_host_key=self._prompt_host_key,
-        )
+        conn_kwargs = {
+            "host": self.host,
+            "auth": auth,
+            "host_key_policy": HostKeyPolicy.ASK,
+            "on_unknown_host_key": self._prompt_host_key,
+        }
+        if self.port:
+            conn_kwargs["port"] = self.port
+        if self.username:
+            conn_kwargs["username"] = self.username
+        conn = SSHConnection(**conn_kwargs)
 
         async with conn:
             self._conn = conn
