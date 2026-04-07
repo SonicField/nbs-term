@@ -24,8 +24,10 @@ import _nbsterm
 from nbs_ssh import (
     SSHConnection,
     SSHInteractionHandler,
+    SSHConfig,
     create_keyboard_interactive_auth,
 )
+from nbs_ssh.auth import AuthConfig, AuthMethod, get_agent_cert_key_pair
 
 log = logging.getLogger("nbs-term")
 
@@ -427,14 +429,38 @@ class SSHTransport:
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
-        # Pass explicit kbdint-only auth to avoid agent auth triggering
-        # a ProxyCommand restart that breaks the kbdint flow.
-        # The interaction handler provides the kbdint callback;
-        # we extract it and pass as explicit auth so auto-discovery
-        # doesn't add agent (which fails and restarts the proxy).
-        auth = [create_keyboard_interactive_auth(
+        # Build auth chain matching the CLI's cert + kbdint flow.
+        # The server requires publickey (cert) first, then offers kbdint
+        # (Duo) as second factor. We must include cert-backed agent keys
+        # from SSH config before kbdint.
+        auth = []
+
+        # Load certificate identity files from SSH config
+        # (matches CLI __main__.py lines 958-988)
+        ssh_config = SSHConfig()
+        host_config = ssh_config.lookup(self.host)
+        cert_files = [
+            p for p in (host_config.identity_file or [])
+            if str(p).endswith("-cert.pub") and p.exists()
+        ]
+        for cert_path in cert_files:
+            try:
+                key_pair = await get_agent_cert_key_pair(
+                    cert_path,
+                    agent_path=host_config.identity_agent,
+                )
+                if key_pair is not None:
+                    cert_auth = AuthConfig(method=AuthMethod.SSH_AGENT)
+                    cert_auth._agent_key_pair = key_pair
+                    auth.append(cert_auth)
+                    log.info("Certificate identity: %s (agent-backed)", cert_path)
+            except Exception as e:
+                log.warning("Failed to load certificate %s: %s", cert_path, e)
+
+        # Add kbdint for second factor (Duo 2FA via Tk dialog)
+        auth.append(create_keyboard_interactive_auth(
             response_callback=self._interaction_handler.on_kbdint,
-        )]
+        ))
 
         conn_kwargs = {
             "host": self.host,
