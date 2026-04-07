@@ -43,6 +43,16 @@ DEFAULT_BG = "#1a1a1a"
 SCROLLBACK_LINES = 10000
 
 
+def dim_color(hex_color):
+    """Reduce a hex color to ~50% brightness for DIM/faint text (SGR 2)."""
+    if not hex_color.startswith("#") or len(hex_color) != 7:
+        return hex_color
+    r = int(hex_color[1:3], 16) // 2
+    g = int(hex_color[3:5], 16) // 2
+    b = int(hex_color[5:7], 16) // 2
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 def gamma_correct(hex_color, gamma):
     """Apply gamma correction to a hex color string."""
     if gamma == 1.0 or not hex_color.startswith("#") or len(hex_color) != 7:
@@ -263,6 +273,10 @@ class TerminalWidget:
                 if self._gamma != 1.0:
                     fg = gamma_correct(fg, self._gamma)
                     bg = gamma_correct(bg, self._gamma)
+
+                # Handle DIM/faint (SGR 2) — reduce foreground to ~50% brightness
+                if attrs & 0x02:  # ATTR_DIM
+                    fg = dim_color(fg)
 
                 # Handle inverse video before drawing anything
                 if attrs & 0x20:  # ATTR_INVERSE
