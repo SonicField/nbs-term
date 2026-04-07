@@ -47,10 +47,15 @@ class TerminalWidget:
     """Tk canvas-based terminal display."""
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
-                 font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE):
+                 font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
+                 cursor_style="Block", cursor_blink=True):
         self.parent = parent
         self.rows = rows
         self.cols = cols
+        self._cursor_style = cursor_style
+        self._cursor_blink = cursor_blink
+        self._cursor_visible = True
+        self._blink_id = None
 
         # Font setup — cache all 4 style variants
         self.font = tkfont.Font(family=font_family, size=font_size)
@@ -244,13 +249,45 @@ class TerminalWidget:
         # Draw cursor
         if self._cursor_item:
             self.canvas.delete(self._cursor_item)
+            self._cursor_item = None
+        if not self._cursor_visible:
+            return
         crow, ccol = self.term.get_cursor()
         cx = ccol * self.char_width
         cy = crow * self.char_height
-        self._cursor_item = self.canvas.create_rectangle(
-            cx, cy, cx + self.char_width, cy + self.char_height,
-            outline=DEFAULT_FG, width=1,
-        )
+        style = self._cursor_style
+        if style == "Block":
+            self._cursor_item = self.canvas.create_rectangle(
+                cx, cy, cx + self.char_width, cy + self.char_height,
+                fill=DEFAULT_FG, outline="",
+            )
+        elif style == "Underline":
+            uy = cy + self.char_height - 2
+            self._cursor_item = self.canvas.create_rectangle(
+                cx, uy, cx + self.char_width, cy + self.char_height,
+                fill=DEFAULT_FG, outline="",
+            )
+        elif style == "Bar":
+            self._cursor_item = self.canvas.create_rectangle(
+                cx, cy, cx + 2, cy + self.char_height,
+                fill=DEFAULT_FG, outline="",
+            )
+        else:  # Wireframe
+            self._cursor_item = self.canvas.create_rectangle(
+                cx, cy, cx + self.char_width, cy + self.char_height,
+                outline=DEFAULT_FG, width=1,
+            )
+
+        # Start blink timer if not already running
+        if self._cursor_blink and self._blink_id is None:
+            self._blink_id = self.parent.after(530, self._toggle_blink)
+
+    def _toggle_blink(self):
+        """Toggle cursor visibility for blinking."""
+        self._cursor_visible = not self._cursor_visible
+        self._render()
+        if self._cursor_blink:
+            self._blink_id = self.parent.after(530, self._toggle_blink)
 
     def handle_key(self, event):
         """Handle a Tk key event."""
@@ -550,6 +587,7 @@ class TerminalApp:
                 self.root,
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
+                cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
             )
         else:
             self.widget = TerminalWidget(self.root)
