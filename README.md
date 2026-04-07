@@ -26,6 +26,17 @@ cd nbs-term
 pip install -e .
 ```
 
+**Windows:**
+
+Install [Python 3.12+](https://www.python.org/downloads/) from python.org (includes Tk by default).
+Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C compiler).
+
+```powershell
+git clone https://github.com/SonicField/nbs-term.git
+cd nbs-term
+pip install -e .
+```
+
 No C preprocessor needed — the C extension builds from pre-generated C.
 
 ## Usage
