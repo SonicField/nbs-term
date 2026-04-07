@@ -704,11 +704,11 @@ class TerminalApp:
         if sys.platform == "darwin":
             self.root.bind("<Command-c>", self._on_copy)
             self.root.bind("<Command-v>", self._on_paste)
-            self.root.bind("<Command-comma>", lambda e: self._show_preferences())
+            self.root.bind("<Command-comma>", self._on_preferences)
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
             self.root.bind("<Control-Shift-V>", self._on_paste)
-            self.root.bind("<Control-comma>", lambda e: self._show_preferences())
+            self.root.bind("<Control-comma>", self._on_preferences)
 
         # Bind resize
         self.widget.canvas.bind("<Configure>", self._on_configure)
@@ -732,9 +732,10 @@ class TerminalApp:
             self.ssh.write(data)
         return "break"
 
-    def _show_preferences(self):
+    def _on_preferences(self, event=None):
         """Open the preferences dialog."""
         PreferencesDialog(self.root, self._config)
+        return "break"
 
     def _on_ssh_error(self, error_msg):
         """Show SSH errors in the terminal window."""
