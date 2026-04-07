@@ -24,6 +24,7 @@ import _nbsterm
 from nbs_ssh import (
     SSHConnection,
     SSHInteractionHandler,
+    create_keyboard_interactive_auth,
 )
 
 log = logging.getLogger("nbs-term")
@@ -426,9 +427,19 @@ class SSHTransport:
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
+        # Pass explicit kbdint-only auth to avoid agent auth triggering
+        # a ProxyCommand restart that breaks the kbdint flow.
+        # The interaction handler provides the kbdint callback;
+        # we extract it and pass as explicit auth so auto-discovery
+        # doesn't add agent (which fails and restarts the proxy).
+        auth = [create_keyboard_interactive_auth(
+            response_callback=self._interaction_handler.on_kbdint,
+        )]
+
         conn_kwargs = {
             "host": self.host,
             "interaction_handler": self._interaction_handler,
+            "auth": auth,
         }
         if self.port:
             conn_kwargs["port"] = self.port
