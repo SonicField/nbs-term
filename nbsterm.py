@@ -249,10 +249,9 @@ class TerminalWidget:
     def _render(self):
         """Redraw the screen from terminal state.
         Cursor is hidden during redraw to prevent visual flicker."""
-        # Hide cursor during redraw
+        # Hide cursor during redraw (don't delete — just hide)
         if self._cursor_item:
-            self.canvas.delete(self._cursor_item)
-            self._cursor_item = None
+            self.canvas.itemconfigure(self._cursor_item, state="hidden")
 
         screen = self.term.get_screen(self._fg, self._bg)
 
@@ -305,50 +304,56 @@ class TerminalWidget:
         self.parent.after_idle(self._show_cursor_after_render)
 
     def _show_cursor_after_render(self):
-        """Draw cursor after Tk has processed all canvas operations."""
+        """Position cursor after Tk has processed all canvas operations.
+        Moves existing cursor item instead of delete/recreate to prevent flicker."""
         if self._cursor_visible:
-            self._draw_cursor()
+            self._position_cursor()
         if self._cursor_blink and self._blink_id is None:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
     def _toggle_blink(self):
-        """Toggle cursor visibility for blinking (redraws cursor only)."""
+        """Toggle cursor visibility for blinking."""
         self._cursor_visible = not self._cursor_visible
         if self._cursor_item:
-            self.canvas.delete(self._cursor_item)
-            self._cursor_item = None
-        if self._cursor_visible:
-            self._draw_cursor()
+            if self._cursor_visible:
+                self.canvas.itemconfigure(self._cursor_item, state="normal")
+            else:
+                self.canvas.itemconfigure(self._cursor_item, state="hidden")
+        elif self._cursor_visible:
+            self._position_cursor()
         if self._cursor_blink:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
-    def _draw_cursor(self):
-        """Draw the cursor at the current position."""
+    def _cursor_coords(self):
+        """Calculate cursor rectangle coordinates for current position and style."""
         crow, ccol = self.term.get_cursor()
         cx = ccol * self.char_width
         cy = crow * self.char_height
         style = self._cursor_style
-        if style == "Block":
-            self._cursor_item = self.canvas.create_rectangle(
-                cx, cy, cx + self.char_width, cy + self.char_height,
-                fill=self._fg, outline="",
-            )
-        elif style == "Underline":
-            uy = cy + self.char_height - 2
-            self._cursor_item = self.canvas.create_rectangle(
-                cx, uy, cx + self.char_width, cy + self.char_height,
-                fill=self._fg, outline="",
-            )
+        if style == "Underline":
+            return (cx, cy + self.char_height - 2, cx + self.char_width, cy + self.char_height)
         elif style == "Bar":
-            self._cursor_item = self.canvas.create_rectangle(
-                cx, cy, cx + 2, cy + self.char_height,
-                fill=self._fg, outline="",
-            )
-        else:  # Wireframe
-            self._cursor_item = self.canvas.create_rectangle(
-                cx, cy, cx + self.char_width, cy + self.char_height,
-                outline=self._fg, width=1,
-            )
+            return (cx, cy, cx + 2, cy + self.char_height)
+        else:  # Block or Wireframe
+            return (cx, cy, cx + self.char_width, cy + self.char_height)
+
+    def _position_cursor(self):
+        """Move existing cursor item or create one if needed."""
+        coords = self._cursor_coords()
+        if self._cursor_item:
+            self.canvas.coords(self._cursor_item, *coords)
+            self.canvas.itemconfigure(self._cursor_item, state="normal")
+            self.canvas.tag_raise(self._cursor_item)
+        else:
+            style = self._cursor_style
+            if style == "Wireframe":
+                self._cursor_item = self.canvas.create_rectangle(
+                    *coords, outline=self._fg, width=1,
+                )
+            else:
+                self._cursor_item = self.canvas.create_rectangle(
+                    *coords, fill=self._fg, outline="",
+                )
 
     def handle_key(self, event):
         """Handle a Tk key event."""
