@@ -141,10 +141,12 @@ class TerminalWidget:
             y0 = r * self.char_height
             x1 = (c1 + 1) * self.char_width
             y1 = y0 + self.char_height
+            # Draw highlight behind text (lower in stacking order)
             item = self.canvas.create_rectangle(
                 x0, y0, x1, y1,
-                fill="#4488cc", outline="", stipple="gray50",
+                fill="#4488cc", outline="",
             )
+            self.canvas.lower(item)
             self._sel_items.append(item)
 
     def get_selected_text(self):
@@ -376,12 +378,13 @@ class SSHTransport:
 
     def _kbdint_handler(self, name, instruction, lang, prompts):
         """Handle keyboard-interactive auth (Duo 2FA, password prompts).
-        Called from the asyncio thread. Bridges to Tk main thread for UI."""
+        Called from the asyncio thread. Bridges to Tk main thread for UI.
+        Must always return a list (never None) — asyncssh iterates the result."""
         log.debug("kbdint challenge: name=%r, instruction=%r, prompts=%d",
                   name, instruction, len(prompts))
         if not self._on_auth_prompt:
             log.warning("No auth prompt callback — cannot handle kbdint")
-            return None
+            return []
         responses = []
         for prompt_text, echo in prompts:
             log.debug("kbdint prompt: %r (echo=%s)", prompt_text, echo)
@@ -391,10 +394,10 @@ class SSHTransport:
                 response = future.result(timeout=120)
             except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
                 log.warning("Auth prompt timed out or cancelled")
-                return None
+                return []
             if response is None:
                 log.debug("User cancelled auth prompt")
-                return None
+                return []
             responses.append(response)
         return responses
 
