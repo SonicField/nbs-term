@@ -323,10 +323,16 @@ class TerminalWidget:
             return
 
         # Map Tk keysym to _nbsterm key constants
+        # Mac: Ctrl=0x4, Command=0x8, Alt/Option=0x10
+        # Linux: Ctrl=0x4, Alt=0x8
         modifiers = 0
         if event.state & 0x1:
             modifiers |= _nbsterm.MOD_SHIFT
-        if event.state & 0x8:
+        if sys.platform == "darwin":
+            alt_mask = 0x10  # Option key on Mac
+        else:
+            alt_mask = 0x8
+        if event.state & alt_mask:
             modifiers |= _nbsterm.MOD_ALT
         if event.state & 0x4:
             modifiers |= _nbsterm.MOD_CTRL
@@ -365,8 +371,11 @@ class TerminalWidget:
         elif (event.state & 0x4) and len(keysym) == 1 and keysym.isalpha():
             # Ctrl+letter: send control character directly (Ctrl-A=1, Ctrl-C=3, etc.)
             data = bytes([ord(keysym.upper()) - 0x40])
+        elif (event.state & alt_mask) and len(keysym) == 1:
+            # Alt/Meta+key: send ESC prefix + character
+            data = b"\x1b" + keysym.encode("utf-8")
         elif event.char and len(event.char) > 0 and ord(event.char[0]) >= 1:
-            # Regular character (including Ctrl+letter which produces chars 1-26)
+            # Regular character
             data = self.term.encode_key(ord(event.char[0]), modifiers)
         else:
             return  # Unhandled key (Shift, Control alone, etc.)
