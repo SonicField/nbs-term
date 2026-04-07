@@ -65,9 +65,7 @@ class TerminalWidget:
             0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
             0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
-        # Use max width across all font variants for consistent cursor alignment.
-        # alexie confirmed wide spacing is acceptable and alignment is correct.
-        self.char_width = max(f.measure("M") for f in self._font_cache.values())
+        self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
         # Canvas
@@ -266,14 +264,14 @@ class TerminalWidget:
                 self._row_items[r].append(text_id)
                 x += self.char_width * len(text)
 
-        # Draw cursor
-        if self._cursor_item:
-            self.canvas.delete(self._cursor_item)
-            self._cursor_item = None
+        # Defer cursor drawing to after Tk processes all pending canvas ops.
+        # This prevents the cursor from flickering during the redraw cycle.
+        self.parent.after_idle(self._show_cursor_after_render)
+
+    def _show_cursor_after_render(self):
+        """Draw cursor after Tk has processed all canvas operations."""
         if self._cursor_visible:
             self._draw_cursor()
-
-        # Start blink timer if not already running
         if self._cursor_blink and self._blink_id is None:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
