@@ -223,7 +223,13 @@ class TerminalWidget:
             self._render()
 
     def _render(self):
-        """Redraw the screen from terminal state."""
+        """Redraw the screen from terminal state.
+        Cursor is hidden during redraw to prevent visual flicker."""
+        # Hide cursor during redraw
+        if self._cursor_item:
+            self.canvas.delete(self._cursor_item)
+            self._cursor_item = None
+
         screen = self.term.get_screen(DEFAULT_FG, DEFAULT_BG)
 
         for r in range(min(len(screen), self.rows)):
@@ -614,8 +620,10 @@ class PreferencesDialog(tk.Toplevel):
 
         tk.Label(self, text="Family:").grid(row=1, column=0, sticky="e", padx=10)
         self._font_family = tk.StringVar(value=config.font.family)
-        tk.Entry(self, textvariable=self._font_family, width=20).grid(
-            row=1, column=1, padx=10, pady=2)
+        fonts = ["Menlo", "Monaco", "Courier New", "Consolas",
+                 "DejaVu Sans Mono", "Liberation Mono", "monospace"]
+        family_menu = tk.OptionMenu(self, self._font_family, *fonts)
+        family_menu.grid(row=1, column=1, sticky="w", padx=10, pady=2)
 
         tk.Label(self, text="Size:").grid(row=2, column=0, sticky="e", padx=10)
         self._font_size = tk.IntVar(value=config.font.size)
@@ -636,23 +644,9 @@ class PreferencesDialog(tk.Toplevel):
         tk.Checkbutton(self, text="Blink", variable=self._cursor_blink).grid(
             row=5, column=1, sticky="w", padx=10, pady=2)
 
-        # Terminal section
-        tk.Label(self, text="Terminal", font=("", 12, "bold")).grid(
-            row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
-
-        tk.Label(self, text="Rows:").grid(row=7, column=0, sticky="e", padx=10)
-        self._rows = tk.IntVar(value=config.rows)
-        tk.Spinbox(self, from_=10, to=200, textvariable=self._rows, width=5).grid(
-            row=7, column=1, sticky="w", padx=10, pady=2)
-
-        tk.Label(self, text="Columns:").grid(row=8, column=0, sticky="e", padx=10)
-        self._cols = tk.IntVar(value=config.cols)
-        tk.Spinbox(self, from_=40, to=400, textvariable=self._cols, width=5).grid(
-            row=8, column=1, sticky="w", padx=10, pady=2)
-
         # Buttons
         btn_frame = tk.Frame(self)
-        btn_frame.grid(row=9, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
@@ -661,8 +655,6 @@ class PreferencesDialog(tk.Toplevel):
         self._config.font.size = self._font_size.get()
         self._config.cursor.style = self._cursor_style.get()
         self._config.cursor.blink = self._cursor_blink.get()
-        self._config.rows = self._rows.get()
-        self._config.cols = self._cols.get()
         save_config(self._config)
         if self._on_save:
             self._on_save(self._config)
