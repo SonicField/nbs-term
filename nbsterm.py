@@ -28,6 +28,7 @@ from nbs_ssh import (
     create_keyboard_interactive_auth,
 )
 from nbs_ssh.auth import AuthConfig, AuthMethod, get_agent_cert_key_pair
+from config import load_config
 
 log = logging.getLogger("nbs-term")
 
@@ -45,18 +46,19 @@ SCROLLBACK_LINES = 10000
 class TerminalWidget:
     """Tk canvas-based terminal display."""
 
-    def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS):
+    def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
+                 font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE):
         self.parent = parent
         self.rows = rows
         self.cols = cols
 
         # Font setup — cache all 4 style variants
-        self.font = tkfont.Font(family=DEFAULT_FONT_FAMILY, size=DEFAULT_FONT_SIZE)
+        self.font = tkfont.Font(family=font_family, size=font_size)
         self._font_cache = {
             0: self.font,
-            0x01: tkfont.Font(family=DEFAULT_FONT_FAMILY, size=DEFAULT_FONT_SIZE, weight="bold"),
-            0x04: tkfont.Font(family=DEFAULT_FONT_FAMILY, size=DEFAULT_FONT_SIZE, slant="italic"),
-            0x05: tkfont.Font(family=DEFAULT_FONT_FAMILY, size=DEFAULT_FONT_SIZE, weight="bold", slant="italic"),
+            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
+            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
+            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
@@ -538,12 +540,19 @@ class SSHTransport:
 class TerminalApp:
     """Main application tying together Tk, Terminal, and SSH."""
 
-    def __init__(self, host, port=None, username=None):
+    def __init__(self, host, port=None, username=None, config=None):
         self.root = tk.Tk()
         self.root.title(f"nbs-term — {host}")
 
-        # Terminal widget
-        self.widget = TerminalWidget(self.root)
+        # Terminal widget with config
+        if config:
+            self.widget = TerminalWidget(
+                self.root,
+                rows=config.rows, cols=config.cols,
+                font_family=config.font.family, font_size=config.font.size,
+            )
+        else:
+            self.widget = TerminalWidget(self.root)
 
         # Constrain window to screen and center
         self.root.update_idletasks()
@@ -645,6 +654,14 @@ def main():
     parser.add_argument("target", help="[user@]host[:port]")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="enable verbose logging")
+    parser.add_argument("--font-size", type=int, dest="font_size",
+                        help="font size (overrides config)")
+    parser.add_argument("--font-family", dest="font_family",
+                        help="font family (overrides config)")
+    parser.add_argument("--rows", type=int,
+                        help="initial terminal rows (overrides config)")
+    parser.add_argument("--cols", type=int,
+                        help="initial terminal columns (overrides config)")
     args = parser.parse_args()
 
     if args.verbose:
@@ -668,7 +685,8 @@ def main():
         host, port_str = host.rsplit(":", 1)
         port = int(port_str)
 
-    app = TerminalApp(host, port, username)
+    config = load_config(args)
+    app = TerminalApp(host, port, username, config=config)
     app.run()
 
 
