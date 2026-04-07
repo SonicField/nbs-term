@@ -150,6 +150,7 @@ class TerminalWidget:
         start, end = self._sel_range()
         if start is None or start == end:
             return
+        # Draw selection as inverted cells: white bg, black text
         for r in range(start[0], end[0] + 1):
             c0 = start[1] if r == start[0] else 0
             c1 = end[1] if r == end[0] else self.cols - 1
@@ -157,12 +158,22 @@ class TerminalWidget:
             y0 = r * self.char_height
             x1 = (c1 + 1) * self.char_width
             y1 = y0 + self.char_height
-            # Draw highlight on top (above background rects and text)
-            item = self.canvas.create_rectangle(
+            # Background
+            bg_item = self.canvas.create_rectangle(
                 x0, y0, x1, y1,
-                fill="#4488cc", outline="", stipple="gray50",
+                fill=DEFAULT_FG, outline="",
             )
-            self._sel_items.append(item)
+            self._sel_items.append(bg_item)
+            # Redraw text in inverted colors
+            for c in range(c0, c1 + 1):
+                cell = self.term.get_cell(r, c)
+                if cell and cell[0] > 0:
+                    tx = c * self.char_width
+                    text_item = self.canvas.create_text(
+                        tx, y0, text=chr(cell[0]), fill=DEFAULT_BG,
+                        font=self.font, anchor=tk.NW,
+                    )
+                    self._sel_items.append(text_item)
 
     def get_selected_text(self):
         """Return the text in the current selection."""
@@ -205,6 +216,8 @@ class TerminalWidget:
         """Process all buffered data and render once."""
         self._render_scheduled = False
         if self._pending_data:
+            # Reset cursor blink on new data — cursor always visible after input
+            self._cursor_visible = True
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
             self._render()
