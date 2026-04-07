@@ -512,11 +512,13 @@ class TerminalApp:
         # Bind keyboard
         self.root.bind("<Key>", self.widget.handle_key)
 
-        # Copy: Cmd+C on Mac, Ctrl+Shift+C on Linux/Windows
+        # Copy/Paste: Cmd+C/V on Mac, Ctrl+Shift+C/V on Linux/Windows
         if sys.platform == "darwin":
             self.root.bind("<Command-c>", self._on_copy)
+            self.root.bind("<Command-v>", self._on_paste)
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
+            self.root.bind("<Control-Shift-V>", self._on_paste)
 
         # Bind resize
         self.widget.canvas.bind("<Configure>", self._on_configure)
@@ -527,7 +529,18 @@ class TerminalApp:
     def _on_copy(self, event=None):
         """Copy selected text to clipboard."""
         self.widget.copy_selection()
-        return "break"  # prevent default handling
+        return "break"
+
+    def _on_paste(self, event=None):
+        """Paste clipboard text into the terminal."""
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            return "break"  # clipboard empty
+        if text and self.ssh._running:
+            data = self.widget.term.encode_paste(text.encode("utf-8"))
+            self.ssh.write(data)
+        return "break"
 
     def _on_auth_prompt(self, prompt_text, echo, future):
         """Show auth dialog on the Tk main thread. Called from asyncio thread."""
