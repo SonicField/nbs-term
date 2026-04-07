@@ -16,4 +16,4 @@ dependencies = [
 nbs-term = "nbsterm:main"
 
 [tool.setuptools]
-py-modules = ["nbsterm"]
+py-modules = ["nbsterm", "config"]
