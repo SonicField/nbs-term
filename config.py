@@ -86,11 +86,17 @@ def get_config_path():
 
 
 def _honest_get(file_path, var, *fields):
-    """Read a value from an Honest file using honest-get."""
+    """Read a value from an Honest file using honest-get.
+
+    Nested fields are joined with dots: _honest_get(f, 'config', 'font', 'size')
+    runs: honest-get f config font.size
+    """
     try:
+        cmd = ["honest-get", file_path, var]
+        if fields:
+            cmd.append(".".join(fields))
         result = subprocess.run(
-            ["honest-get", file_path, var] + list(fields),
-            capture_output=True, text=True, timeout=5,
+            cmd, capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
             return result.stdout.strip()
