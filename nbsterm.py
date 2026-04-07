@@ -367,11 +367,13 @@ class SSHTransport:
         try:
             self._loop.run_until_complete(self._ssh_session(rows, cols))
         except Exception as e:
+            log.error("SSH session failed: %s", e, exc_info=True)
             if self._on_error:
                 self._on_error(str(e))
             else:
                 print(f"SSH error: {e}", file=sys.stderr)
         finally:
+            log.debug("SSH session ended")
             self._running = False
             if self._on_close:
                 self._on_close()
@@ -418,17 +420,24 @@ class SSHTransport:
 
         class _AuthClient(asyncssh.SSHClient):
             def kbdint_auth_requested(self):
-                log.debug("kbdint auth requested")
-                return ""  # accept any submethods
+                log.debug("kbdint auth requested — returning '' (accept any)")
+                return ""
 
             def kbdint_challenge_received(self, name, instruction, lang, prompts):
-                return transport._kbdint_handler(name, instruction, lang, prompts)
+                log.debug("kbdint challenge received: name=%r prompts=%d",
+                          name, len(prompts))
+                result = transport._kbdint_handler(name, instruction, lang, prompts)
+                log.debug("kbdint handler returned %d responses", len(result))
+                return result
 
             def connection_made(self, conn):
-                log.debug("SSH connection established")
+                log.debug("SSH connection established to %s", conn.get_extra_info("peername"))
+
+            def connection_lost(self, exc):
+                log.debug("SSH connection lost: %s", exc)
 
             def auth_completed(self):
-                log.debug("SSH auth completed")
+                log.info("SSH auth completed successfully")
 
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
@@ -461,12 +470,15 @@ class SSHTransport:
 
         async with conn:
             self._conn = conn
+            log.debug("Creating PTY process (term=%s, size=%dx%d)",
+                      "xterm-256color", cols, rows)
             process = await conn.create_process(
                 None,  # shell
                 term_type="xterm-256color",
                 term_size=(cols, rows),
             )
             self._process = process
+            log.info("PTY session started")
 
             # Read loop
             try:
