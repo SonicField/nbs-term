@@ -819,6 +819,17 @@ class TerminalApp:
         # Update cursor
         w._cursor_style = config.cursor.style
         w._cursor_blink = config.cursor.blink
+        # Recalculate terminal grid from new font metrics
+        canvas_w = w.canvas.winfo_width()
+        canvas_h = w.canvas.winfo_height()
+        new_cols = max(1, canvas_w // w.char_width)
+        new_rows = max(1, canvas_h // w.char_height)
+        if new_cols != w.cols or new_rows != w.rows:
+            w.cols = new_cols
+            w.rows = new_rows
+            w.term.resize(new_rows, new_cols)
+            w._row_items = [[] for _ in range(new_rows)]
+            self.ssh.resize(new_rows, new_cols)
         # Rerender
         w._render()
 
