@@ -43,14 +43,28 @@ DEFAULT_BG = "#1a1a1a"
 SCROLLBACK_LINES = 10000
 
 
+def gamma_correct(hex_color, gamma):
+    """Apply gamma correction to a hex color string."""
+    if gamma == 1.0 or not hex_color.startswith("#") or len(hex_color) != 7:
+        return hex_color
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    r = int(255 * (r / 255) ** gamma)
+    g = int(255 * (g / 255) ** gamma)
+    b = int(255 * (b / 255) ** gamma)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class TerminalWidget:
     """Tk canvas-based terminal display."""
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
                  font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
-                 cursor_style="Block", cursor_blink=True):
+                 cursor_style="Block", cursor_blink=True, gamma=1.0):
         self.parent = parent
         self.rows = rows
+        self._gamma = gamma
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
@@ -241,6 +255,11 @@ class TerminalWidget:
 
             for span in spans:
                 text, fg, bg, attrs = span
+
+                # Apply gamma correction
+                if self._gamma != 1.0:
+                    fg = gamma_correct(fg, self._gamma)
+                    bg = gamma_correct(bg, self._gamma)
 
                 # Handle inverse video before drawing anything
                 if attrs & 0x20:  # ATTR_INVERSE
@@ -653,9 +672,19 @@ class PreferencesDialog(tk.Toplevel):
         tk.Checkbutton(self, text="Blink", variable=self._cursor_blink).grid(
             row=5, column=1, sticky="w", padx=10, pady=2)
 
+        # Color section
+        tk.Label(self, text="Color", font=("", 12, "bold")).grid(
+            row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+
+        tk.Label(self, text="Gamma:").grid(row=7, column=0, sticky="e", padx=10)
+        self._gamma = tk.DoubleVar(value=config.gamma)
+        tk.Scale(self, from_=0.5, to=2.0, resolution=0.05,
+                 orient=tk.HORIZONTAL, variable=self._gamma, length=150).grid(
+            row=7, column=1, padx=10, pady=2)
+
         # Buttons
         btn_frame = tk.Frame(self)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=8, column=0, columnspan=2, pady=10)
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
@@ -664,6 +693,7 @@ class PreferencesDialog(tk.Toplevel):
         self._config.font.size = self._font_size.get()
         self._config.cursor.style = self._cursor_style.get()
         self._config.cursor.blink = self._cursor_blink.get()
+        self._config.gamma = self._gamma.get()
         save_config(self._config)
         if self._on_save:
             self._on_save(self._config)
@@ -687,6 +717,7 @@ class TerminalApp:
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
+                gamma=config.gamma,
             )
         else:
             self.widget = TerminalWidget(self.root)

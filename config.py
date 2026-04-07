@@ -33,6 +33,7 @@ type
   TerminalConfig = record
     font   : FontConfig;
     cursor : CursorConfig;
+    gamma  : Real;
     rows   : Integer;
     cols   : Integer;
   end;
@@ -40,6 +41,7 @@ type
 var config : TerminalConfig = (
   font   : (family : 'Menlo'; size : 14);
   cursor : (style : Block; blink : True);
+  gamma  : 0.85;
   rows   : 24;
   cols   : 80;
 );
@@ -62,6 +64,7 @@ class CursorConfig:
 class TerminalConfig:
     font: FontConfig = None
     cursor: CursorConfig = None
+    gamma: float = 0.85 if sys.platform == "darwin" else 1.0
     rows: int = 24
     cols: int = 80
 
@@ -147,7 +150,7 @@ def _parse_honest_values(text):
                 parse_record(block[start:pos - 1], key)
             else:
                 # Simple value — read until ; or end
-                val_match = re.match(r"'([^']*)'|(\w+)", block[pos:])
+                val_match = re.match(r"'([^']*)'|([\w.]+)", block[pos:])
                 if val_match:
                     value = val_match.group(1) if val_match.group(1) is not None else val_match.group(2)
                     result[key] = value
@@ -229,6 +232,13 @@ def load_config(cli_args=None):
         if val:
             config.cursor.blink = val.lower() in ("true", "yes", "1")
 
+        val = _honest_get(config_path, "config", "gamma")
+        if val:
+            try:
+                config.gamma = float(val)
+            except ValueError:
+                pass
+
         val = _honest_get(config_path, "config", "rows")
         if val:
             try:
@@ -287,6 +297,7 @@ type
   TerminalConfig = record
     font   : FontConfig;
     cursor : CursorConfig;
+    gamma  : Real;
     rows   : Integer;
     cols   : Integer;
   end;
@@ -294,6 +305,7 @@ type
 var config : TerminalConfig = (
   font   : (family : '{config.font.family}'; size : {config.font.size});
   cursor : (style : {config.cursor.style}; blink : {blink_str});
+  gamma  : {config.gamma:.2f};
   rows   : {config.rows};
   cols   : {config.cols};
 );
