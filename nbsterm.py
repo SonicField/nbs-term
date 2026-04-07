@@ -798,8 +798,29 @@ class TerminalApp:
 
     def _on_preferences(self, event=None):
         """Open the preferences dialog."""
-        PreferencesDialog(self.root, self._config)
+        PreferencesDialog(self.root, self._config, on_save=self._apply_config)
         return "break"
+
+    def _apply_config(self, config):
+        """Apply config changes live — rebuild fonts, update colors, rerender."""
+        w = self.widget
+        # Update fonts
+        w.font.configure(family=config.font.family, size=config.font.size)
+        for key, f in w._font_cache.items():
+            f.configure(family=config.font.family, size=config.font.size)
+        w.char_width = w.font.measure("M")
+        w.char_height = w.font.metrics("linespace")
+        # Update colors
+        w._fg = config.fg
+        w._bg = config.bg
+        w.canvas.configure(bg=w._bg)
+        # Update gamma
+        w._gamma = config.gamma
+        # Update cursor
+        w._cursor_style = config.cursor.style
+        w._cursor_blink = config.cursor.blink
+        # Rerender
+        w._render()
 
     def _on_ssh_error(self, error_msg):
         """Show SSH errors in the terminal window."""
