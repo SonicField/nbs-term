@@ -85,22 +85,95 @@ def get_config_path():
     return os.path.join(get_config_dir(), "nbs-term.honest")
 
 
-def _honest_get(file_path, var, *fields):
-    """Read a value from an Honest file using honest-get.
+def _parse_honest_values(text):
+    """Extract key-value pairs from an Honest config var block.
 
-    Nested fields are joined with dots: _honest_get(f, 'config', 'font', 'size')
-    runs: honest-get f config font.size
+    Parses the 'var config : ... = (...)' section and returns a flat
+    dict of dot-separated keys to string values.
+    E.g. {'font.family': 'Menlo', 'font.size': '14', 'rows': '24'}
+    """
+    import re
+    result = {}
+
+    # Find the var assignment block: var ... = ( ... );
+    # Use paren counting to handle nested records
+    match = re.search(r'var\s+\w+\s*:\s*\w+\s*=\s*\(', text)
+    if not match:
+        return result
+    start = match.end()
+    depth = 1
+    pos = start
+    while pos < len(text) and depth > 0:
+        if text[pos] == '(':
+            depth += 1
+        elif text[pos] == ')':
+            depth -= 1
+        pos += 1
+    outer_block = text[start:pos - 1]
+
+    def parse_record(block, prefix=""):
+        """Recursively parse nested record values."""
+        # Match field : value pairs, handling nested ( ... ) blocks
+        pos = 0
+        while pos < len(block):
+            # Skip whitespace
+            while pos < len(block) and block[pos] in ' \t\r\n':
+                pos += 1
+            if pos >= len(block):
+                break
+
+            # Match field name
+            field_match = re.match(r'(\w+)\s*:\s*', block[pos:])
+            if not field_match:
+                pos += 1
+                continue
+
+            field_name = field_match.group(1)
+            pos += field_match.end()
+            key = f"{prefix}{field_name}" if not prefix else f"{prefix}.{field_name}"
+
+            # Check if value is a nested record
+            if pos < len(block) and block[pos] == '(':
+                # Find matching closing paren
+                depth = 1
+                start = pos + 1
+                pos += 1
+                while pos < len(block) and depth > 0:
+                    if block[pos] == '(':
+                        depth += 1
+                    elif block[pos] == ')':
+                        depth -= 1
+                    pos += 1
+                parse_record(block[start:pos - 1], key)
+            else:
+                # Simple value — read until ; or end
+                val_match = re.match(r"'([^']*)'|(\w+)", block[pos:])
+                if val_match:
+                    value = val_match.group(1) if val_match.group(1) is not None else val_match.group(2)
+                    result[key] = value
+                    pos += val_match.end()
+
+            # Skip separator
+            while pos < len(block) and block[pos] in ' \t\r\n;':
+                pos += 1
+
+    parse_record(outer_block)
+    return result
+
+
+def _honest_get(file_path, var, *fields):
+    """Read a value from an Honest config file.
+
+    Uses a built-in parser (no external tools needed).
+    Falls back to honest-get CLI if available.
     """
     try:
-        cmd = ["honest-get", file_path, var]
-        if fields:
-            cmd.append(".".join(fields))
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        with open(file_path, "r") as f:
+            text = f.read()
+        values = _parse_honest_values(text)
+        key = ".".join(fields) if fields else var
+        return values.get(key)
+    except (OSError, KeyError):
         pass
     return None
 
