@@ -13,6 +13,7 @@ Invariant: C extension only called from main thread.
 import sys
 import os
 import asyncio
+import logging
 import threading
 import concurrent.futures
 import tkinter as tk
@@ -21,6 +22,8 @@ import tkinter.simpledialog as simpledialog
 
 import _nbsterm
 import asyncssh
+
+log = logging.getLogger("nbs-term")
 
 # --- Configuration ---
 
@@ -275,31 +278,54 @@ class SSHTransport:
     def _kbdint_handler(self, name, instruction, lang, prompts):
         """Handle keyboard-interactive auth (Duo 2FA, password prompts).
         Called from the asyncio thread. Bridges to Tk main thread for UI."""
+        log.debug("kbdint challenge: name=%r, instruction=%r, prompts=%d",
+                  name, instruction, len(prompts))
         if not self._on_auth_prompt:
+            log.warning("No auth prompt callback — cannot handle kbdint")
             return None
         responses = []
         for prompt_text, echo in prompts:
+            log.debug("kbdint prompt: %r (echo=%s)", prompt_text, echo)
             future = concurrent.futures.Future()
             self._on_auth_prompt(prompt_text, echo, future)
             try:
                 response = future.result(timeout=120)
             except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+                log.warning("Auth prompt timed out or cancelled")
                 return None
             if response is None:
+                log.debug("User cancelled auth prompt")
                 return None
             responses.append(response)
         return responses
 
     async def _ssh_session(self, rows, cols):
         """Connect and run the SSH shell session."""
-        connect_kwargs = {
-            "host": self.host,
-            "port": self.port or 22,
-            "username": self.username,
-            "known_hosts": None,
-            "kbdint_challenge_handler": self._kbdint_handler,
-        }
-        async with asyncssh.connect(**connect_kwargs) as conn:
+        transport = self
+
+        class _AuthClient(asyncssh.SSHClient):
+            def kbdint_auth_requested(self):
+                log.debug("kbdint auth requested")
+                return ""  # accept any submethods
+
+            def kbdint_challenge_received(self, name, instruction, lang, prompts):
+                return transport._kbdint_handler(name, instruction, lang, prompts)
+
+            def connection_made(self, conn):
+                log.debug("SSH connection established")
+
+            def auth_completed(self):
+                log.debug("SSH auth completed")
+
+        log.info("Connecting to %s:%s as %s",
+                 self.host, self.port or 22, self.username or "(default)")
+        async with asyncssh.connect(
+            host=self.host,
+            port=self.port or 22,
+            username=self.username,
+            known_hosts=None,
+            client_factory=_AuthClient,
+        ) as conn:
             self._conn = conn
             process = await conn.create_process(
                 None,  # shell
@@ -453,16 +479,30 @@ class TerminalApp:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} [user@]host[:port]", file=sys.stderr)
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="nbs-term",
+        description="Terminal emulator over SSH",
+    )
+    parser.add_argument("target", help="[user@]host[:port]")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="enable verbose logging")
+    args = parser.parse_args()
 
-    target = sys.argv[1]
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            stream=sys.stderr,
+        )
+        asyncssh.set_log_level(logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     # Parse user@host:port
     username = None
     port = None
-    host = target
+    host = args.target
 
     if "@" in host:
         username, host = host.rsplit("@", 1)
