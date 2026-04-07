@@ -35,14 +35,11 @@ Before submitting a large PR, consider opening an issue first to discuss the app
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
 
-# Install nbs-ssh (SSH transport dependency)
-pip install ../nbs-ssh/  # or wherever nbs-ssh is located
-
 # Build and test (requires phc for .phc source changes)
 make
 make test
 
-# Install in development mode
+# Install in development mode (also fetches nbs-ssh from GitHub)
 pip install -e .
 ```
 

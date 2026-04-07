@@ -7,8 +7,9 @@ name = "nbs-term"
 version = "0.1.0"
 description = "Terminal emulator with Phoenics-powered VT parser"
 requires-python = ">=3.12"
-# nbs-ssh is required — install separately:
-#   pip install nbs-ssh  (or from source: pip install path/to/nbs-ssh)
+dependencies = [
+    "nbs-ssh @ git+https://github.com/SonicField/nbs-ssh.git",
+]
 
 [project.scripts]
 nbs-term = "nbsterm:main"

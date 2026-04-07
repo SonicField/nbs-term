@@ -9,8 +9,7 @@ All terminal semantics live in C. Python transports bytes.
 ```bash
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
-pip install nbs-ssh        # SSH transport (or: pip install path/to/nbs-ssh)
-pip install -e .           # builds C extension from pre-generated C
+pip install -e .           # builds C extension + installs nbs-ssh from GitHub
 ```
 
 No C preprocessor or build tools needed beyond a standard C compiler (gcc/clang) and Python headers.

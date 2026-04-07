@@ -17,8 +17,6 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 
-# nbs-ssh must be installed: pip install nbs-ssh (or from source)
-
 import _nbsterm
 from nbs_ssh import SSHConnection, HostKeyPolicy
 
