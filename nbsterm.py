@@ -16,6 +16,7 @@ import asyncio
 import logging
 import threading
 import concurrent.futures
+import getpass
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog
@@ -446,8 +447,7 @@ class SSHTransport:
         }
         if self.port:
             conn_kwargs["port"] = self.port
-        if self.username:
-            conn_kwargs["username"] = self.username
+        conn_kwargs["username"] = self.username or getpass.getuser()
         conn = SSHConnection(**conn_kwargs)
 
         async with conn:
