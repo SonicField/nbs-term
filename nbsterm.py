@@ -77,11 +77,103 @@ class TerminalWidget:
         self._pending_data = bytearray()
         self._render_scheduled = False
 
+        # Selection state
+        self._sel_start = None  # (row, col) of selection start
+        self._sel_end = None    # (row, col) of selection end
+        self._sel_items = []    # canvas item IDs for selection highlight
+
+        # Mouse bindings for selection
+        self.canvas.bind("<ButtonPress-1>", self._on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+
         # Callbacks
         self._write_callback = None  # called with bytes to send to SSH
 
     def set_write_callback(self, cb):
         self._write_callback = cb
+
+    def _pixel_to_cell(self, x, y):
+        """Convert pixel coordinates to (row, col)."""
+        col = max(0, min(x // self.char_width, self.cols - 1))
+        row = max(0, min(y // self.char_height, self.rows - 1))
+        return (row, col)
+
+    def _on_mouse_down(self, event):
+        """Start selection."""
+        self._sel_start = self._pixel_to_cell(event.x, event.y)
+        self._sel_end = self._sel_start
+        self._clear_selection_highlight()
+
+    def _on_mouse_drag(self, event):
+        """Extend selection."""
+        self._sel_end = self._pixel_to_cell(event.x, event.y)
+        self._draw_selection_highlight()
+
+    def _on_mouse_up(self, event):
+        """Finish selection."""
+        self._sel_end = self._pixel_to_cell(event.x, event.y)
+        self._draw_selection_highlight()
+
+    def _sel_range(self):
+        """Return (start, end) as (row, col) tuples in order."""
+        s, e = self._sel_start, self._sel_end
+        if s is None or e is None:
+            return None, None
+        if (s[0], s[1]) > (e[0], e[1]):
+            s, e = e, s
+        return s, e
+
+    def _clear_selection_highlight(self):
+        for item_id in self._sel_items:
+            self.canvas.delete(item_id)
+        self._sel_items = []
+
+    def _draw_selection_highlight(self):
+        self._clear_selection_highlight()
+        start, end = self._sel_range()
+        if start is None or start == end:
+            return
+        for r in range(start[0], end[0] + 1):
+            c0 = start[1] if r == start[0] else 0
+            c1 = end[1] if r == end[0] else self.cols - 1
+            x0 = c0 * self.char_width
+            y0 = r * self.char_height
+            x1 = (c1 + 1) * self.char_width
+            y1 = y0 + self.char_height
+            item = self.canvas.create_rectangle(
+                x0, y0, x1, y1,
+                fill="#4488cc", outline="", stipple="gray50",
+            )
+            self._sel_items.append(item)
+
+    def get_selected_text(self):
+        """Return the text in the current selection."""
+        start, end = self._sel_range()
+        if start is None or start == end:
+            return ""
+        lines = []
+        for r in range(start[0], end[0] + 1):
+            c0 = start[1] if r == start[0] else 0
+            c1 = end[1] if r == end[0] else self.cols - 1
+            row_text = []
+            for c in range(c0, c1 + 1):
+                cell = self.term.get_cell(r, c)
+                if cell and cell[0] > 0:
+                    row_text.append(chr(cell[0]))
+                else:
+                    row_text.append(" ")
+            lines.append("".join(row_text).rstrip())
+        return "\n".join(lines)
+
+    def copy_selection(self):
+        """Copy selected text to system clipboard."""
+        text = self.get_selected_text()
+        if text:
+            self.parent.clipboard_clear()
+            self.parent.clipboard_append(text)
+            return True
+        return False
 
     def feed(self, data):
         """Buffer SSH data for rendering. Must be called from main thread.
@@ -420,11 +512,22 @@ class TerminalApp:
         # Bind keyboard
         self.root.bind("<Key>", self.widget.handle_key)
 
+        # Copy: Cmd+C on Mac, Ctrl+Shift+C on Linux/Windows
+        if sys.platform == "darwin":
+            self.root.bind("<Command-c>", self._on_copy)
+        else:
+            self.root.bind("<Control-Shift-C>", self._on_copy)
+
         # Bind resize
         self.widget.canvas.bind("<Configure>", self._on_configure)
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_copy(self, event=None):
+        """Copy selected text to clipboard."""
+        self.widget.copy_selection()
+        return "break"  # prevent default handling
 
     def _on_auth_prompt(self, prompt_text, echo, future):
         """Show auth dialog on the Tk main thread. Called from asyncio thread."""
