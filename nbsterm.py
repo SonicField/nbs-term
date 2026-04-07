@@ -28,7 +28,7 @@ from nbs_ssh import (
     create_keyboard_interactive_auth,
 )
 from nbs_ssh.auth import AuthConfig, AuthMethod, get_agent_cert_key_pair
-from config import load_config
+from config import load_config, save_config, TerminalConfig, FontConfig, CursorConfig
 
 log = logging.getLogger("nbs-term")
 
@@ -581,12 +581,95 @@ class SSHTransport:
                 pass
 
 
+class PreferencesDialog(tk.Toplevel):
+    """Tk preferences dialog for nbs-term settings."""
+
+    def __init__(self, parent, config, on_save=None):
+        super().__init__(parent)
+        self.title("Preferences")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._config = config
+        self._on_save = on_save
+
+        # Font section
+        tk.Label(self, text="Font", font=("", 12, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+
+        tk.Label(self, text="Family:").grid(row=1, column=0, sticky="e", padx=10)
+        self._font_family = tk.StringVar(value=config.font.family)
+        tk.Entry(self, textvariable=self._font_family, width=20).grid(
+            row=1, column=1, padx=10, pady=2)
+
+        tk.Label(self, text="Size:").grid(row=2, column=0, sticky="e", padx=10)
+        self._font_size = tk.IntVar(value=config.font.size)
+        tk.Spinbox(self, from_=6, to=72, textvariable=self._font_size, width=5).grid(
+            row=2, column=1, sticky="w", padx=10, pady=2)
+
+        # Cursor section
+        tk.Label(self, text="Cursor", font=("", 12, "bold")).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+
+        tk.Label(self, text="Style:").grid(row=4, column=0, sticky="e", padx=10)
+        self._cursor_style = tk.StringVar(value=config.cursor.style)
+        styles = tk.OptionMenu(self, self._cursor_style,
+                               "Block", "Wireframe", "Underline", "Bar")
+        styles.grid(row=4, column=1, sticky="w", padx=10, pady=2)
+
+        self._cursor_blink = tk.BooleanVar(value=config.cursor.blink)
+        tk.Checkbutton(self, text="Blink", variable=self._cursor_blink).grid(
+            row=5, column=1, sticky="w", padx=10, pady=2)
+
+        # Terminal section
+        tk.Label(self, text="Terminal", font=("", 12, "bold")).grid(
+            row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+
+        tk.Label(self, text="Rows:").grid(row=7, column=0, sticky="e", padx=10)
+        self._rows = tk.IntVar(value=config.rows)
+        tk.Spinbox(self, from_=10, to=200, textvariable=self._rows, width=5).grid(
+            row=7, column=1, sticky="w", padx=10, pady=2)
+
+        tk.Label(self, text="Columns:").grid(row=8, column=0, sticky="e", padx=10)
+        self._cols = tk.IntVar(value=config.cols)
+        tk.Spinbox(self, from_=40, to=400, textvariable=self._cols, width=5).grid(
+            row=8, column=1, sticky="w", padx=10, pady=2)
+
+        # Buttons
+        btn_frame = tk.Frame(self)
+        btn_frame.grid(row=9, column=0, columnspan=2, pady=10)
+        tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _save(self):
+        self._config.font.family = self._font_family.get()
+        self._config.font.size = self._font_size.get()
+        self._config.cursor.style = self._cursor_style.get()
+        self._config.cursor.blink = self._cursor_blink.get()
+        self._config.rows = self._rows.get()
+        self._config.cols = self._cols.get()
+        save_config(self._config)
+        if self._on_save:
+            self._on_save(self._config)
+        self.destroy()
+
+
 class TerminalApp:
     """Main application tying together Tk, Terminal, and SSH."""
 
     def __init__(self, host, port=None, username=None, config=None):
         self.root = tk.Tk()
         self.root.title(f"nbs-term — {host}")
+        self._config = config or TerminalConfig()
+
+        # Menu bar
+        menubar = tk.Menu(self.root)
+        terminal_menu = tk.Menu(menubar, tearoff=0)
+        terminal_menu.add_command(label="Preferences...", command=self._show_preferences)
+        terminal_menu.add_separator()
+        terminal_menu.add_command(label="Quit", command=self._on_close)
+        menubar.add_cascade(label="Terminal", menu=terminal_menu)
+        self.root.config(menu=menubar)
 
         # Terminal widget with config
         if config:
@@ -624,13 +707,15 @@ class TerminalApp:
         # Bind keyboard
         self.root.bind("<Key>", self.widget.handle_key)
 
-        # Copy/Paste: Cmd+C/V on Mac, Ctrl+Shift+C/V on Linux/Windows
+        # Copy/Paste and Preferences shortcuts
         if sys.platform == "darwin":
             self.root.bind("<Command-c>", self._on_copy)
             self.root.bind("<Command-v>", self._on_paste)
+            self.root.bind("<Command-comma>", lambda e: self._show_preferences())
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
             self.root.bind("<Control-Shift-V>", self._on_paste)
+            self.root.bind("<Control-comma>", lambda e: self._show_preferences())
 
         # Bind resize
         self.widget.canvas.bind("<Configure>", self._on_configure)
@@ -653,6 +738,10 @@ class TerminalApp:
             data = self.widget.term.encode_paste(text.encode("utf-8"))
             self.ssh.write(data)
         return "break"
+
+    def _show_preferences(self):
+        """Open the preferences dialog."""
+        PreferencesDialog(self.root, self._config)
 
     def _on_ssh_error(self, error_msg):
         """Show SSH errors in the terminal window."""

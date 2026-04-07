@@ -182,3 +182,54 @@ def load_config(cli_args=None):
             config.cols = cli_args.cols
 
     return config
+
+
+def save_config(config):
+    """Save config to the Honest config file."""
+    config_path = get_config_path()
+    config_dir = get_config_dir()
+
+    if not os.path.exists(config_dir):
+        try:
+            os.makedirs(config_dir, exist_ok=True)
+        except OSError:
+            log.warning("Cannot create config dir: %s", config_dir)
+            return False
+
+    blink_str = "True" if config.cursor.blink else "False"
+    content = f"""\
+type
+  CursorStyle = (Block, Wireframe, Underline, Bar);
+
+  FontConfig = record
+    family : String;
+    size   : Integer;
+  end;
+
+  CursorConfig = record
+    style : CursorStyle;
+    blink : Boolean;
+  end;
+
+  TerminalConfig = record
+    font   : FontConfig;
+    cursor : CursorConfig;
+    rows   : Integer;
+    cols   : Integer;
+  end;
+
+var config : TerminalConfig = (
+  font   : (family : '{config.font.family}'; size : {config.font.size});
+  cursor : (style : {config.cursor.style}; blink : {blink_str});
+  rows   : {config.rows};
+  cols   : {config.cols};
+);
+"""
+    try:
+        with open(config_path, "w") as f:
+            f.write(content)
+        log.info("Saved config to %s", config_path)
+        return True
+    except OSError:
+        log.warning("Cannot save config: %s", config_path)
+        return False
