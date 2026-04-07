@@ -362,6 +362,9 @@ class TerminalWidget:
             data = b"\t"
         elif keysym == "Escape":
             data = b"\x1b"
+        elif (event.state & 0x4) and len(keysym) == 1 and keysym.isalpha():
+            # Ctrl+letter: send control character directly (Ctrl-A=1, Ctrl-C=3, etc.)
+            data = bytes([ord(keysym.upper()) - 0x40])
         elif event.char and len(event.char) > 0 and ord(event.char[0]) >= 1:
             # Regular character (including Ctrl+letter which produces chars 1-26)
             data = self.term.encode_key(ord(event.char[0]), modifiers)
