@@ -246,6 +246,74 @@ class TestKbdintHandler(unittest.TestCase):
             future.result(timeout=0.01)
 
 
+class TestGammaCorrection(unittest.TestCase):
+    """Test gamma_correct() color transform."""
+
+    def _gamma_correct(self, hex_color, gamma):
+        """Standalone re-implementation of gamma_correct()."""
+        if gamma == 1.0 or not hex_color.startswith("#") or len(hex_color) != 7:
+            return hex_color
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        r = int(255 * (r / 255) ** gamma)
+        g = int(255 * (g / 255) ** gamma)
+        b = int(255 * (b / 255) ** gamma)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def test_gamma_1_no_change(self):
+        self.assertEqual(self._gamma_correct("#cd0000", 1.0), "#cd0000")
+
+    def test_gamma_1_any_color(self):
+        self.assertEqual(self._gamma_correct("#abcdef", 1.0), "#abcdef")
+
+    def test_black_unchanged(self):
+        """Black is always black regardless of gamma."""
+        self.assertEqual(self._gamma_correct("#000000", 0.5), "#000000")
+        self.assertEqual(self._gamma_correct("#000000", 2.0), "#000000")
+
+    def test_white_unchanged(self):
+        """White is always white regardless of gamma."""
+        self.assertEqual(self._gamma_correct("#ffffff", 0.5), "#ffffff")
+        self.assertEqual(self._gamma_correct("#ffffff", 2.0), "#ffffff")
+
+    def test_gamma_less_than_1_brightens(self):
+        """Gamma < 1 raises midtones (x^0.85 > x for x in (0,1))."""
+        original = self._gamma_correct("#808080", 1.0)
+        brightened = self._gamma_correct("#808080", 0.85)
+        self.assertGreater(int(brightened[1:3], 16), int(original[1:3], 16))
+
+    def test_gamma_greater_than_1_darkens(self):
+        """Gamma > 1 lowers midtones (x^1.5 < x for x in (0,1))."""
+        original = self._gamma_correct("#808080", 1.0)
+        darkened = self._gamma_correct("#808080", 1.5)
+        self.assertLess(int(darkened[1:3], 16), int(original[1:3], 16))
+
+    def test_invalid_color_passthrough(self):
+        """Non-hex colors pass through unchanged."""
+        self.assertEqual(self._gamma_correct("red", 0.5), "red")
+        self.assertEqual(self._gamma_correct("#fff", 0.5), "#fff")
+
+    def test_round_trip_approximate(self):
+        """Gamma and inverse gamma should approximately round-trip."""
+        color = "#cd8844"
+        forward = self._gamma_correct(color, 0.8)
+        back = self._gamma_correct(forward, 1.0 / 0.8)
+        # Should be close to original (within 1 due to integer rounding)
+        for i in range(3):
+            orig_ch = int(color[1 + i*2:3 + i*2], 16)
+            back_ch = int(back[1 + i*2:3 + i*2], 16)
+            self.assertAlmostEqual(orig_ch, back_ch, delta=2)
+
+    def test_mac_default_gamma(self):
+        """Mac default gamma 0.85 produces valid hex output."""
+        result = self._gamma_correct("#cd0000", 0.85)
+        self.assertTrue(result.startswith("#"))
+        self.assertEqual(len(result), 7)
+        # Gamma < 1 brightens — result should be >= original
+        self.assertGreaterEqual(int(result[1:3], 16), 0xcd)
+
+
 class TestHostTargetParsing(unittest.TestCase):
     """Test the user@host:port parsing logic from main()."""
 
