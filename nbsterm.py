@@ -454,9 +454,10 @@ class SSHTransport:
         # Try with default known_hosts (~/.ssh/known_hosts) first
         try:
             conn = await asyncssh.connect(**connect_kwargs)
-        except (OSError, asyncssh.DisconnectError, asyncssh.KeyExchangeFailed) as e:
+        except (asyncssh.DisconnectError, asyncssh.KeyExchangeFailed) as e:
+            # Host key verification failure — offer TOFU
             err = str(e)
-            log.debug("Initial connect failed: %s", err)
+            log.debug("Host key verification failed: %s", err)
             if not self._prompt_host_key(
                 f"Unknown host key for {self.host}.\n\n{err}\n\n"
                 "Accept and connect anyway?"
