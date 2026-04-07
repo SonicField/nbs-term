@@ -24,12 +24,7 @@ import tkinter.simpledialog as simpledialog
 import _nbsterm
 from nbs_ssh import (
     SSHConnection,
-    HostKeyPolicy,
-    create_agent_auth,
-    create_key_auth,
-    create_keyboard_interactive_auth,
-    get_agent_available,
-    get_default_key_paths,
+    SSHInteractionHandler,
 )
 
 log = logging.getLogger("nbs-term")
@@ -322,6 +317,56 @@ class TerminalWidget:
         return None
 
 
+class TkInteractionHandler(SSHInteractionHandler):
+    """Bridge SSH interactive events to Tk dialogs.
+
+    Each callback runs on the asyncio thread and uses
+    concurrent.futures.Future to marshal to the Tk main thread.
+    """
+
+    def __init__(self, root):
+        self._root = root
+
+    def _ask_on_main_thread(self, fn, *args):
+        """Run fn(*args) on the Tk main thread and return the result."""
+        future = concurrent.futures.Future()
+        self._root.after(0, self._run_and_set, future, fn, args)
+        try:
+            return future.result(timeout=120)
+        except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+            return None
+
+    @staticmethod
+    def _run_and_set(future, fn, args):
+        future.set_result(fn(*args))
+
+    def on_host_key(self, host, port, key_info):
+        from tkinter import messagebox
+        result = self._ask_on_main_thread(
+            messagebox.askyesno,
+            "Unknown Host Key",
+            f"The authenticity of host '{host}' ({port}) can't be established.\n"
+            f"{key_info}\n\nAccept and connect anyway?",
+        )
+        return bool(result)
+
+    def on_kbdint(self, name, instructions, prompts):
+        log.debug("kbdint challenge: name=%r, prompts=%d", name, len(prompts))
+        responses = []
+        for prompt_text, echo in prompts:
+            log.debug("kbdint prompt: %r (echo=%s)", prompt_text, echo)
+            show = None if echo else "*"
+            response = self._ask_on_main_thread(
+                simpledialog.askstring,
+                "SSH Authentication", prompt_text, show=show,
+            )
+            if response is None:
+                log.debug("User cancelled auth prompt")
+                return []
+            responses.append(response)
+        return responses
+
+
 class SSHTransport:
     """Manages SSH connection in a background asyncio thread."""
 
@@ -333,11 +378,10 @@ class SSHTransport:
         self._thread = None
         self._process = None
         self._conn = None
-        self._on_data = None  # callback for received data (called from asyncio thread)
+        self._on_data = None
         self._on_close = None
-        self._on_auth_prompt = None  # callback for auth prompts (called from main thread)
-        self._on_host_key_prompt = None  # callback for unknown host key acceptance
-        self._on_error = None  # callback for error messages
+        self._on_error = None
+        self._interaction_handler = None
         self._running = False
 
     def set_data_callback(self, cb):
@@ -346,17 +390,8 @@ class SSHTransport:
     def set_close_callback(self, cb):
         self._on_close = cb
 
-    def set_auth_prompt_callback(self, cb):
-        """Set callback for keyboard-interactive auth prompts.
-        cb(prompt_text, echo) -> response string, or None to cancel.
-        Called on the Tk main thread via root.after()."""
-        self._on_auth_prompt = cb
-
-    def set_host_key_prompt_callback(self, cb):
-        """Set callback for unknown host key acceptance.
-        cb(message) -> bool (True=accept, False=reject).
-        Called on the Tk main thread."""
-        self._on_host_key_prompt = cb
+    def set_interaction_handler(self, handler):
+        self._interaction_handler = handler
 
     def set_error_callback(self, cb):
         self._on_error = cb
@@ -387,78 +422,19 @@ class SSHTransport:
             if self._on_close:
                 self._on_close()
 
-    def _kbdint_handler(self, name, instruction, lang, prompts):
-        """Handle keyboard-interactive auth (Duo 2FA, password prompts).
-        Called from the asyncio thread. Bridges to Tk main thread for UI.
-        Must always return a list (never None) — asyncssh iterates the result."""
-        log.debug("kbdint challenge: name=%r, instruction=%r, prompts=%d",
-                  name, instruction, len(prompts))
-        if not self._on_auth_prompt:
-            log.warning("No auth prompt callback — cannot handle kbdint")
-            return []
-        responses = []
-        for prompt_text, echo in prompts:
-            log.debug("kbdint prompt: %r (echo=%s)", prompt_text, echo)
-            future = concurrent.futures.Future()
-            self._on_auth_prompt(prompt_text, echo, future)
-            try:
-                response = future.result(timeout=120)
-            except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
-                log.warning("Auth prompt timed out or cancelled")
-                return []
-            if response is None:
-                log.debug("User cancelled auth prompt")
-                return []
-            responses.append(response)
-        return responses
-
-    def _prompt_host_key(self, host, port, key):
-        """Ask user to accept an unknown host key. Bridges to Tk main thread.
-        Signature matches nbs-ssh on_unknown_host_key callback."""
-        if not self._on_host_key_prompt:
-            return False
-        key_type = key.get_algorithm()
-        message = (
-            f"The authenticity of host '{host}' ({port}) can't be established.\n"
-            f"{key_type} key fingerprint received.\n\n"
-            "Are you sure you want to continue connecting?"
-        )
-        future = concurrent.futures.Future()
-        self._on_host_key_prompt(message, future)
-        try:
-            return future.result(timeout=120)
-        except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
-            return False
-
     async def _ssh_session(self, rows, cols):
         """Connect and run the SSH shell session using nbs-ssh."""
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
-        # Build auth chain matching nbs-ssh CLI discovery order:
-        # agent → keys → keyboard-interactive (Duo 2FA via Tk dialog)
-        def tk_kbdint_callback(name, instructions, prompts):
-            return self._kbdint_handler(name, instructions, "", prompts)
-
-        auth = []
-        if get_agent_available():
-            auth.append(create_agent_auth())
-        for key_path in get_default_key_paths():
-            if key_path.exists():
-                auth.append(create_key_auth(key_path))
-        auth.append(create_keyboard_interactive_auth(
-            response_callback=tk_kbdint_callback,
-        ))
-
         conn_kwargs = {
             "host": self.host,
-            "auth": auth,
-            "host_key_policy": HostKeyPolicy.ASK,
-            "on_unknown_host_key": self._prompt_host_key,
+            "interaction_handler": self._interaction_handler,
         }
         if self.port:
             conn_kwargs["port"] = self.port
-        conn_kwargs["username"] = self.username or getpass.getuser()
+        if self.username:
+            conn_kwargs["username"] = self.username
         conn = SSHConnection(**conn_kwargs)
 
         async with conn:
@@ -553,8 +529,7 @@ class TerminalApp:
         self.widget.set_write_callback(self.ssh.write)
         self.ssh.set_data_callback(self._on_ssh_data)
         self.ssh.set_close_callback(self._on_ssh_close)
-        self.ssh.set_auth_prompt_callback(self._on_auth_prompt)
-        self.ssh.set_host_key_prompt_callback(self._on_host_key_prompt)
+        self.ssh.set_interaction_handler(TkInteractionHandler(self.root))
         self.ssh.set_error_callback(self._on_ssh_error)
 
         # Bind keyboard
@@ -589,32 +564,6 @@ class TerminalApp:
             data = self.widget.term.encode_paste(text.encode("utf-8"))
             self.ssh.write(data)
         return "break"
-
-    def _on_host_key_prompt(self, message, future):
-        """Show host key acceptance dialog. Called from asyncio thread."""
-        self.root.after(0, self._show_host_key_dialog, message, future)
-
-    def _show_host_key_dialog(self, message, future):
-        """Display a Tk dialog for host key acceptance."""
-        from tkinter import messagebox
-        result = messagebox.askyesno("Unknown Host Key", message, parent=self.root)
-        future.set_result(result)
-
-    def _on_auth_prompt(self, prompt_text, echo, future):
-        """Show auth dialog on the Tk main thread. Called from asyncio thread."""
-        self.root.after(0, self._show_auth_dialog, prompt_text, echo, future)
-
-    def _show_auth_dialog(self, prompt_text, echo, future):
-        """Display a Tk dialog for SSH auth and set the future result."""
-        if echo:
-            response = simpledialog.askstring(
-                "SSH Authentication", prompt_text, parent=self.root,
-            )
-        else:
-            response = simpledialog.askstring(
-                "SSH Authentication", prompt_text, parent=self.root, show="*",
-            )
-        future.set_result(response)
 
     def _on_ssh_error(self, error_msg):
         """Show SSH errors in the terminal window."""
