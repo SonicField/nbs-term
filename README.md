@@ -6,13 +6,27 @@ All terminal semantics live in C. Python transports bytes.
 
 ## Install
 
+Requires Python 3.12+, a C compiler, and Tk (for the GUI).
+
+**Mac (Homebrew):**
+
 ```bash
+brew install python-tk@3.14   # match your Python version
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
-pip install -e .           # builds C extension + installs nbs-ssh from GitHub
+pip install -e .              # builds C extension + installs nbs-ssh from GitHub
 ```
 
-No C preprocessor or build tools needed beyond a standard C compiler (gcc/clang) and Python headers.
+**Linux (Debian/Ubuntu):**
+
+```bash
+sudo apt install python3-tk
+git clone https://github.com/SonicField/nbs-term.git
+cd nbs-term
+pip install -e .
+```
+
+No C preprocessor needed — the C extension builds from pre-generated C.
 
 ## Usage
 
