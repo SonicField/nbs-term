@@ -442,31 +442,29 @@ class SSHTransport:
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
+        # Build connect kwargs — only include username if explicitly set
+        connect_kwargs = {
+            "host": self.host,
+            "port": self.port or 22,
+            "client_factory": _AuthClient,
+        }
+        if self.username:
+            connect_kwargs["username"] = self.username
+
         # Try with default known_hosts (~/.ssh/known_hosts) first
         try:
-            conn = await asyncssh.connect(
-                host=self.host,
-                port=self.port or 22,
-                username=self.username,
-                client_factory=_AuthClient,
-            )
+            conn = await asyncssh.connect(**connect_kwargs)
         except (OSError, asyncssh.DisconnectError, asyncssh.KeyExchangeFailed) as e:
             err = str(e)
             log.debug("Initial connect failed: %s", err)
-            # If host key verification failed, offer TOFU
             if not self._prompt_host_key(
                 f"Unknown host key for {self.host}.\n\n{err}\n\n"
                 "Accept and connect anyway?"
             ):
                 raise
             log.info("User accepted unknown host key — connecting with TOFU")
-            conn = await asyncssh.connect(
-                host=self.host,
-                port=self.port or 22,
-                username=self.username,
-                known_hosts=None,
-                client_factory=_AuthClient,
-            )
+            connect_kwargs["known_hosts"] = None
+            conn = await asyncssh.connect(**connect_kwargs)
 
         async with conn:
             self._conn = conn
