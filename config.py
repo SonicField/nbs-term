@@ -34,6 +34,8 @@ type
     font   : FontConfig;
     cursor : CursorConfig;
     gamma  : Real;
+    fg     : String;
+    bg     : String;
     rows   : Integer;
     cols   : Integer;
   end;
@@ -42,6 +44,8 @@ var config : TerminalConfig = (
   font   : (family : 'Menlo'; size : 14);
   cursor : (style : Block; blink : True);
   gamma  : 0.85;
+  fg     : '#d0d0d0';
+  bg     : '#000000';
   rows   : 24;
   cols   : 80;
 );
@@ -65,6 +69,8 @@ class TerminalConfig:
     font: FontConfig = None
     cursor: CursorConfig = None
     gamma: float = 0.85 if sys.platform == "darwin" else 1.0
+    fg: str = "#d0d0d0"
+    bg: str = "#000000"
     rows: int = 24
     cols: int = 80
 
@@ -239,6 +245,14 @@ def load_config(cli_args=None):
             except ValueError:
                 pass
 
+        val = _honest_get(config_path, "config", "fg")
+        if val:
+            config.fg = val.strip("'\"")
+
+        val = _honest_get(config_path, "config", "bg")
+        if val:
+            config.bg = val.strip("'\"")
+
         val = _honest_get(config_path, "config", "rows")
         if val:
             try:
@@ -298,6 +312,8 @@ type
     font   : FontConfig;
     cursor : CursorConfig;
     gamma  : Real;
+    fg     : String;
+    bg     : String;
     rows   : Integer;
     cols   : Integer;
   end;
@@ -306,6 +322,8 @@ var config : TerminalConfig = (
   font   : (family : '{config.font.family}'; size : {config.font.size});
   cursor : (style : {config.cursor.style}; blink : {blink_str});
   gamma  : {config.gamma:.2f};
+  fg     : '{config.fg}';
+  bg     : '{config.bg}';
   rows   : {config.rows};
   cols   : {config.cols};
 );

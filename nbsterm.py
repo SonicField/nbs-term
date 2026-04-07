@@ -61,10 +61,13 @@ class TerminalWidget:
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
                  font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
-                 cursor_style="Block", cursor_blink=True, gamma=1.0):
+                 cursor_style="Block", cursor_blink=True, gamma=1.0,
+                 fg=DEFAULT_FG, bg=DEFAULT_BG):
         self.parent = parent
         self.rows = rows
         self._gamma = gamma
+        self._fg = fg
+        self._bg = bg
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
@@ -87,7 +90,7 @@ class TerminalWidget:
         height = self.rows * self.char_height
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
-            bg=DEFAULT_BG, highlightthickness=0,
+            bg=self._bg, highlightthickness=0,
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
@@ -172,7 +175,7 @@ class TerminalWidget:
             # Background
             bg_item = self.canvas.create_rectangle(
                 x0, y0, x1, y1,
-                fill=DEFAULT_FG, outline="",
+                fill=self._fg, outline="",
             )
             self._sel_items.append(bg_item)
             # Redraw text in inverted colors
@@ -181,7 +184,7 @@ class TerminalWidget:
                 if cell and cell[0] > 0:
                     tx = c * self.char_width
                     text_item = self.canvas.create_text(
-                        tx, y0, text=chr(cell[0]), fill=DEFAULT_BG,
+                        tx, y0, text=chr(cell[0]), fill=self._bg,
                         font=self.font, anchor=tk.NW,
                     )
                     self._sel_items.append(text_item)
@@ -241,7 +244,7 @@ class TerminalWidget:
             self.canvas.delete(self._cursor_item)
             self._cursor_item = None
 
-        screen = self.term.get_screen(DEFAULT_FG, DEFAULT_BG)
+        screen = self.term.get_screen(self._fg, self._bg)
 
         for r in range(min(len(screen), self.rows)):
             # Clear old items for this row
@@ -314,23 +317,23 @@ class TerminalWidget:
         if style == "Block":
             self._cursor_item = self.canvas.create_rectangle(
                 cx, cy, cx + self.char_width, cy + self.char_height,
-                fill=DEFAULT_FG, outline="",
+                fill=self._fg, outline="",
             )
         elif style == "Underline":
             uy = cy + self.char_height - 2
             self._cursor_item = self.canvas.create_rectangle(
                 cx, uy, cx + self.char_width, cy + self.char_height,
-                fill=DEFAULT_FG, outline="",
+                fill=self._fg, outline="",
             )
         elif style == "Bar":
             self._cursor_item = self.canvas.create_rectangle(
                 cx, cy, cx + 2, cy + self.char_height,
-                fill=DEFAULT_FG, outline="",
+                fill=self._fg, outline="",
             )
         else:  # Wireframe
             self._cursor_item = self.canvas.create_rectangle(
                 cx, cy, cx + self.char_width, cy + self.char_height,
-                outline=DEFAULT_FG, width=1,
+                outline=self._fg, width=1,
             )
 
     def handle_key(self, event):
@@ -717,7 +720,7 @@ class TerminalApp:
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
-                gamma=config.gamma,
+                gamma=config.gamma, fg=config.fg, bg=config.bg,
             )
         else:
             self.widget = TerminalWidget(self.root)
