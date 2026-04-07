@@ -250,8 +250,26 @@ class TerminalWidget:
         if self._cursor_item:
             self.canvas.delete(self._cursor_item)
             self._cursor_item = None
-        if not self._cursor_visible:
-            return
+        if self._cursor_visible:
+            self._draw_cursor()
+
+        # Start blink timer if not already running
+        if self._cursor_blink and self._blink_id is None:
+            self._blink_id = self.parent.after(530, self._toggle_blink)
+
+    def _toggle_blink(self):
+        """Toggle cursor visibility for blinking (redraws cursor only)."""
+        self._cursor_visible = not self._cursor_visible
+        if self._cursor_item:
+            self.canvas.delete(self._cursor_item)
+            self._cursor_item = None
+        if self._cursor_visible:
+            self._draw_cursor()
+        if self._cursor_blink:
+            self._blink_id = self.parent.after(530, self._toggle_blink)
+
+    def _draw_cursor(self):
+        """Draw the cursor at the current position."""
         crow, ccol = self.term.get_cursor()
         cx = ccol * self.char_width
         cy = crow * self.char_height
@@ -277,17 +295,6 @@ class TerminalWidget:
                 cx, cy, cx + self.char_width, cy + self.char_height,
                 outline=DEFAULT_FG, width=1,
             )
-
-        # Start blink timer if not already running
-        if self._cursor_blink and self._blink_id is None:
-            self._blink_id = self.parent.after(530, self._toggle_blink)
-
-    def _toggle_blink(self):
-        """Toggle cursor visibility for blinking."""
-        self._cursor_visible = not self._cursor_visible
-        self._render()
-        if self._cursor_blink:
-            self._blink_id = self.parent.after(530, self._toggle_blink)
 
     def handle_key(self, event):
         """Handle a Tk key event."""
