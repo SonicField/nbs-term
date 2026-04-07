@@ -16,7 +16,6 @@ import asyncio
 import logging
 import threading
 import concurrent.futures
-import getpass
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog

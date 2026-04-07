@@ -9,7 +9,7 @@ description = "Terminal emulator with Phoenics-powered VT parser"
 requires-python = ">=3.12"
 dependencies = [
     "asyncssh>=2.14.2",
-    "nbs-ssh @ git+https://github.com/SonicField/nbs-ssh.git@8204654",
+    "nbs-ssh @ git+https://github.com/SonicField/nbs-ssh.git@291ed9c",
 ]
 
 [project.scripts]
