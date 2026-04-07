@@ -2,11 +2,11 @@
 """
 nbs-term: Terminal emulator application.
 
-Wires the _nbsterm C extension to Tk (display) and nbs-ssh (transport).
+Wires the _nbsterm C extension to Tk (display) and asyncssh (transport).
 
 Architecture:
-  Main thread (Tk): mainloop, term.feed(), canvas rendering, user input
-  Background thread (asyncio): nbs-ssh connection, byte I/O
+  Main thread (Tk): mainloop, term.feed(), canvas rendering, user input, auth dialogs
+  Background thread (asyncio): SSH connection, byte I/O
 
 Invariant: C extension only called from main thread.
 """
@@ -14,11 +14,13 @@ import sys
 import os
 import asyncio
 import threading
+import concurrent.futures
 import tkinter as tk
 import tkinter.font as tkfont
+import tkinter.simpledialog as simpledialog
 
 import _nbsterm
-from nbs_ssh import SSHConnection, HostKeyPolicy
+import asyncssh
 
 # --- Configuration ---
 
@@ -227,6 +229,8 @@ class SSHTransport:
         self._conn = None
         self._on_data = None  # callback for received data (called from asyncio thread)
         self._on_close = None
+        self._on_auth_prompt = None  # callback for auth prompts (called from main thread)
+        self._on_error = None  # callback for error messages
         self._running = False
 
     def set_data_callback(self, cb):
@@ -234,6 +238,15 @@ class SSHTransport:
 
     def set_close_callback(self, cb):
         self._on_close = cb
+
+    def set_auth_prompt_callback(self, cb):
+        """Set callback for keyboard-interactive auth prompts.
+        cb(prompt_text, echo) -> response string, or None to cancel.
+        Called on the Tk main thread via root.after()."""
+        self._on_auth_prompt = cb
+
+    def set_error_callback(self, cb):
+        self._on_error = cb
 
     def start(self, rows, cols):
         """Start the SSH connection in a background thread."""
@@ -250,28 +263,45 @@ class SSHTransport:
         try:
             self._loop.run_until_complete(self._ssh_session(rows, cols))
         except Exception as e:
-            print(f"SSH error: {e}", file=sys.stderr)
+            if self._on_error:
+                self._on_error(str(e))
+            else:
+                print(f"SSH error: {e}", file=sys.stderr)
         finally:
             self._running = False
             if self._on_close:
                 self._on_close()
 
+    def _kbdint_handler(self, name, instruction, lang, prompts):
+        """Handle keyboard-interactive auth (Duo 2FA, password prompts).
+        Called from the asyncio thread. Bridges to Tk main thread for UI."""
+        if not self._on_auth_prompt:
+            return None
+        responses = []
+        for prompt_text, echo in prompts:
+            future = concurrent.futures.Future()
+            self._on_auth_prompt(prompt_text, echo, future)
+            try:
+                response = future.result(timeout=120)
+            except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+                return None
+            if response is None:
+                return None
+            responses.append(response)
+        return responses
+
     async def _ssh_session(self, rows, cols):
         """Connect and run the SSH shell session."""
-        conn = SSHConnection(
-            self.host,
-            port=self.port,
-            username=self.username,
-            host_key_policy=HostKeyPolicy.ACCEPT_NEW,
-        )
-        async with conn:
+        connect_kwargs = {
+            "host": self.host,
+            "port": self.port or 22,
+            "username": self.username,
+            "known_hosts": None,
+            "kbdint_challenge_handler": self._kbdint_handler,
+        }
+        async with asyncssh.connect(**connect_kwargs) as conn:
             self._conn = conn
-            # NOTE: Accesses nbs-ssh internal asyncssh connection (_conn) because
-            # SSHConnection has no public API for raw PTY process creation.
-            # shell() handles the full interactive session (stdin/stdout forwarding)
-            # which we don't want — we need raw byte access for our own terminal.
-            # If nbs-ssh adds a public create_process API, switch to it.
-            process = await conn._conn.create_process(
+            process = await conn.create_process(
                 None,  # shell
                 term_type="xterm-256color",
                 term_size=(cols, rows),
@@ -289,7 +319,10 @@ class SSHTransport:
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                print(f"SSH read error: {e}", file=sys.stderr)
+                if self._on_error:
+                    self._on_error(str(e))
+                else:
+                    print(f"SSH read error: {e}", file=sys.stderr)
 
     def write(self, data):
         """Send data to the SSH process. Thread-safe."""
@@ -355,6 +388,8 @@ class TerminalApp:
         self.widget.set_write_callback(self.ssh.write)
         self.ssh.set_data_callback(self._on_ssh_data)
         self.ssh.set_close_callback(self._on_ssh_close)
+        self.ssh.set_auth_prompt_callback(self._on_auth_prompt)
+        self.ssh.set_error_callback(self._on_ssh_error)
 
         # Bind keyboard
         self.root.bind("<Key>", self.widget.handle_key)
@@ -364,6 +399,27 @@ class TerminalApp:
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_auth_prompt(self, prompt_text, echo, future):
+        """Show auth dialog on the Tk main thread. Called from asyncio thread."""
+        self.root.after(0, self._show_auth_dialog, prompt_text, echo, future)
+
+    def _show_auth_dialog(self, prompt_text, echo, future):
+        """Display a Tk dialog for SSH auth and set the future result."""
+        if echo:
+            response = simpledialog.askstring(
+                "SSH Authentication", prompt_text, parent=self.root,
+            )
+        else:
+            response = simpledialog.askstring(
+                "SSH Authentication", prompt_text, parent=self.root, show="*",
+            )
+        future.set_result(response)
+
+    def _on_ssh_error(self, error_msg):
+        """Show SSH errors in the terminal window."""
+        self.root.after(0, self.widget.feed,
+                        f"\r\n[SSH error: {error_msg}]\r\n".encode())
 
     def _on_ssh_data(self, data):
         """Called from asyncio thread when SSH data arrives."""
