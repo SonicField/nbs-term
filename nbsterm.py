@@ -65,7 +65,8 @@ class TerminalWidget:
             0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
             0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
-        self.char_width = self.font.measure("M")
+        # Use max width across all font variants for consistent cell sizing
+        self.char_width = max(f.measure("M") for f in self._font_cache.values())
         self.char_height = self.font.metrics("linespace")
 
         # Canvas
