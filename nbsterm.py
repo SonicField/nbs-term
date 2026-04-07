@@ -24,7 +24,7 @@ from nbs_ssh import SSHConnection, HostKeyPolicy
 
 DEFAULT_ROWS = 24
 DEFAULT_COLS = 80
-DEFAULT_FONT_FAMILY = "monospace"
+DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
@@ -335,6 +335,18 @@ class TerminalApp:
 
         # Terminal widget
         self.widget = TerminalWidget(self.root)
+
+        # Constrain window to screen and center
+        self.root.update_idletasks()
+        win_w = self.root.winfo_reqwidth()
+        win_h = self.root.winfo_reqheight()
+        scr_w = self.root.winfo_screenwidth()
+        scr_h = self.root.winfo_screenheight()
+        win_w = min(win_w, scr_w - 40)
+        win_h = min(win_h, scr_h - 80)
+        x = (scr_w - win_w) // 2
+        y = (scr_h - win_h) // 2
+        self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
         # SSH transport
         self.ssh = SSHTransport(host, port, username)
