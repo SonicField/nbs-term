@@ -94,6 +94,8 @@ test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_gui_logic.py || exit_code=1; \
 	echo ""; \
+	$(PYTHON) $(TESTDIR)/test_config.py || exit_code=1; \
+	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_ssh_integration.py || exit_code=1; \
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_orchestration.py || exit_code=1; \
