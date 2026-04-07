@@ -2,7 +2,7 @@
 """
 nbs-term: Terminal emulator application.
 
-Wires the _nbsterm C extension to Tk (display) and asyncssh (transport).
+Wires the _nbsterm C extension to Tk (display) and nbs-ssh (transport).
 
 Architecture:
   Main thread (Tk): mainloop, term.feed(), canvas rendering, user input, auth dialogs
@@ -21,7 +21,11 @@ import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog
 
 import _nbsterm
-import asyncssh
+from nbs_ssh import (
+    SSHConnection,
+    HostKeyPolicy,
+    create_keyboard_interactive_auth,
+)
 
 log = logging.getLogger("nbs-term")
 
@@ -403,10 +407,17 @@ class SSHTransport:
             responses.append(response)
         return responses
 
-    def _prompt_host_key(self, message):
-        """Ask user to accept an unknown host key. Bridges to Tk main thread."""
+    def _prompt_host_key(self, host, port, key):
+        """Ask user to accept an unknown host key. Bridges to Tk main thread.
+        Signature matches nbs-ssh on_unknown_host_key callback."""
         if not self._on_host_key_prompt:
             return False
+        key_type = key.get_algorithm()
+        message = (
+            f"The authenticity of host '{host}' ({port}) can't be established.\n"
+            f"{key_type} key fingerprint received.\n\n"
+            "Are you sure you want to continue connecting?"
+        )
         future = concurrent.futures.Future()
         self._on_host_key_prompt(message, future)
         try:
@@ -415,63 +426,32 @@ class SSHTransport:
             return False
 
     async def _ssh_session(self, rows, cols):
-        """Connect and run the SSH shell session."""
-        transport = self
-
-        class _AuthClient(asyncssh.SSHClient):
-            def kbdint_auth_requested(self):
-                log.debug("kbdint auth requested — returning '' (accept any)")
-                return ""
-
-            def kbdint_challenge_received(self, name, instruction, lang, prompts):
-                log.debug("kbdint challenge received: name=%r prompts=%d",
-                          name, len(prompts))
-                result = transport._kbdint_handler(name, instruction, lang, prompts)
-                log.debug("kbdint handler returned %d responses", len(result))
-                return result
-
-            def connection_made(self, conn):
-                log.debug("SSH connection established to %s", conn.get_extra_info("peername"))
-
-            def connection_lost(self, exc):
-                log.debug("SSH connection lost: %s", exc)
-
-            def auth_completed(self):
-                log.info("SSH auth completed successfully")
-
+        """Connect and run the SSH shell session using nbs-ssh."""
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
-        # Build connect kwargs — only include username if explicitly set
-        connect_kwargs = {
-            "host": self.host,
-            "port": self.port or 22,
-            "client_factory": _AuthClient,
-        }
-        if self.username:
-            connect_kwargs["username"] = self.username
+        # Build kbdint auth with Tk dialog callback
+        def tk_kbdint_callback(name, instructions, prompts):
+            return self._kbdint_handler(name, instructions, "", prompts)
 
-        # Try with default known_hosts (~/.ssh/known_hosts) first
-        try:
-            conn = await asyncssh.connect(**connect_kwargs)
-        except (asyncssh.DisconnectError, asyncssh.KeyExchangeFailed) as e:
-            # Host key verification failure — offer TOFU
-            err = str(e)
-            log.debug("Host key verification failed: %s", err)
-            if not self._prompt_host_key(
-                f"Unknown host key for {self.host}.\n\n{err}\n\n"
-                "Accept and connect anyway?"
-            ):
-                raise
-            log.info("User accepted unknown host key — connecting with TOFU")
-            connect_kwargs["known_hosts"] = None
-            conn = await asyncssh.connect(**connect_kwargs)
+        auth = [create_keyboard_interactive_auth(
+            response_callback=tk_kbdint_callback,
+        )]
+
+        conn = SSHConnection(
+            host=self.host,
+            port=self.port,
+            username=self.username,
+            auth=auth,
+            host_key_policy=HostKeyPolicy.ASK,
+            on_unknown_host_key=self._prompt_host_key,
+        )
 
         async with conn:
             self._conn = conn
             log.debug("Creating PTY process (term=%s, size=%dx%d)",
                       "xterm-256color", cols, rows)
-            process = await conn.create_process(
+            process = await conn._conn.create_process(
                 None,  # shell
                 term_type="xterm-256color",
                 term_size=(cols, rows),
@@ -675,7 +655,7 @@ def main():
             format="%(asctime)s %(name)s %(levelname)s %(message)s",
             stream=sys.stderr,
         )
-        asyncssh.set_log_level(logging.DEBUG)
+        logging.getLogger("asyncssh").setLevel(logging.DEBUG)
     else:
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
