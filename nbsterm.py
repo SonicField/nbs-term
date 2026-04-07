@@ -25,7 +25,11 @@ import _nbsterm
 from nbs_ssh import (
     SSHConnection,
     HostKeyPolicy,
+    create_agent_auth,
+    create_key_auth,
     create_keyboard_interactive_auth,
+    get_agent_available,
+    get_default_key_paths,
 )
 
 log = logging.getLogger("nbs-term")
@@ -431,13 +435,20 @@ class SSHTransport:
         log.info("Connecting to %s:%s as %s",
                  self.host, self.port or 22, self.username or "(default)")
 
-        # Build kbdint auth with Tk dialog callback
+        # Build auth chain matching nbs-ssh CLI discovery order:
+        # agent → keys → keyboard-interactive (Duo 2FA via Tk dialog)
         def tk_kbdint_callback(name, instructions, prompts):
             return self._kbdint_handler(name, instructions, "", prompts)
 
-        auth = [create_keyboard_interactive_auth(
+        auth = []
+        if get_agent_available():
+            auth.append(create_agent_auth())
+        for key_path in get_default_key_paths():
+            if key_path.exists():
+                auth.append(create_key_auth(key_path))
+        auth.append(create_keyboard_interactive_auth(
             response_callback=tk_kbdint_callback,
-        )]
+        ))
 
         conn_kwargs = {
             "host": self.host,
