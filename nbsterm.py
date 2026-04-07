@@ -221,14 +221,13 @@ class TerminalWidget:
                 if attrs & 0x20:  # ATTR_INVERSE
                     fg, bg = bg, fg
 
-                # Draw background rectangle if not default
-                if bg != DEFAULT_BG:
-                    text_width = self.char_width * len(text)
-                    rect_id = self.canvas.create_rectangle(
-                        x, y, x + text_width, y + self.char_height,
-                        fill=bg, outline="",
-                    )
-                    self._row_items[r].append(rect_id)
+                # Draw background rectangle for every span to cover old content
+                text_width = self.char_width * len(text)
+                rect_id = self.canvas.create_rectangle(
+                    x, y, x + text_width, y + self.char_height,
+                    fill=bg, outline="",
+                )
+                self._row_items[r].append(rect_id)
 
                 # Determine font style from cache
                 display_font = self._font_cache.get(attrs & 0x05, self.font)
