@@ -262,9 +262,8 @@ class TerminalWidget:
             if r >= len(screen) or r >= self.rows:
                 continue
 
-            # Clear old items for this row
-            for item_id in self._row_items[r]:
-                self.canvas.delete(item_id)
+            # Save old items — delete AFTER new items are created
+            old_items = self._row_items[r]
             self._row_items[r] = []
 
             spans = screen[r]
@@ -304,6 +303,10 @@ class TerminalWidget:
                 )
                 self._row_items[r].append(text_id)
                 x += self.char_width * len(text)
+
+            # Delete old items — now hidden behind new items (Tk z-order)
+            for item_id in old_items:
+                self.canvas.delete(item_id)
 
         # Position cursor after row updates
         self._show_cursor_after_render()
