@@ -108,7 +108,6 @@ class TerminalWidget:
         # Selection state
         self._sel_start = None  # (row, col) of selection start
         self._sel_end = None    # (row, col) of selection end
-        self._sel_items = []    # canvas item IDs for selection highlight
 
         # Mouse bindings for selection
         self.canvas.bind("<ButtonPress-1>", self._on_mouse_down)
@@ -152,39 +151,19 @@ class TerminalWidget:
         return (sr, sc), (er, ec)
 
     def _clear_selection_highlight(self):
-        for item_id in self._sel_items:
-            self.canvas.delete(item_id)
-        self._sel_items = []
+        self.term.clear_selection(
+            self.parent.tk.interpaddr(), str(self.canvas))
 
     def _draw_selection_highlight(self):
-        self._clear_selection_highlight()
         start, end = self._sel_range()
         if start is None or start == end:
+            self._clear_selection_highlight()
             return
-        # Draw selection as inverted cells: white bg, black text
-        for r in range(start[0], end[0] + 1):
-            c0 = start[1] if r == start[0] else 0
-            c1 = end[1] if r == end[0] else self.cols - 1
-            x0 = PADDING + c0 * self.char_width
-            y0 = PADDING + r * self.char_height
-            x1 = PADDING + (c1 + 1) * self.char_width
-            y1 = y0 + self.char_height
-            # Background
-            bg_item = self.canvas.create_rectangle(
-                x0, y0, x1, y1,
-                fill=self._fg, outline="",
-            )
-            self._sel_items.append(bg_item)
-            # Redraw text in inverted colors
-            for c in range(c0, c1 + 1):
-                cell = self.term.get_cell(r, c)
-                if cell and cell[0] > 0:
-                    tx = PADDING + c * self.char_width
-                    text_item = self.canvas.create_text(
-                        tx, y0, text=chr(cell[0]), fill=self._bg,
-                        font=self.font, anchor=tk.NW,
-                    )
-                    self._sel_items.append(text_item)
+        self.term.draw_selection(
+            self.parent.tk.interpaddr(), str(self.canvas),
+            start[0], start[1], end[0], end[1],
+            self._fg, self._bg,
+            self.char_width, self.char_height, PADDING)
 
     def get_selected_text(self):
         """Return the text in the current selection."""
