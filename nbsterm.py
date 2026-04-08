@@ -102,10 +102,7 @@ class TerminalWidget:
             0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
             0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
-        # Measure char width using a string of Ms to get accurate average
-        # (avoids rounding errors that accumulate at larger font sizes)
-        sample = "M" * 10
-        self.char_width = self.font.measure(sample) / 10.0
+        self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
         # Canvas
@@ -1032,8 +1029,7 @@ class TerminalApp:
         w.font.configure(family=config.font.family, size=config.font.size)
         for key, f in w._font_cache.items():
             f.configure(family=config.font.family, size=config.font.size)
-        sample = "M" * 10
-        w.char_width = w.font.measure(sample) / 10.0
+        w.char_width = w.font.measure("M")
         w.char_height = w.font.metrics("linespace")
         # Update colors
         w._fg = config.fg
