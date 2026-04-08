@@ -249,14 +249,11 @@ class TerminalWidget:
 
     def _render(self):
         """Redraw the screen from terminal state.
-        Cursor is hidden during redraw to prevent visual flicker."""
-        # Hide cursor during redraw (don't delete — just hide)
-        if self._cursor_item:
-            self.canvas.itemconfigure(self._cursor_item, state="hidden")
-
+        With dirty-row tracking, only changed rows are redrawn — cursor
+        stays visible during the (minimal) redraw."""
         dirty_rows = self.term.get_dirty_rows()
         if not dirty_rows:
-            self.parent.after_idle(self._show_cursor_after_render)
+            self._show_cursor_after_render()
             return
 
         screen = self.term.get_screen(self._fg, self._bg)
@@ -308,9 +305,8 @@ class TerminalWidget:
                 self._row_items[r].append(text_id)
                 x += self.char_width * len(text)
 
-        # Defer cursor drawing to after Tk processes all pending canvas ops.
-        # This prevents the cursor from flickering during the redraw cycle.
-        self.parent.after_idle(self._show_cursor_after_render)
+        # Position cursor after row updates
+        self._show_cursor_after_render()
 
     def _show_cursor_after_render(self):
         """Position cursor after Tk has processed all canvas operations.
