@@ -193,6 +193,76 @@ class TestXterm256Color(unittest.TestCase):
                     self.assertEqual(b, ramp[bi], f"Color {idx} B: {b} != {ramp[bi]}")
 
 
+class TestConfigStructRoundTrip(unittest.TestCase):
+    """Phase 2 TDD: verify Python→C→Python config round-trip."""
+
+    def _set_and_get(self, **overrides):
+        defaults = dict(
+            font_family='Menlo', font_size=14, cursor_style='Block',
+            cursor_blink=1, cursor_color='', gamma=1.0,
+            fg='#d0d0d0', bg='#000000', rows=24, cols=80, refresh_hz=60,
+        )
+        defaults.update(overrides)
+        import _nbsterm
+        _nbsterm.config_set(
+            defaults['font_family'], defaults['font_size'],
+            defaults['cursor_style'], defaults['cursor_blink'],
+            defaults['cursor_color'], defaults['gamma'],
+            defaults['fg'], defaults['bg'],
+            defaults['rows'], defaults['cols'], defaults['refresh_hz'],
+        )
+        return _nbsterm.config_get()
+
+    def test_defaults_round_trip(self):
+        r = self._set_and_get()
+        self.assertEqual(r['font_family'], 'Menlo')
+        self.assertEqual(r['font_size'], 14)
+        self.assertEqual(r['cursor_style'], 'Block')
+        self.assertEqual(r['gamma'], 1.0)
+
+    def test_font_family_round_trip(self):
+        r = self._set_and_get(font_family='Monaco')
+        self.assertEqual(r['font_family'], 'Monaco')
+
+    def test_font_size_round_trip(self):
+        r = self._set_and_get(font_size=20)
+        self.assertEqual(r['font_size'], 20)
+
+    def test_cursor_style_underline(self):
+        r = self._set_and_get(cursor_style='Underline')
+        self.assertEqual(r['cursor_style'], 'Underline')
+
+    def test_cursor_style_bar(self):
+        r = self._set_and_get(cursor_style='Bar')
+        self.assertEqual(r['cursor_style'], 'Bar')
+
+    def test_cursor_blink_off(self):
+        r = self._set_and_get(cursor_blink=0)
+        self.assertEqual(r['cursor_blink'], 0)
+
+    def test_cursor_color_custom(self):
+        r = self._set_and_get(cursor_color='#ff8800')
+        self.assertEqual(r['cursor_color'], '#ff8800')
+
+    def test_gamma_custom(self):
+        r = self._set_and_get(gamma=1.2)
+        self.assertAlmostEqual(r['gamma'], 1.2, places=5)
+
+    def test_fg_bg_round_trip(self):
+        r = self._set_and_get(fg='#aabbcc', bg='#112233')
+        self.assertEqual(r['fg'], '#aabbcc')
+        self.assertEqual(r['bg'], '#112233')
+
+    def test_refresh_hz_round_trip(self):
+        r = self._set_and_get(refresh_hz=25)
+        self.assertEqual(r['refresh_hz'], 25)
+
+    def test_rows_cols_round_trip(self):
+        r = self._set_and_get(rows=40, cols=120)
+        self.assertEqual(r['rows'], 40)
+        self.assertEqual(r['cols'], 120)
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
