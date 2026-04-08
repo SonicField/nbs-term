@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncssh>=2.14.2",
     "nbs-ssh @ git+https://github.com/SonicField/nbs-ssh.git@01c02d5",
+    "pytest>=7.0",
 ]
 
 [project.scripts]
