@@ -126,9 +126,6 @@ class TerminalWidget:
         self._active_buf = 0  # currently visible buffer
         self._row_items = self._buf_items[0]  # alias for compat
 
-        # Cursor
-        self._cursor_item = None
-
         # Backpressure: buffer incoming data, render on next idle cycle
         self._pending_data = bytearray()
         self._render_scheduled = False
@@ -263,15 +260,17 @@ class TerminalWidget:
             self._render()
 
     def _render(self):
-        """Double-buffered render: draw to hidden buffer, then swap.
-        All canvas modifications happen while the buffer is hidden,
-        so no intermediate states are visible."""
+        """Double-buffered render with inline cursor.
+        The cursor is rendered as part of the text spans — not a separate
+        canvas item. This guarantees pixel-perfect alignment."""
         dirty_rows = self.term.get_dirty_rows()
         if not dirty_rows:
-            self._show_cursor_after_render()
             return
 
         screen = self.term.get_screen(self._fg, self._bg)
+        crow, ccol = self.term.get_cursor()
+        cursor_char = self._CURSOR_CHARS.get(self._cursor_style, "\u2588")
+        show_cursor = self._cursor_visible
 
         # Determine buffers: draw into the back buffer
         front = self._active_buf
@@ -284,11 +283,13 @@ class TerminalWidget:
         front_items = self._buf_items[front]
         dirty_set = set(dirty_rows)
 
+        # Cursor row is always dirty (cursor may have moved)
+        if crow < self.rows:
+            dirty_set.add(crow)
+
         for r in range(self.rows):
             if r not in dirty_set:
-                # Clean row — back buffer reuses front buffer's items
                 back_items[r] = front_items[r]
-                # Retag these items to the back buffer
                 for item_id in back_items[r]:
                     self.canvas.itemconfigure(item_id, tags=(back_tag,))
                 front_items[r] = []
@@ -297,12 +298,13 @@ class TerminalWidget:
             if r >= len(screen):
                 continue
 
-            # Dirty row — delete old back buffer items, create new ones
             for item_id in back_items[r]:
                 self.canvas.delete(item_id)
             back_items[r] = []
 
             spans = screen[r]
+            # Track column position for cursor injection
+            col_offset = 0
             x = PADDING
             y = PADDING + r * self.char_height
 
@@ -319,21 +321,66 @@ class TerminalWidget:
                 if attrs & 0x20:  # ATTR_INVERSE
                     fg, bg = bg, fg
 
-                text_width = self.char_width * len(text)
-                rect_id = self.canvas.create_rectangle(
-                    x, y, x + text_width, y + self.char_height,
-                    fill=bg, outline="", state="hidden", tags=(back_tag,),
-                )
-                back_items[r].append(rect_id)
-
                 display_font = self._font_cache.get(attrs & 0x05, self.font)
 
-                text_id = self.canvas.create_text(
-                    x, y, text=text, fill=fg, font=display_font,
-                    anchor=tk.NW, state="hidden", tags=(back_tag,),
-                )
-                back_items[r].append(text_id)
-                x += self.char_width * len(text)
+                # Check if cursor falls within this span
+                span_end = col_offset + len(text)
+                if show_cursor and r == crow and col_offset <= ccol < span_end:
+                    # Split span at cursor position
+                    cur_idx = ccol - col_offset
+                    # Before cursor
+                    if cur_idx > 0:
+                        before = text[:cur_idx]
+                        bw = display_font.measure(before)
+                        rid = self.canvas.create_rectangle(
+                            x, y, x + bw, y + self.char_height,
+                            fill=bg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(rid)
+                        tid = self.canvas.create_text(
+                            x, y, text=before, fill=fg, font=display_font,
+                            anchor=tk.NW, state="hidden", tags=(back_tag,))
+                        back_items[r].append(tid)
+                        x += bw
+
+                    # Cursor character (inverted colors)
+                    cw = display_font.measure(cursor_char)
+                    rid = self.canvas.create_rectangle(
+                        x, y, x + cw, y + self.char_height,
+                        fill=fg, outline="", state="hidden", tags=(back_tag,))
+                    back_items[r].append(rid)
+                    tid = self.canvas.create_text(
+                        x, y, text=cursor_char, fill=bg, font=display_font,
+                        anchor=tk.NW, state="hidden", tags=(back_tag,))
+                    back_items[r].append(tid)
+                    x += cw
+
+                    # After cursor
+                    if cur_idx + 1 < len(text):
+                        after = text[cur_idx + 1:]
+                        aw = display_font.measure(after)
+                        rid = self.canvas.create_rectangle(
+                            x, y, x + aw, y + self.char_height,
+                            fill=bg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(rid)
+                        tid = self.canvas.create_text(
+                            x, y, text=after, fill=fg, font=display_font,
+                            anchor=tk.NW, state="hidden", tags=(back_tag,))
+                        back_items[r].append(tid)
+                        x += aw
+                else:
+                    # Normal span (no cursor)
+                    text_width = display_font.measure(text)
+                    rid = self.canvas.create_rectangle(
+                        x, y, x + text_width, y + self.char_height,
+                        fill=bg, outline="", state="hidden", tags=(back_tag,))
+                    back_items[r].append(rid)
+                    tid = self.canvas.create_text(
+                        x, y, text=text, fill=fg, font=display_font,
+                        anchor=tk.NW, state="hidden", tags=(back_tag,))
+                    back_items[r].append(tid)
+                    x += text_width
+
+                col_offset = span_end
 
         # Atomic swap: show back buffer, hide front buffer
         self.canvas.itemconfigure(back_tag, state="normal")
@@ -349,55 +396,18 @@ class TerminalWidget:
         self._active_buf = back
         self._row_items = self._buf_items[back]
 
-        # Position cursor after row updates
-        self._show_cursor_after_render()
-
-    def _show_cursor_after_render(self):
-        """Position cursor after Tk has processed all canvas operations.
-        Moves existing cursor item instead of delete/recreate to prevent flicker."""
-        if self._cursor_visible:
-            self._position_cursor()
+        # Restart blink timer
         if self._cursor_blink and self._blink_id is None:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
     def _toggle_blink(self):
-        """Toggle cursor visibility for blinking."""
+        """Toggle cursor visibility and trigger a re-render of the cursor row."""
         self._cursor_visible = not self._cursor_visible
-        if self._cursor_item:
-            if self._cursor_visible:
-                self.canvas.itemconfigure(self._cursor_item, state="normal")
-            else:
-                self.canvas.itemconfigure(self._cursor_item, state="hidden")
-        elif self._cursor_visible:
-            self._position_cursor()
-        if self._cursor_blink:
-            self._blink_id = self.parent.after(530, self._toggle_blink)
-
-    # Unicode cursor characters — same font as terminal text, perfect alignment
-    _CURSOR_CHARS = {
-        "Block": "\u2588",      # █ Full block
-        "Wireframe": "\u2588",  # █ (rendered with outline color)
-        "Underline": "\u2581",  # ▁ Lower one eighth block
-        "Bar": "\u258f",        # ▏ Left one eighth block
-    }
-
-    def _position_cursor(self):
-        """Position cursor using a Unicode character — aligns with text automatically."""
-        crow, ccol = self.term.get_cursor()
-        cx = PADDING + ccol * self.char_width
-        cy = PADDING + crow * self.char_height
-        char = self._CURSOR_CHARS.get(self._cursor_style, "\u2588")
-
-        if self._cursor_item:
-            self.canvas.coords(self._cursor_item, cx, cy)
-            self.canvas.itemconfigure(self._cursor_item, text=char,
-                                      fill=self._fg, state="normal")
-            self.canvas.tag_raise(self._cursor_item)
-        else:
-            self._cursor_item = self.canvas.create_text(
-                cx, cy, text=char, fill=self._fg,
-                font=self.font, anchor=tk.NW,
-            )
+        self._blink_id = None
+        # Force cursor row dirty so _render() redraws it
+        crow, _ = self.term.get_cursor()
+        if crow < self.rows:
+            self._render()
 
     def handle_key(self, event):
         """Handle a Tk key event."""
@@ -849,8 +859,21 @@ class PreferencesDialog(tk.Toplevel):
 
         tk.Label(self, text="Family:").grid(row=1, column=0, sticky="e", padx=10)
         self._font_family = tk.StringVar(value=config.font.family)
-        fonts = ["Menlo", "Monaco", "Courier New", "Consolas",
-                 "DejaVu Sans Mono", "Liberation Mono", "monospace"]
+        # Filter to verified monospace fonts available on this system
+        mono_whitelist = [
+            "Menlo", "Monaco", "SF Mono", "Courier New", "Courier",
+            "Consolas", "Lucida Console",
+            "DejaVu Sans Mono", "Liberation Mono", "Noto Mono",
+            "Ubuntu Mono", "Fira Code", "JetBrains Mono", "Hack",
+            "Source Code Pro", "Inconsolata", "IBM Plex Mono",
+            "monospace",
+        ]
+        available = set(tkfont.families())
+        fonts = [f for f in mono_whitelist if f in available or f == "monospace"]
+        if not fonts:
+            fonts = ["monospace"]
+        if config.font.family not in fonts:
+            fonts.insert(0, config.font.family)
         family_menu = tk.OptionMenu(self, self._font_family, *fonts)
         family_menu.grid(row=1, column=1, sticky="w", padx=10, pady=2)
 
