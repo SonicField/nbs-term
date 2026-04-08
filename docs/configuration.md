@@ -23,16 +23,16 @@ type
   TerminalConfig = record
     font       : FontConfig;
     cursor     : CursorConfig;
-    foreground : String;
-    background : String;
+    fg         : String;
+    bg         : String;
     gamma      : Real;
   end;
 
 var config : TerminalConfig = (
   font       : (family : 'Menlo'; size : 14);
   cursor     : (style : Block; blink : True);
-  foreground : '#d0d0d0';
-  background : '#000000';
+  fg         : '#d0d0d0';
+  bg         : '#000000';
   gamma      : 1.0;
 );
 ```
@@ -45,8 +45,8 @@ var config : TerminalConfig = (
 | font.size | Integer | 14 | Font size in points |
 | cursor.style | CursorStyle | Block | Cursor shape: Block, Wireframe, Underline, or Bar |
 | cursor.blink | Boolean | True | Whether the cursor blinks (530ms cycle) |
-| foreground | String | #d0d0d0 | Default text colour (hex RGB) |
-| background | String | #000000 | Terminal background colour (hex RGB) |
+| fg | String | #d0d0d0 | Default text colour (hex RGB) |
+| bg | String | #000000 | Terminal background colour (hex RGB) |
 | gamma | Real | 1.2 (Mac), 1.0 (Linux) | Colour gamma correction — higher values darken midtones |
 
 ## Preferences Dialog
@@ -58,8 +58,9 @@ The dialog provides:
 - Font size spinner
 - Cursor style dropdown
 - Cursor blink checkbox
-- Foreground/background colour fields
 - Gamma slider (0.5 to 2.0)
+
+Foreground and background colours are set by editing the config file directly.
 
 Save writes back to `~/.nbs/nbs-term.honest`.
 
