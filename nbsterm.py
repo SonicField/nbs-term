@@ -123,11 +123,7 @@ class TerminalWidget:
         # Backpressure: buffer incoming data, render on next idle cycle
         self._pending_data = bytearray()
         self._render_scheduled = False
-
-        # Fade-on-erase: old items fade out behind new content
-        self._fade_items = []  # canvas item IDs being faded
-        self._fade_steps = 0   # remaining fade steps
-        self._fade_target = self._bg  # color to fade toward
+        self._blank_skip_count = 0  # blank-frame suppression counter
 
         # Selection state
         self._sel_start = None  # (row, col) of selection start
@@ -249,13 +245,23 @@ class TerminalWidget:
             self.parent.after(self._refresh_ms, self._flush_and_render)
 
     def _flush_and_render(self):
-        """Process all buffered data and render once per frame."""
+        """Process all buffered data and render once per frame.
+        Skips rendering blank frames — if the screen is mostly empty after
+        a feed, waits one more interval for new content to arrive."""
         self._render_scheduled = False
         if self._pending_data:
-            # Reset cursor blink on new data — cursor always visible after input
             self._cursor_visible = True
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
+
+            # Skip blank frames: if screen is mostly empty (erase just happened),
+            # wait one more interval for SSH redraw data to arrive
+            if self.term.is_mostly_blank() and self._blank_skip_count < 2:
+                self._blank_skip_count += 1
+                self._render_scheduled = True
+                self.parent.after(self._refresh_ms, self._flush_and_render)
+                return
+            self._blank_skip_count = 0
             self._render()
 
     def _render(self):
@@ -335,26 +341,11 @@ class TerminalWidget:
         self.canvas.itemconfigure(back_tag, state="normal")
         self.canvas.itemconfigure(front_tag, state="hidden")
 
-        # Handle old front buffer items: fade or delete
-        full_redraw = len(dirty_set) >= self.rows * 0.8
-        if full_redraw and any(front_items[r] for r in range(self.rows)):
-            # Full-screen change — fade old items instead of deleting
-            for r in range(self.rows):
-                for item_id in front_items[r]:
-                    self.canvas.addtag_withtag("fade", item_id)
-                    self.canvas.tag_lower(item_id)
-                front_items[r] = []
-            self._fade_items_pending = True
-            self._fade_steps = 4
-            self._fade_alpha = 1.0
-            if not hasattr(self, '_fade_scheduled') or not self._fade_scheduled:
-                self._fade_scheduled = True
-                self.parent.after(self._refresh_ms, self._fade_step)
-        else:
-            for r in range(self.rows):
-                for item_id in front_items[r]:
-                    self.canvas.delete(item_id)
-                front_items[r] = []
+        # Delete old front buffer items (now hidden)
+        for r in range(self.rows):
+            for item_id in front_items[r]:
+                self.canvas.delete(item_id)
+            front_items[r] = []
 
         # Swap active buffer
         self._active_buf = back
