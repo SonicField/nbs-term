@@ -460,6 +460,63 @@ class TerminalWidget:
         if data:
             self._write_callback(data)
 
+    def _reset_buffers(self, new_rows):
+        """Reset both double-buffer sets for a new grid size."""
+        self.canvas.delete("buf_0")
+        self.canvas.delete("buf_1")
+        self._buf_items = [
+            [[] for _ in range(new_rows)],
+            [[] for _ in range(new_rows)],
+        ]
+        self._active_buf = 0
+        self._row_items = self._buf_items[0]
+
+    def _render_direct(self):
+        """Single-buffer render for resize — draw visible items directly.
+        Used after reset when there's no previous frame to swap from."""
+        # Consume dirty flags (all rows dirty after resize)
+        self.term.get_dirty_rows()
+        screen = self.term.get_screen(self._fg, self._bg)
+        buf = self._buf_items[0]
+        tag = "buf_0"
+
+        for r in range(min(len(screen), self.rows)):
+            for item_id in buf[r]:
+                self.canvas.delete(item_id)
+            buf[r] = []
+
+            spans = screen[r]
+            x = PADDING
+            y = PADDING + r * self.char_height
+
+            for span in spans:
+                text, fg, bg, attrs = span
+                if self._gamma != 1.0:
+                    fg = gamma_correct(fg, self._gamma)
+                    bg = gamma_correct(bg, self._gamma)
+                if attrs & 0x02:
+                    fg = dim_color(fg)
+                if attrs & 0x20:
+                    fg, bg = bg, fg
+
+                text_width = self.char_width * len(text)
+                rect_id = self.canvas.create_rectangle(
+                    x, y, x + text_width, y + self.char_height,
+                    fill=bg, outline="", tags=(tag,),
+                )
+                buf[r].append(rect_id)
+                display_font = self._font_cache.get(attrs & 0x05, self.font)
+                text_id = self.canvas.create_text(
+                    x, y, text=text, fill=fg, font=display_font,
+                    anchor=tk.NW, tags=(tag,),
+                )
+                buf[r].append(text_id)
+                x += self.char_width * len(text)
+
+        self._active_buf = 0
+        self._row_items = self._buf_items[0]
+        self._show_cursor_after_render()
+
     def handle_resize(self, event):
         """Handle window resize."""
         new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
@@ -468,16 +525,8 @@ class TerminalWidget:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-            # Reset both buffers on resize
-            self.canvas.delete("buf_0")
-            self.canvas.delete("buf_1")
-            self._buf_items = [
-                [[] for _ in range(new_rows)],
-                [[] for _ in range(new_rows)],
-            ]
-            self._active_buf = 0
-            self._row_items = self._buf_items[0]
-            self._render()
+            self._reset_buffers(new_rows)
+            self._render_direct()
             return (new_rows, new_cols)
         return None
 
@@ -880,18 +929,10 @@ class TerminalApp:
             w.cols = new_cols
             w.rows = new_rows
             w.term.resize(new_rows, new_cols)
-            # Reset both buffers on resize
-            w.canvas.delete("buf_0")
-            w.canvas.delete("buf_1")
-            w._buf_items = [
-                [[] for _ in range(new_rows)],
-                [[] for _ in range(new_rows)],
-            ]
-            w._active_buf = 0
-            w._row_items = w._buf_items[0]
+            w._reset_buffers(new_rows)
             self.ssh.resize(new_rows, new_cols)
-        # Rerender
-        w._render()
+        # Rerender — use direct render after config change
+        w._render_direct()
 
     def _on_ssh_error(self, error_msg):
         """Show SSH errors in the terminal window."""

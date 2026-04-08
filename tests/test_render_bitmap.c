@@ -301,6 +301,117 @@ TEST(render_colored_char) {
     atlas_free(atlas);
 }
 
+TEST(render_dim_attribute) {
+    /* DIM (SGR 2) should halve foreground brightness */
+    GlyphAtlas *atlas = make_test_atlas();
+    ScreenBuffer *scr = screen_alloc(1, 2);
+    FrameBuffer *fb = framebuf_alloc(2 * 8, 1 * 16);
+    ASSERT_NOT_NULL(atlas);
+    ASSERT_NOT_NULL(scr);
+    ASSERT_NOT_NULL(fb);
+
+    /* Set pen with DIM attribute and white fg */
+    scr->cursor.pen.fg = Color_mk_RGB(200, 200, 200);
+    scr->cursor.pen.attrs = CellAttr_Dim;
+    screen_put_char(scr, NULL, 'A');
+
+    render_screen_to_framebuf(fb, scr, atlas, "#ffffff", "#000000");
+
+    /* DIM halves fg: 200/2 = 100 */
+    ASSERT_EQ(fb->pixels[0], 100);
+    ASSERT_EQ(fb->pixels[1], 100);
+    ASSERT_EQ(fb->pixels[2], 100);
+
+    framebuf_free(fb);
+    screen_free(scr);
+    atlas_free(atlas);
+}
+
+TEST(render_inverse_attribute) {
+    /* INVERSE swaps fg and bg */
+    GlyphAtlas *atlas = make_test_atlas();
+    ScreenBuffer *scr = screen_alloc(1, 1);
+    FrameBuffer *fb = framebuf_alloc(1 * 8, 1 * 16);
+    ASSERT_NOT_NULL(atlas);
+    ASSERT_NOT_NULL(scr);
+    ASSERT_NOT_NULL(fb);
+
+    scr->cursor.pen.fg = Color_mk_RGB(255, 0, 0);
+    scr->cursor.pen.bg = Color_mk_RGB(0, 0, 255);
+    scr->cursor.pen.attrs = CellAttr_Inverse;
+    screen_put_char(scr, NULL, 'A');
+
+    render_screen_to_framebuf(fb, scr, atlas, "#ffffff", "#000000");
+
+    /* Inverse: fg becomes blue (was bg), fully opaque glyph */
+    ASSERT_EQ(fb->pixels[0], 0);
+    ASSERT_EQ(fb->pixels[1], 0);
+    ASSERT_EQ(fb->pixels[2], 255);
+
+    framebuf_free(fb);
+    screen_free(scr);
+    atlas_free(atlas);
+}
+
+TEST(render_with_padding) {
+    /* Padding should offset glyph positions */
+    GlyphAtlas *atlas = make_test_atlas();
+    ScreenBuffer *scr = screen_alloc(1, 1);
+    /* Frame buffer with 4px padding: (1*8 + 2*4) x (1*16 + 2*4) = 16 x 24 */
+    FrameBuffer *fb = framebuf_alloc(16, 24);
+    ASSERT_NOT_NULL(atlas);
+    ASSERT_NOT_NULL(scr);
+    ASSERT_NOT_NULL(fb);
+
+    scr->cursor.pen.fg = Color_mk_RGB(255, 255, 255);
+    screen_put_char(scr, NULL, 'A');
+
+    uint8_t dfg_r = 255, dfg_g = 255, dfg_b = 255;
+    uint8_t dbg_r = 0, dbg_g = 0, dbg_b = 0;
+    render_screen_to_framebuf_rgb(fb, scr, atlas,
+                                  (RGB){dfg_r, dfg_g, dfg_b},
+                                  (RGB){dbg_r, dbg_g, dbg_b}, 4);
+
+    /* Pixel (0,0) is in padding — should be bg (black) */
+    ASSERT_EQ(fb->pixels[0], 0);
+    ASSERT_EQ(fb->pixels[1], 0);
+    ASSERT_EQ(fb->pixels[2], 0);
+
+    /* Pixel (4,4) is start of glyph — 'A' is fully opaque, should be fg (white) */
+    int idx = (4 * 16 + 4) * 3;
+    ASSERT_EQ(fb->pixels[idx], 255);
+    ASSERT_EQ(fb->pixels[idx + 1], 255);
+    ASSERT_EQ(fb->pixels[idx + 2], 255);
+
+    framebuf_free(fb);
+    screen_free(scr);
+    atlas_free(atlas);
+}
+
+TEST(render_unicode_fallback) {
+    /* Codepoint > atlas size should render as space (fallback) */
+    GlyphAtlas *atlas = make_test_atlas();
+    ScreenBuffer *scr = screen_alloc(1, 1);
+    FrameBuffer *fb = framebuf_alloc(8, 16);
+    ASSERT_NOT_NULL(atlas);
+    ASSERT_NOT_NULL(scr);
+    ASSERT_NOT_NULL(fb);
+
+    /* Place a codepoint beyond atlas range */
+    screen_put_char(scr, NULL, 0x1F600); /* emoji — way beyond 256 */
+
+    render_screen_to_framebuf(fb, scr, atlas, "#ffffff", "#000000");
+
+    /* Should fall back to space glyph (transparent) → bg color (black) */
+    ASSERT_EQ(fb->pixels[0], 0);
+    ASSERT_EQ(fb->pixels[1], 0);
+    ASSERT_EQ(fb->pixels[2], 0);
+
+    framebuf_free(fb);
+    screen_free(scr);
+    atlas_free(atlas);
+}
+
 /* ================================================================
  * Section 6: PPM output
  * ================================================================ */
@@ -385,6 +496,12 @@ TEST_MAIN(
     RUN_TEST(render_empty_screen);
     RUN_TEST(render_single_char);
     RUN_TEST(render_colored_char);
+
+    /* Attributes + padding + Unicode */
+    RUN_TEST(render_dim_attribute);
+    RUN_TEST(render_inverse_attribute);
+    RUN_TEST(render_with_padding);
+    RUN_TEST(render_unicode_fallback);
 
     /* PPM output */
     RUN_TEST(ppm_valid_header);
