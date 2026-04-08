@@ -6,24 +6,24 @@ All terminal semantics live in C. Python transports bytes.
 
 ## Install
 
-Requires Python 3.12+, a C compiler, and Tk (for the GUI).
+Requires Python 3.12+, a C compiler, Tk, and Tcl development headers (for the GUI and render pipeline).
 
 **Mac (Homebrew):**
 
 ```bash
-brew install python-tk@3.14   # match your Python version
+brew install python-tk@3.14 tcl-tk   # match your Python version
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
-pip install -e .              # builds C extension + installs nbs-ssh from GitHub
+make install                 # clean build + pip install (recommended)
 ```
 
 **Linux (Debian/Ubuntu):**
 
 ```bash
-sudo apt install python3-tk
+sudo apt install python3-tk tcl-dev
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
-pip install -e .
+make install
 ```
 
 **Windows:**
@@ -38,6 +38,10 @@ pip install -e .
 ```
 
 No C preprocessor needed — the C extension builds from pre-generated C.
+
+**Rebuilding after updates:**
+
+Always use `make install` after `git pull` — it removes stale build artifacts before rebuilding. Plain `pip install -e .` may pick up old `.so` files from a previous build.
 
 ## Usage
 
@@ -100,9 +104,9 @@ The generated C file (`generated/extension.c`) is committed so end users don't n
 
 - 117 VT parser tests (state transitions, CSI, SGR, UTF-8, partial feeds, adversarial inputs)
 - 57 screen buffer tests (cursor, scroll, erase, resize, scrollback, alt screen)
-- 23 Python integration tests
+- 23 Python integration tests (including UTF-8/CJK span verification)
 - 9 orchestration tests (SSH data flow, threading model)
-- 3 SSH integration tests (requires nbs-ssh)
+- 4 SSH integration tests (requires nbs-ssh, skipped if not installed)
 
 ```bash
 make test    # run all

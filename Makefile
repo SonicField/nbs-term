@@ -186,3 +186,8 @@ verify-regenerate: $(PHC_BIN)
 
 clean:
 	rm -rf $(BUILDDIR) $(EXTENSION_SO)
+
+# Install: clean stale artifacts and install via pip
+install: clean
+	rm -f _nbsterm*.so
+	pip install -e .
