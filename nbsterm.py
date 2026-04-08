@@ -19,6 +19,7 @@ import concurrent.futures
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog
+import tkinter.colorchooser as colorchooser
 
 import _nbsterm
 from nbs_ssh import (
@@ -802,13 +803,22 @@ class ColorPicker256(tk.Toplevel):
             swatch.grid(row=0, column=i, padx=0, pady=0)
             swatch.bind("<Button-1>", lambda e, c=color: self._pick(c))
 
-        # OK / Cancel
+        # Custom color + OK / Cancel
         btn_frame = tk.Frame(main, bg="#2a2a2a")
         btn_frame.pack(pady=(8, 0))
+        tk.Button(btn_frame, text="Custom...", command=self._custom_color,
+                  width=8).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="OK", command=self._ok, width=8).pack(
             side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy, width=8).pack(
             side=tk.LEFT, padx=5)
+
+    def _custom_color(self):
+        """Open Tk's built-in color chooser for full 24-bit sRGB selection."""
+        result = colorchooser.askcolor(
+            initialcolor=self._selected, title="Custom Color", parent=self)
+        if result and result[1]:
+            self._pick(result[1])
 
     def _pick(self, color):
         self._selected = color
