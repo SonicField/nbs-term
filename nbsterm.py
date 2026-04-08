@@ -89,8 +89,9 @@ class TerminalWidget:
         # Font setup — validate monospace, cache all 4 style variants
         self.font = tkfont.Font(family=font_family, size=font_size)
         # Verify font is truly monospace — check several character widths
+        # Use 10-char strings to avoid single-char measurement rounding
         test_chars = "MWil@_"
-        widths = {self.font.measure(c) for c in test_chars}
+        widths = {self.font.measure(c * 10) for c in test_chars}
         if len(widths) > 1:
             # Not monospace — fall back to a safe default
             fallback = "Menlo" if sys.platform == "darwin" else "monospace"
@@ -101,7 +102,10 @@ class TerminalWidget:
             0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
             0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
-        self.char_width = self.font.measure("M")
+        # Measure char width using a string of Ms to get accurate average
+        # (avoids rounding errors that accumulate at larger font sizes)
+        sample = "M" * 10
+        self.char_width = self.font.measure(sample) / 10.0
         self.char_height = self.font.metrics("linespace")
 
         # Canvas
@@ -371,36 +375,31 @@ class TerminalWidget:
         if self._cursor_blink:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
-    def _cursor_coords(self):
-        """Calculate cursor rectangle coordinates for current position and style."""
+    # Unicode cursor characters — same font as terminal text, perfect alignment
+    _CURSOR_CHARS = {
+        "Block": "\u2588",      # █ Full block
+        "Wireframe": "\u2588",  # █ (rendered with outline color)
+        "Underline": "\u2581",  # ▁ Lower one eighth block
+        "Bar": "\u258f",        # ▏ Left one eighth block
+    }
+
+    def _position_cursor(self):
+        """Position cursor using a Unicode character — aligns with text automatically."""
         crow, ccol = self.term.get_cursor()
         cx = PADDING + ccol * self.char_width
         cy = PADDING + crow * self.char_height
-        style = self._cursor_style
-        if style == "Underline":
-            return (cx, cy + self.char_height - 2, cx + self.char_width, cy + self.char_height)
-        elif style == "Bar":
-            return (cx, cy, cx + 2, cy + self.char_height)
-        else:  # Block or Wireframe
-            return (cx, cy, cx + self.char_width, cy + self.char_height)
+        char = self._CURSOR_CHARS.get(self._cursor_style, "\u2588")
 
-    def _position_cursor(self):
-        """Move existing cursor item or create one if needed."""
-        coords = self._cursor_coords()
         if self._cursor_item:
-            self.canvas.coords(self._cursor_item, *coords)
-            self.canvas.itemconfigure(self._cursor_item, state="normal")
+            self.canvas.coords(self._cursor_item, cx, cy)
+            self.canvas.itemconfigure(self._cursor_item, text=char,
+                                      fill=self._fg, state="normal")
             self.canvas.tag_raise(self._cursor_item)
         else:
-            style = self._cursor_style
-            if style == "Wireframe":
-                self._cursor_item = self.canvas.create_rectangle(
-                    *coords, outline=self._fg, width=1,
-                )
-            else:
-                self._cursor_item = self.canvas.create_rectangle(
-                    *coords, fill=self._fg, outline="",
-                )
+            self._cursor_item = self.canvas.create_text(
+                cx, cy, text=char, fill=self._fg,
+                font=self.font, anchor=tk.NW,
+            )
 
     def handle_key(self, event):
         """Handle a Tk key event."""
@@ -1033,7 +1032,8 @@ class TerminalApp:
         w.font.configure(family=config.font.family, size=config.font.size)
         for key, f in w._font_cache.items():
             f.configure(family=config.font.family, size=config.font.size)
-        w.char_width = w.font.measure("M")
+        sample = "M" * 10
+        w.char_width = w.font.measure(sample) / 10.0
         w.char_height = w.font.metrics("linespace")
         # Update colors
         w._fg = config.fg
