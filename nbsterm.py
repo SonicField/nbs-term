@@ -123,7 +123,6 @@ class TerminalWidget:
         # Backpressure: buffer incoming data, render on next idle cycle
         self._pending_data = bytearray()
         self._render_scheduled = False
-        self._blank_skip_count = 0  # blank-frame suppression counter
 
         # Selection state
         self._sel_start = None  # (row, col) of selection start
@@ -245,23 +244,13 @@ class TerminalWidget:
             self.parent.after(self._refresh_ms, self._flush_and_render)
 
     def _flush_and_render(self):
-        """Process all buffered data and render once per frame.
-        Skips rendering blank frames — if the screen is mostly empty after
-        a feed, waits one more interval for new content to arrive."""
+        """Process all buffered data and render once per frame."""
         self._render_scheduled = False
         if self._pending_data:
+            # Reset cursor blink on new data — cursor always visible after input
             self._cursor_visible = True
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
-
-            # Skip blank frames: if screen is mostly empty (erase just happened),
-            # wait one more interval for SSH redraw data to arrive
-            if self.term.is_mostly_blank() and self._blank_skip_count < 2:
-                self._blank_skip_count += 1
-                self._render_scheduled = True
-                self.parent.after(self._refresh_ms, self._flush_and_render)
-                return
-            self._blank_skip_count = 0
             self._render()
 
     def _render(self):
