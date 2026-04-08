@@ -105,13 +105,13 @@ class TerminalWidget:
         # Callbacks
         self._write_callback = None  # called with bytes to send to SSH
 
-def set_write_callback(self, cb):
+    def set_write_callback(self, cb):
         self._write_callback = cb
 
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col), accounting for padding."""
-        col = max(0, min((x - PADDING) // self.char_width, self.cols - 1))
-        row = max(0, min((y - PADDING) // self.char_height, self.rows - 1))
+        """Convert pixel coordinates to (row, col)."""
+        col = max(0, min(x // self.char_width, self.cols - 1))
+        row = max(0, min(y // self.char_height, self.rows - 1))
         return (row, col)
 
     def _on_mouse_down(self, event):
