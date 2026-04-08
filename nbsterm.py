@@ -86,8 +86,15 @@ class TerminalWidget:
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup — cache all 4 style variants
+        # Font setup — validate monospace, cache all 4 style variants
         self.font = tkfont.Font(family=font_family, size=font_size)
+        # Verify font is truly monospace — check several character widths
+        test_chars = "MWil@_"
+        widths = {self.font.measure(c) for c in test_chars}
+        if len(widths) > 1:
+            # Not monospace — fall back to a safe default
+            fallback = "Menlo" if sys.platform == "darwin" else "monospace"
+            self.font.configure(family=fallback)
         self._font_cache = {
             0: self.font,
             0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
@@ -700,6 +707,122 @@ class SSHTransport:
                 pass
 
 
+def xterm_256_color(index):
+    """Return hex color string for xterm 256-color palette index."""
+    if index < 16:
+        ansi = [
+            "#000000", "#cd0000", "#00cd00", "#cdcd00",
+            "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+            "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+            "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+        ]
+        return ansi[index]
+    elif index < 232:
+        ci = index - 16
+        r = ci // 36
+        g = (ci // 6) % 6
+        b = ci % 6
+        r = r * 40 + 55 if r else 0
+        g = g * 40 + 55 if g else 0
+        b = b * 40 + 55 if b else 0
+        return f"#{r:02x}{g:02x}{b:02x}"
+    else:
+        v = (index - 232) * 10 + 8
+        return f"#{v:02x}{v:02x}{v:02x}"
+
+
+class ColorPicker256(tk.Toplevel):
+    """256-color palette picker. Click a swatch to select."""
+
+    def __init__(self, parent, title="Pick a Color", initial=None, callback=None):
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent)
+        self.grab_set()
+        self._callback = callback
+        self._selected = initial or "#ffffff"
+        self.resizable(False, False)
+
+        SWATCH = 18  # px per color swatch
+        PAD = 2
+
+        main = tk.Frame(self, bg="#2a2a2a", padx=10, pady=10)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Preview bar
+        preview_frame = tk.Frame(main, bg="#2a2a2a")
+        preview_frame.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(preview_frame, text="Selected:", fg="#cccccc", bg="#2a2a2a",
+                font=("", 10)).pack(side=tk.LEFT)
+        self._preview = tk.Label(preview_frame, text="  ", bg=self._selected,
+                                 width=8, relief=tk.SUNKEN)
+        self._preview.pack(side=tk.LEFT, padx=5)
+        self._hex_label = tk.Label(preview_frame, text=self._selected,
+                                   fg="#cccccc", bg="#2a2a2a", font=("", 10))
+        self._hex_label.pack(side=tk.LEFT)
+
+        # 16 standard colors (2 rows of 8)
+        tk.Label(main, text="Standard", fg="#888888", bg="#2a2a2a",
+                font=("", 9)).pack(anchor=tk.W)
+        std_frame = tk.Frame(main, bg="#2a2a2a")
+        std_frame.pack(pady=(0, 6))
+        for i in range(16):
+            color = xterm_256_color(i)
+            row, col = divmod(i, 8)
+            swatch = tk.Frame(std_frame, width=SWATCH, height=SWATCH,
+                             bg=color, highlightthickness=1,
+                             highlightbackground="#555555")
+            swatch.grid(row=row, column=col, padx=PAD, pady=PAD)
+            swatch.bind("<Button-1>", lambda e, c=color: self._pick(c))
+
+        # 216 color cube (6 blocks of 6x6)
+        tk.Label(main, text="Color Cube", fg="#888888", bg="#2a2a2a",
+                font=("", 9)).pack(anchor=tk.W)
+        cube_frame = tk.Frame(main, bg="#2a2a2a")
+        cube_frame.pack(pady=(0, 6))
+        for i in range(216):
+            color = xterm_256_color(16 + i)
+            # Layout: 6 blocks horizontally, each 6x6
+            block = i // 36
+            within = i % 36
+            row = within // 6
+            col = block * 6 + within % 6
+            swatch = tk.Frame(cube_frame, width=SWATCH, height=SWATCH,
+                             bg=color, highlightthickness=0)
+            swatch.grid(row=row, column=col, padx=0, pady=0)
+            swatch.bind("<Button-1>", lambda e, c=color: self._pick(c))
+
+        # 24 grayscale ramp
+        tk.Label(main, text="Grayscale", fg="#888888", bg="#2a2a2a",
+                font=("", 9)).pack(anchor=tk.W)
+        gray_frame = tk.Frame(main, bg="#2a2a2a")
+        gray_frame.pack(pady=(0, 6))
+        for i in range(24):
+            color = xterm_256_color(232 + i)
+            swatch = tk.Frame(gray_frame, width=SWATCH, height=SWATCH,
+                             bg=color, highlightthickness=0)
+            swatch.grid(row=0, column=i, padx=0, pady=0)
+            swatch.bind("<Button-1>", lambda e, c=color: self._pick(c))
+
+        # OK / Cancel
+        btn_frame = tk.Frame(main, bg="#2a2a2a")
+        btn_frame.pack(pady=(8, 0))
+        tk.Button(btn_frame, text="OK", command=self._ok, width=8).pack(
+            side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", command=self.destroy, width=8).pack(
+            side=tk.LEFT, padx=5)
+
+    def _pick(self, color):
+        self._selected = color
+        self._preview.configure(bg=color)
+        self._hex_label.configure(text=color)
+
+    def _ok(self):
+        if self._callback:
+            self._callback(self._selected)
+        self.destroy()
+
+
 class PreferencesDialog(tk.Toplevel):
     """Tk preferences dialog for nbs-term settings."""
 
@@ -746,33 +869,70 @@ class PreferencesDialog(tk.Toplevel):
         tk.Label(self, text="Color", font=("", 12, "bold")).grid(
             row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
 
-        tk.Label(self, text="Gamma:").grid(row=7, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Foreground:").grid(row=7, column=0, sticky="e", padx=10)
+        self._fg_color = config.fg
+        fg_frame = tk.Frame(self)
+        fg_frame.grid(row=7, column=1, sticky="w", padx=10, pady=2)
+        self._fg_swatch = tk.Label(fg_frame, text="  ", bg=config.fg,
+                                   width=4, relief=tk.SUNKEN)
+        self._fg_swatch.pack(side=tk.LEFT)
+        tk.Button(fg_frame, text="Pick...",
+                  command=lambda: self._open_picker("fg")).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(self, text="Background:").grid(row=8, column=0, sticky="e", padx=10)
+        self._bg_color = config.bg
+        bg_frame = tk.Frame(self)
+        bg_frame.grid(row=8, column=1, sticky="w", padx=10, pady=2)
+        self._bg_swatch = tk.Label(bg_frame, text="  ", bg=config.bg,
+                                   width=4, relief=tk.SUNKEN)
+        self._bg_swatch.pack(side=tk.LEFT)
+        tk.Button(bg_frame, text="Pick...",
+                  command=lambda: self._open_picker("bg")).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(self, text="Gamma:").grid(row=9, column=0, sticky="e", padx=10)
         self._gamma = tk.DoubleVar(value=config.gamma)
         tk.Scale(self, from_=0.5, to=2.0, resolution=0.05,
                  orient=tk.HORIZONTAL, variable=self._gamma, length=150).grid(
-            row=7, column=1, padx=10, pady=2)
+            row=9, column=1, padx=10, pady=2)
 
         # Performance section
         tk.Label(self, text="Performance", font=("", 12, "bold")).grid(
-            row=8, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+            row=10, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
 
-        tk.Label(self, text="Refresh (Hz):").grid(row=9, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Refresh (Hz):").grid(row=11, column=0, sticky="e", padx=10)
         self._refresh_hz = tk.IntVar(value=config.refresh_hz)
         tk.Scale(self, from_=10, to=120, resolution=5,
                  orient=tk.HORIZONTAL, variable=self._refresh_hz, length=150).grid(
-            row=9, column=1, padx=10, pady=2)
+            row=11, column=1, padx=10, pady=2)
 
         # Buttons
         btn_frame = tk.Frame(self)
-        btn_frame.grid(row=10, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=12, column=0, columnspan=2, pady=10)
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _open_picker(self, which):
+        """Open the 256-color picker for fg or bg."""
+        initial = self._fg_color if which == "fg" else self._bg_color
+        title = "Foreground Color" if which == "fg" else "Background Color"
+
+        def on_pick(color):
+            if which == "fg":
+                self._fg_color = color
+                self._fg_swatch.configure(bg=color)
+            else:
+                self._bg_color = color
+                self._bg_swatch.configure(bg=color)
+
+        ColorPicker256(self, title=title, initial=initial, callback=on_pick)
 
     def _save(self):
         self._config.font.family = self._font_family.get()
         self._config.font.size = self._font_size.get()
         self._config.cursor.style = self._cursor_style.get()
         self._config.cursor.blink = self._cursor_blink.get()
+        self._config.fg = self._fg_color
+        self._config.bg = self._bg_color
         self._config.gamma = self._gamma.get()
         self._config.refresh_hz = self._refresh_hz.get()
         save_config(self._config)
