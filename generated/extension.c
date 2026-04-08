@@ -2129,6 +2129,22 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
      terminal_free(self->term);
 }
 
+    /* Initialize built-in VGA 8x16 bitmap font atlas */
+    self->atlas = atlas_from_vga_font();
+    if (!self->atlas) {
+        Py_DECREF(self);
+        PyErr_SetString(PyExc_MemoryError, "Failed to allocate font atlas");
+        return NULL;
+    }
+
+    /* Allocate frame buffer for current terminal size */
+    self->framebuf = framebuf_alloc(cols * 8, rows * 16);
+    if (!self->framebuf) {
+        Py_DECREF(self);
+        PyErr_SetString(PyExc_MemoryError, "Failed to allocate frame buffer");
+        return NULL;
+    }
+
     
   /* success — ownership transferred to TerminalObject */
     return (PyObject *)self;

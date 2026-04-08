@@ -15,6 +15,7 @@
 
 #include "sgr.phc"
 #include "screen.phc"
+#include "vga_font_8x16.h"
 
 /* --- Color → RGB resolution via phc_match ---
  * Direct Color to RGB bytes — no hex string intermediary.
@@ -92,6 +93,24 @@ static void atlas_free(GlyphAtlas *atlas) {
 static const uint8_t *atlas_glyph(const GlyphAtlas *atlas, int codepoint) {
     if (codepoint < 0 || codepoint >= atlas->num_glyphs) return NULL;
     return atlas->data + (size_t)codepoint * (size_t)atlas->glyph_w * (size_t)atlas->glyph_h;
+}
+
+/* Create an atlas from the embedded VGA 8x16 bitmap font.
+ * Converts 1bpp font data to 8bpp alpha (0 or 255). */
+static GlyphAtlas *atlas_from_vga_font(void) {
+    GlyphAtlas *atlas = atlas_alloc(8, 16, 256);
+    if (!atlas) return NULL;
+
+    for (int cp = 0; cp < 256; cp++) {
+        uint8_t *dst = atlas->data + cp * 8 * 16;
+        for (int row = 0; row < 16; row++) {
+            uint8_t bits = vga_font_8x16[cp][row];
+            for (int col = 0; col < 8; col++) {
+                dst[row * 8 + col] = (bits & (0x80 >> col)) ? 255 : 0;
+            }
+        }
+    }
+    return atlas;
 }
 
 /* --- Frame Buffer --- */

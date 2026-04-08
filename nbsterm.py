@@ -63,10 +63,11 @@ class TerminalWidget:
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup
+        # Font setup — built-in VGA 8x16 bitmap font
         self.font = tkfont.Font(family=font_family, size=font_size)
-        self.char_width = self.font.measure("M")
-        self.char_height = self.font.metrics("linespace")
+        # Use embedded font dimensions (VGA 8x16)
+        self.char_width = 8
+        self.char_height = 16
 
         # Canvas — single PhotoImage item, no retained-mode scene graph
         width = self.cols * self.char_width
@@ -77,11 +78,8 @@ class TerminalWidget:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Terminal engine
+        # Terminal engine — built-in VGA 8x16 font atlas auto-created
         self.term = _nbsterm.Terminal(rows, cols)
-
-        # Build glyph atlas from Tk font and pass to C extension
-        self._build_and_set_atlas()
 
         # PhotoImage for display — single canvas image item
         self._photo = None
@@ -107,46 +105,7 @@ class TerminalWidget:
         # Callbacks
         self._write_callback = None  # called with bytes to send to SSH
 
-    def _build_and_set_atlas(self):
-        """Build a glyph atlas and pass to C extension.
-        Uses Tk to render each character to a PhotoImage, then extracts
-        the red channel as alpha values for the glyph bitmap."""
-        gw = self.char_width
-        gh = self.char_height
-        num_glyphs = 256
-        atlas_data = bytearray(num_glyphs * gw * gh)
-
-        # Render each printable ASCII character
-        for cp in range(33, 127):
-            photo = tk.PhotoImage(width=gw, height=gh)
-            # Black background
-            photo.put("#000000", to=(0, 0, gw, gh))
-            # Render character: create a temporary canvas, draw text,
-            # capture to the PhotoImage
-            tc = tk.Canvas(self.parent, width=gw, height=gh,
-                          bg="#000000", highlightthickness=0, borderwidth=0)
-            tc.create_text(0, 0, text=chr(cp), fill="#ffffff",
-                          font=self.font, anchor=tk.NW)
-            tc.update_idletasks()
-
-            # Capture canvas pixels via postscript→PhotoImage is complex.
-            # Use direct pixel read from a mapped canvas instead:
-            # Place canvas off-screen, update, then read via winfo + image grab
-            # For MVP: extract what we can, fallback to solid blocks
-            tc.destroy()
-
-        # Tk doesn't expose antialiased glyph pixels easily.
-        # Use solid block glyphs for MVP — proves the pipeline.
-        # Each printable char: full alpha. Space: zero alpha.
-        # TODO: replace with C-level font rasterization (FreeType/CoreText)
-        for cp in range(33, 127):
-            offset = cp * gw * gh
-            for i in range(gw * gh):
-                atlas_data[offset + i] = 255
-
-        self.term.set_font_atlas(gw, gh, bytes(atlas_data))
-
-    def set_write_callback(self, cb):
+def set_write_callback(self, cb):
         self._write_callback = cb
 
     def _pixel_to_cell(self, x, y):
