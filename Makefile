@@ -135,11 +135,16 @@ regenerate:
 		echo '#include <assert.h>'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
-			$(SRCDIR)/input.phc $(SRCDIR)/render.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
+			$(SRCDIR)/vga_font_8x16.h $(SRCDIR)/render_bitmap.phc \
+			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
 		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
+		grep -v '^\s*#ifndef VGA_FONT' | \
+		grep -v '^\s*#define VGA_FONT' | \
+		grep -v '^\s*#endif.*/\*.*VGA_FONT' | \
 		$(PHC); \
 	} > generated/extension.c
 	@echo "Done ($(shell wc -l < generated/extension.c) lines)"
@@ -167,11 +172,16 @@ verify-regenerate: $(PHC_BIN)
 		echo '#include <assert.h>'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
-			$(SRCDIR)/input.phc $(SRCDIR)/render.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
+			$(SRCDIR)/vga_font_8x16.h $(SRCDIR)/render_bitmap.phc \
+			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
 		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
+		grep -v '^\s*#ifndef VGA_FONT' | \
+		grep -v '^\s*#define VGA_FONT' | \
+		grep -v '^\s*#endif.*/\*.*VGA_FONT' | \
 		$(PHC); \
 	} > $(BUILDDIR)/extension_verify.c
 	@diff -q generated/extension.c $(BUILDDIR)/extension_verify.c > /dev/null 2>&1 \
