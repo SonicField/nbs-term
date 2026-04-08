@@ -677,24 +677,24 @@ typedef struct {
 static Terminal *terminal_new(int rows, int cols) {
     Terminal *term = calloc(1, sizeof(Terminal));
     if (!term) return NULL;
-
-    term->main_screen = screen_alloc(rows, cols);
-    if (!term->main_screen) { free(term); return NULL; }
-
-    term->alt_screen = screen_alloc(rows, cols);
-    if (!term->alt_screen) { screen_free(term->main_screen); free(term); return NULL; }
-
-    term->scrollback = scrollback_alloc(10000, cols);
-    if (!term->scrollback) {
-        screen_free(term->main_screen);
-        screen_free(term->alt_screen);
-        free(term);
-        return NULL;
-    }
+    int _phc_dg_1 = 1;
+term->main_screen = screen_alloc(rows, cols);
+    if (!term->main_screen) { if (_phc_dg_1) {  phc_free(&term); } return NULL; }
+    int _phc_dg_2 = 1;
+term->alt_screen = screen_alloc(rows, cols);
+    if (!term->alt_screen) { if (_phc_dg_2) {  screen_free(term->main_screen); } if (_phc_dg_1) {  phc_free(&term); } return NULL; }
+    int _phc_dg_3 = 1;
+term->scrollback = scrollback_alloc(10000, cols);
+    if (!term->scrollback) { if (_phc_dg_3) {  screen_free(term->alt_screen); } if (_phc_dg_2) {  screen_free(term->main_screen); } if (_phc_dg_1) {  phc_free(&term); } return NULL; }
 
     term->active = term->main_screen;
     term->using_alt = 0;
-    return term;
+    _phc_dg_3 = 0; _phc_dg_2 = 0; _phc_dg_1 = 0; 
+  /* success — ownership transferred to caller */
+    { if (_phc_dg_3) {  screen_free(term->alt_screen); } if (_phc_dg_2) {  screen_free(term->main_screen); } if (_phc_dg_1) {  phc_free(&term); } return term; }
+if (_phc_dg_3) {  screen_free(term->alt_screen); }
+if (_phc_dg_2) {  screen_free(term->main_screen); }
+if (_phc_dg_1) {  phc_free(&term); }
 }
 
 static void terminal_free(Terminal *term) {
@@ -859,7 +859,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 641
+#line 640
 
 /* --- UTF-8 decoder state --- */
 
@@ -1448,7 +1448,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1234
+#line 1233
 
     return VTState_mk_Ground();
 }
@@ -1500,7 +1500,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     if (pos == 0) { snprintf(buf, len, "(none)"); }
     return buf;
 }
-#line 1260
+#line 1259
 
 /* --- Input event types --- */
 
@@ -1593,7 +1593,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1269
+#line 1268
 
 /* --- UTF-8 encoding --- */
 
@@ -1746,7 +1746,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1356
+#line 1355
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1880,7 +1880,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1488
+#line 1487
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2041,21 +2041,17 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate terminal");
         return NULL;
     }
-    /* Note: phc_defer not used here per GIL safety rule — Python-facing
-     * functions use manual cleanup. phc_defer with Py_DECREF causes
-     * phc to rewrite returns in subsequent functions. See review.md
-     * Gap 1 discussion — the recommendation is correct in principle
-     * but hits a phc limitation: defer tracking leaks across function
-     * boundaries in single-translation-unit builds. */
-
+    /* V8 fixed the defer scope bug — phc_defer is safe in single-TU builds. */
     self->parser = vt_parser_new(self->term);
     if (!self->parser) {
-        terminal_free(self->term);
         Py_DECREF(self);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate parser");
-        return NULL;
-    }
+        {  terminal_free(self->term); return NULL; }  /* phc_defer fires terminal_free */
+     terminal_free(self->term);
+}
 
+    
+  /* success — ownership transferred to TerminalObject */
     return (PyObject *)self;
 }
 

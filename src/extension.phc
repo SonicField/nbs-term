@@ -59,21 +59,17 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate terminal");
         return NULL;
     }
-    /* Note: phc_defer not used here per GIL safety rule — Python-facing
-     * functions use manual cleanup. phc_defer with Py_DECREF causes
-     * phc to rewrite returns in subsequent functions. See review.md
-     * Gap 1 discussion — the recommendation is correct in principle
-     * but hits a phc limitation: defer tracking leaks across function
-     * boundaries in single-translation-unit builds. */
+    /* V8 fixed the defer scope bug — phc_defer is safe in single-TU builds. */
+    phc_defer { terminal_free(self->term); }
 
     self->parser = vt_parser_new(self->term);
     if (!self->parser) {
-        terminal_free(self->term);
         Py_DECREF(self);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate parser");
-        return NULL;
+        return NULL;  /* phc_defer fires terminal_free */
     }
 
+    phc_defer_cancel;  /* success — ownership transferred to TerminalObject */
     return (PyObject *)self;
 }
 

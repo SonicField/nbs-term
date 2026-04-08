@@ -443,23 +443,22 @@ typedef struct {
 static Terminal *terminal_new(int rows, int cols) {
     Terminal *term = calloc(1, sizeof(Terminal));
     if (!term) return NULL;
+    phc_defer { phc_free(&term); }
 
     term->main_screen = screen_alloc(rows, cols);
-    if (!term->main_screen) { free(term); return NULL; }
+    if (!term->main_screen) return NULL;
+    phc_defer { screen_free(term->main_screen); }
 
     term->alt_screen = screen_alloc(rows, cols);
-    if (!term->alt_screen) { screen_free(term->main_screen); free(term); return NULL; }
+    if (!term->alt_screen) return NULL;
+    phc_defer { screen_free(term->alt_screen); }
 
     term->scrollback = scrollback_alloc(10000, cols);
-    if (!term->scrollback) {
-        screen_free(term->main_screen);
-        screen_free(term->alt_screen);
-        free(term);
-        return NULL;
-    }
+    if (!term->scrollback) return NULL;
 
     term->active = term->main_screen;
     term->using_alt = 0;
+    phc_defer_cancel;  /* success — ownership transferred to caller */
     return term;
 }
 
