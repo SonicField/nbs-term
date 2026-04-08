@@ -752,9 +752,19 @@ class PreferencesDialog(tk.Toplevel):
                  orient=tk.HORIZONTAL, variable=self._gamma, length=150).grid(
             row=7, column=1, padx=10, pady=2)
 
+        # Performance section
+        tk.Label(self, text="Performance", font=("", 12, "bold")).grid(
+            row=8, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+
+        tk.Label(self, text="Refresh (Hz):").grid(row=9, column=0, sticky="e", padx=10)
+        self._refresh_hz = tk.IntVar(value=config.refresh_hz)
+        tk.Scale(self, from_=10, to=120, resolution=5,
+                 orient=tk.HORIZONTAL, variable=self._refresh_hz, length=150).grid(
+            row=9, column=1, padx=10, pady=2)
+
         # Buttons
         btn_frame = tk.Frame(self)
-        btn_frame.grid(row=8, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=10, column=0, columnspan=2, pady=10)
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
@@ -764,6 +774,7 @@ class PreferencesDialog(tk.Toplevel):
         self._config.cursor.style = self._cursor_style.get()
         self._config.cursor.blink = self._cursor_blink.get()
         self._config.gamma = self._gamma.get()
+        self._config.refresh_hz = self._refresh_hz.get()
         save_config(self._config)
         if self._on_save:
             self._on_save(self._config)
@@ -868,8 +879,9 @@ class TerminalApp:
         w._fg = config.fg
         w._bg = config.bg
         w.canvas.configure(bg=w._bg)
-        # Update gamma
+        # Update gamma and refresh rate
         w._gamma = config.gamma
+        w._refresh_ms = max(1, 1000 // config.refresh_hz)
         # Update cursor
         w._cursor_style = config.cursor.style
         w._cursor_blink = config.cursor.blink
