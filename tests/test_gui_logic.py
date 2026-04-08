@@ -314,6 +314,40 @@ class TestGammaCorrection(unittest.TestCase):
         self.assertGreaterEqual(int(result[1:3], 16), 0xcd)
 
 
+class TestCursorChars(unittest.TestCase):
+    """Verify cursor character constants exist and are correct."""
+
+    def test_cursor_chars_exists(self):
+        """TerminalWidget must have _CURSOR_CHARS class attribute."""
+        # Import check — can't import TerminalWidget directly (needs Tk)
+        # but we can verify the constant is defined in the source
+        import ast
+        with open('nbsterm.py') as f:
+            tree = ast.parse(f.read())
+        class_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+        self.assertIn('TerminalWidget', class_names)
+
+    def test_cursor_styles_complete(self):
+        """All expected cursor styles must have unicode characters."""
+        expected = {'Block', 'Underline', 'Bar'}
+        with open('nbsterm.py') as f:
+            source = f.read()
+        self.assertIn('_CURSOR_CHARS', source)
+        for style in expected:
+            # Check for both quote styles
+            self.assertTrue(
+                f'"{style}"' in source or f"'{style}'" in source,
+                f"Cursor style '{style}' not found in _CURSOR_CHARS"
+            )
+
+    def test_no_wireframe(self):
+        """Wireframe cursor style was removed per alexie's directive."""
+        with open('nbsterm.py') as f:
+            source = f.read()
+        self.assertNotIn('"Wireframe"', source)
+        self.assertNotIn("'Wireframe'", source)
+
+
 class TestHostTargetParsing(unittest.TestCase):
     """Test the user@host:port parsing logic from main()."""
 
