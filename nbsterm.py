@@ -323,96 +323,49 @@ class TerminalWidget:
 
                 display_font = self._font_cache.get(attrs & 0x05, self.font)
 
-                # Check if cursor falls within this span
+                # Render span normally (no splitting at cursor)
+                text_width = display_font.measure(text)
+                rid = self.canvas.create_rectangle(
+                    x, y, x + text_width, y + self.char_height,
+                    fill=bg, outline="", state="hidden", tags=(back_tag,))
+                back_items[r].append(rid)
+                tid = self.canvas.create_text(
+                    x, y, text=text, fill=fg, font=display_font,
+                    anchor=tk.NW, state="hidden", tags=(back_tag,))
+                back_items[r].append(tid)
+
+                # Overlay cursor indicator if cursor is in this span
                 span_end = col_offset + len(text)
                 if show_cursor and r == crow and col_offset <= ccol < span_end:
-                    # Split span at cursor position
                     cur_idx = ccol - col_offset
-                    # Before cursor
-                    if cur_idx > 0:
-                        before = text[:cur_idx]
-                        bw = display_font.measure(before)
-                        rid = self.canvas.create_rectangle(
-                            x, y, x + bw, y + self.char_height,
-                            fill=bg, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(rid)
-                        tid = self.canvas.create_text(
-                            x, y, text=before, fill=fg, font=display_font,
-                            anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(tid)
-                        x += bw
-
-                    # Cursor cell — render the real character with cursor styling
-                    real_char = text[cur_idx] if cur_idx < len(text) else " "
-                    cw = self.char_width  # exact grid cell width, matches other cells
-                    cur_color = self._cursor_color or fg  # custom color or fg
+                    # Cursor x = span start + width of chars before cursor
+                    cx = x + display_font.measure(text[:cur_idx]) if cur_idx > 0 else x
+                    cw = self.char_width
+                    cur_color = self._cursor_color or fg
                     cursor_style = self._cursor_style
                     if cursor_style == "Block":
-                        # Block: real character with inverted colors
-                        rid = self.canvas.create_rectangle(
-                            x, y, x + cw, y + self.char_height,
+                        # Block: overlay inverted bg rectangle + re-render char
+                        oid = self.canvas.create_rectangle(
+                            cx, y, cx + cw, y + self.char_height,
                             fill=cur_color, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(rid)
-                        tid = self.canvas.create_text(
-                            x, y, text=real_char, fill=bg, font=display_font,
+                        back_items[r].append(oid)
+                        real_char = text[cur_idx] if cur_idx < len(text) else " "
+                        otid = self.canvas.create_text(
+                            cx, y, text=real_char, fill=bg, font=display_font,
                             anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(tid)
+                        back_items[r].append(otid)
                     elif cursor_style == "Underline":
-                        # Underline: real character + underline bar below
-                        rid = self.canvas.create_rectangle(
-                            x, y, x + cw, y + self.char_height,
-                            fill=bg, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(rid)
-                        tid = self.canvas.create_text(
-                            x, y, text=real_char, fill=fg, font=display_font,
-                            anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(tid)
                         uid = self.canvas.create_rectangle(
-                            x, y + self.char_height - 2, x + cw, y + self.char_height,
+                            cx, y + self.char_height - 2, cx + cw, y + self.char_height,
                             fill=cur_color, outline="", state="hidden", tags=(back_tag,))
                         back_items[r].append(uid)
-                    else:
-                        # Bar: real character + thin bar at left edge
-                        rid = self.canvas.create_rectangle(
-                            x, y, x + cw, y + self.char_height,
-                            fill=bg, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(rid)
-                        tid = self.canvas.create_text(
-                            x, y, text=real_char, fill=fg, font=display_font,
-                            anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(tid)
+                    else:  # Bar
                         bid = self.canvas.create_rectangle(
-                            x, y, x + 2, y + self.char_height,
+                            cx, y, cx + 2, y + self.char_height,
                             fill=cur_color, outline="", state="hidden", tags=(back_tag,))
                         back_items[r].append(bid)
-                    x += cw
 
-                    # After cursor
-                    if cur_idx + 1 < len(text):
-                        after = text[cur_idx + 1:]
-                        aw = display_font.measure(after)
-                        rid = self.canvas.create_rectangle(
-                            x, y, x + aw, y + self.char_height,
-                            fill=bg, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(rid)
-                        tid = self.canvas.create_text(
-                            x, y, text=after, fill=fg, font=display_font,
-                            anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(tid)
-                        x += aw
-                else:
-                    # Normal span (no cursor)
-                    text_width = display_font.measure(text)
-                    rid = self.canvas.create_rectangle(
-                        x, y, x + text_width, y + self.char_height,
-                        fill=bg, outline="", state="hidden", tags=(back_tag,))
-                    back_items[r].append(rid)
-                    tid = self.canvas.create_text(
-                        x, y, text=text, fill=fg, font=display_font,
-                        anchor=tk.NW, state="hidden", tags=(back_tag,))
-                    back_items[r].append(tid)
-                    x += text_width
-
+                x += text_width
                 col_offset = span_end
 
         # Atomic swap: show back buffer, hide front buffer
@@ -978,6 +931,23 @@ class PreferencesDialog(tk.Toplevel):
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
+    def _check_monospace(self):
+        """Check if selected font is monospace and warn if not."""
+        family = self._font_family.get()
+        size = self._font_size.get()
+        test_font = tkfont.Font(family=family, size=size)
+        test_chars = "MWil@_"
+        widths = {test_font.measure(c * 10) for c in test_chars}
+        if len(widths) > 1:
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "Variable Width Font",
+                f"'{family}' is not a monospace font.\n"
+                "Text may not align correctly in the terminal.\n\n"
+                "You can continue, but monospace fonts like "
+                "Menlo, Monaco, or Courier are recommended.",
+                parent=self)
+
     def _pick_cursor_color(self):
         """Open color picker for cursor color."""
         ColorPicker256(self, title="Cursor Color",
@@ -1008,6 +978,8 @@ class PreferencesDialog(tk.Toplevel):
         ColorPicker256(self, title=title, initial=initial, callback=on_pick)
 
     def _save(self):
+        # Warn if font is not monospace
+        self._check_monospace()
         self._config.font.family = self._font_family.get()
         self._config.font.size = self._font_size.get()
         self._config.cursor.style = self._cursor_style.get()
