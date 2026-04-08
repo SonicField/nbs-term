@@ -94,21 +94,25 @@ class TerminalWidget:
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup — validate monospace, cache all 4 style variants
-        self.font = tkfont.Font(family=font_family, size=font_size)
-        # Verify font is truly monospace — check several character widths
-        # Use 10-char strings to avoid single-char measurement rounding
-        test_chars = "MWil@_"
-        widths = {self.font.measure(c * 10) for c in test_chars}
-        if len(widths) > 1:
-            # Not monospace — fall back to a safe default
-            fallback = "Menlo" if sys.platform == "darwin" else "monospace"
-            self.font.configure(family=fallback)
+        # Font setup — validate monospace by checking actual rendered metrics
+        mono_fallbacks = [
+            font_family, "Menlo", "Monaco", "SF Mono", "Courier New",
+            "DejaVu Sans Mono", "Consolas", "Liberation Mono", "Courier",
+        ]
+        chosen_family = font_family
+        for candidate in mono_fallbacks:
+            test_font = tkfont.Font(family=candidate, size=font_size)
+            test_chars = "MWil@_"
+            widths = {test_font.measure(c * 10) for c in test_chars}
+            if len(widths) == 1:
+                chosen_family = test_font.actual("family")
+                break
+        self.font = tkfont.Font(family=chosen_family, size=font_size)
         self._font_cache = {
             0: self.font,
-            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
-            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
-            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
+            0x01: tkfont.Font(family=chosen_family, size=font_size, weight="bold"),
+            0x04: tkfont.Font(family=chosen_family, size=font_size, slant="italic"),
+            0x05: tkfont.Font(family=chosen_family, size=font_size, weight="bold", slant="italic"),
         }
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
