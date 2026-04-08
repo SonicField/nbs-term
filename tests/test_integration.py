@@ -131,6 +131,53 @@ class TestInputEncoding(unittest.TestCase):
         self.assertEqual(result, b'\x1b[200~hello\x1b[201~')
 
 
+class TestUTF8Spans(unittest.TestCase):
+    """Tests for multi-byte UTF-8 text in screen spans (Bug 1 regression)."""
+
+    def test_cjk_span_text_intact(self):
+        """CJK characters survive span extraction as full codepoints."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed('世界test'.encode('utf-8'))
+        screen = t.get_screen()
+        self.assertIn('世界', screen[0][0][0])
+
+    def test_cjk_multi_span_correct(self):
+        """CJK + ASCII in separate SGR spans have correct text."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b'\x1b[31m\xe4\xb8\x96\xe7\x95\x8c\x1b[32mtest\x1b[0m')
+        screen = t.get_screen()
+        texts = [(s[0].strip(), s[1]) for s in screen[0] if s[0].strip()]
+        self.assertEqual(texts[0][0], '世界')
+        self.assertEqual(texts[0][1], '#cd0000')
+        self.assertEqual(texts[1][0], 'test')
+        self.assertEqual(texts[1][1], '#00cd00')
+
+    def test_cjk_cell_codepoints(self):
+        """CJK codepoints appear in correct cell positions."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed('世界'.encode('utf-8'))
+        cp0 = t.get_cell(0, 0)[0]
+        cp1 = t.get_cell(0, 1)[0]
+        self.assertEqual(cp0, 0x4E16)  # 世
+        self.assertEqual(cp1, 0x754C)  # 界
+
+    def test_accented_char_span(self):
+        """Multi-byte accented characters (2-byte UTF-8) in spans."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed('café'.encode('utf-8'))
+        screen = t.get_screen()
+        self.assertIn('café', screen[0][0][0])
+
+    def test_mixed_utf8_cursor_position(self):
+        """Cursor position correct after mixed UTF-8 text."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed('世界test'.encode('utf-8'))
+        row, col = t.get_cursor()
+        self.assertEqual(row, 0)
+        # 2 CJK chars + 4 ASCII chars = 6 columns
+        self.assertEqual(col, 6)
+
+
 class TestEncodeTkEvent(unittest.TestCase):
     """Tests for encode_tk_event — the Tk keysym dispatch ported in Phase 4."""
 
