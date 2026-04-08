@@ -26,7 +26,7 @@ SSH bytes  ──►  C extension (parse + state)  ──►  Tk canvas (render)
 
 ## The C Extension
 
-Seven Phoenics source files, compiled as one translation unit:
+Eight Phoenics source files, compiled as one translation unit:
 
 | File | Responsibility |
 |------|---------------|
@@ -36,6 +36,7 @@ Seven Phoenics source files, compiled as one translation unit:
 | `input.phc` | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey` |
 | `render.phc` | Extracts screen state for Python (spans with attributes) |
 | `color.phc` | CIELAB colour conversion (sRGB to perceptual space) |
+| `color_utils.phc` | Ported Python colour functions: dim_color, gamma_correct, xterm_256_color |
 | `extension.phc` | CPython module definition, method table, type exports |
 
 The parser is a byte-at-a-time state machine. It handles partial sequences across `feed()` calls — a multi-byte escape sequence split across two SSH reads is reassembled correctly.

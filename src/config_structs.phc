@@ -1,0 +1,146 @@
+/*
+ * config_structs.phc — Terminal configuration as phc types
+ *
+ * Phase 2 of the phc port: config data structures in Phoenics.
+ * Uses phc_enum for cursor style, C structs for config groups.
+ * Python fills these via setter methods; C extension reads them directly.
+ */
+#ifndef NBSTERM_CONFIG_STRUCTS_H
+#define NBSTERM_CONFIG_STRUCTS_H
+
+#include <Python.h>
+#include <string.h>
+
+/* Cursor style as phc_enum — type-safe, exhaustive matching */
+phc_enum CursorStyleConfig {
+    CursorBlock,
+    CursorUnderline,
+    CursorBar
+};
+
+/* Config structs — mirrors Python dataclasses */
+
+typedef struct {
+    char family[64];
+    int size;
+} PhcFontConfig;
+
+typedef struct {
+    CursorStyleConfig style;
+    int blink;
+    char color[16];  /* "#rrggbb" or empty string */
+} PhcCursorConfig;
+
+typedef struct {
+    PhcFontConfig font;
+    PhcCursorConfig cursor;
+    double gamma;
+    char fg[16];
+    char bg[16];
+    int rows;
+    int cols;
+    int refresh_hz;
+} PhcTerminalConfig;
+
+/* Default config */
+static PhcTerminalConfig phc_config_default(void) {
+    PhcTerminalConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.font.family, "Menlo", sizeof(cfg.font.family) - 1);
+    cfg.font.size = 14;
+    cfg.cursor.style = CursorStyleConfig_CursorBlock;
+    cfg.cursor.blink = 1;
+    cfg.cursor.color[0] = '\0';
+    cfg.gamma = 1.0;
+    strncpy(cfg.fg, "#d0d0d0", sizeof(cfg.fg) - 1);
+    strncpy(cfg.bg, "#000000", sizeof(cfg.bg) - 1);
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.refresh_hz = 60;
+    return cfg;
+}
+
+/* Parse cursor style string to enum */
+static CursorStyleConfig cursor_style_from_string(const char *s) {
+    if (strcmp(s, "Underline") == 0) return CursorStyleConfig_CursorUnderline;
+    if (strcmp(s, "Bar") == 0) return CursorStyleConfig_CursorBar;
+    return CursorStyleConfig_CursorBlock;  /* default */
+}
+
+/* Cursor style enum to string */
+static const char *cursor_style_to_string(CursorStyleConfig style) {
+    switch (style) {
+        case CursorStyleConfig_CursorBlock: return "Block";
+        case CursorStyleConfig_CursorUnderline: return "Underline";
+        case CursorStyleConfig_CursorBar: return "Bar";
+        default: return "Block";
+    }
+}
+
+/* --- Python interface: config as a dict (simple getter/setter) --- */
+
+/* Global config instance */
+static PhcTerminalConfig g_config;
+static int g_config_initialized = 0;
+
+/* Set config from Python dict */
+static PyObject *phc_config_set(PyObject *self, PyObject *args) {
+    (void)self;
+    const char *font_family, *cursor_style, *cursor_color, *fg, *bg;
+    int font_size, cursor_blink, rows, cols, refresh_hz;
+    double gamma;
+
+    if (!PyArg_ParseTuple(args, "sisisdssiii",
+            &font_family, &font_size,
+            &cursor_style, &cursor_blink, &cursor_color,
+            &gamma, &fg, &bg,
+            &rows, &cols, &refresh_hz))
+        return NULL;
+
+    strncpy(g_config.font.family, font_family, sizeof(g_config.font.family) - 1);
+    g_config.font.family[sizeof(g_config.font.family) - 1] = '\0';
+    g_config.font.size = font_size;
+    g_config.cursor.style = cursor_style_from_string(cursor_style);
+    g_config.cursor.blink = cursor_blink;
+    strncpy(g_config.cursor.color, cursor_color, sizeof(g_config.cursor.color) - 1);
+    g_config.cursor.color[sizeof(g_config.cursor.color) - 1] = '\0';
+    g_config.gamma = gamma;
+    strncpy(g_config.fg, fg, sizeof(g_config.fg) - 1);
+    g_config.fg[sizeof(g_config.fg) - 1] = '\0';
+    strncpy(g_config.bg, bg, sizeof(g_config.bg) - 1);
+    g_config.bg[sizeof(g_config.bg) - 1] = '\0';
+    g_config.rows = rows;
+    g_config.cols = cols;
+    g_config.refresh_hz = refresh_hz;
+    g_config_initialized = 1;
+
+    Py_RETURN_NONE;
+}
+
+/* Get config as Python dict */
+static PyObject *phc_config_get(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+
+    if (!g_config_initialized) {
+        g_config = phc_config_default();
+        g_config_initialized = 1;
+    }
+
+    return Py_BuildValue(
+        "{s:s, s:i, s:s, s:i, s:s, s:d, s:s, s:s, s:i, s:i, s:i}",
+        "font_family", g_config.font.family,
+        "font_size", g_config.font.size,
+        "cursor_style", cursor_style_to_string(g_config.cursor.style),
+        "cursor_blink", g_config.cursor.blink,
+        "cursor_color", g_config.cursor.color,
+        "gamma", g_config.gamma,
+        "fg", g_config.fg,
+        "bg", g_config.bg,
+        "rows", g_config.rows,
+        "cols", g_config.cols,
+        "refresh_hz", g_config.refresh_hz
+    );
+}
+
+#endif /* NBSTERM_CONFIG_STRUCTS_H */

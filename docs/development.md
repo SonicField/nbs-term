@@ -71,7 +71,8 @@ The distribution path strips `#include` directives and prepends standard headers
 | vt_parser.phc | ~600 | VT escape sequence state machine |
 | input.phc | ~200 | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey` |
 | render.phc | ~150 | Screen state extraction for Python (canvas spans) |
-| extension.phc | ~250 | CPython module glue |
+| color_utils.phc | ~120 | Ported Python colour functions: dim_color, gamma_correct, xterm_256_color |
+| extension.phc | ~270 | CPython module glue |
 | color.phc | ~165 | CIELAB colour conversion (sRGB ↔ perceptual) |
 
 ### Makefile Targets
@@ -89,7 +90,7 @@ The distribution path strips `#include` directives and prepends standard headers
 
 ## Test Suite
 
-268 tests. Run with `make test`.
+310 tests. Run with `make test`.
 
 ```
 test_parser:         117 tests — VT state machine, CSI, SGR, UTF-8

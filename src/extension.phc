@@ -30,6 +30,7 @@
 #include "input.phc"
 #include "render.phc"
 #include "color_utils.phc"
+#include "config_structs.phc"
 /* --- Python Terminal object --- */
 
 typedef struct {
@@ -410,6 +411,10 @@ static PyMethodDef module_methods[] = {
      "Apply gamma correction to a hex color string."},
     {"xterm_256_color", phc_xterm_256_color, METH_VARARGS,
      "Convert xterm 256-color palette index to hex color string."},
+    {"config_set",     phc_config_set,     METH_VARARGS,
+     "Set terminal config from Python values."},
+    {"config_get",     (PyCFunction)phc_config_get, METH_NOARGS,
+     "Get terminal config as a Python dict."},
     {NULL, NULL, 0, NULL}
 };
 

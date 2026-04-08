@@ -136,7 +136,8 @@ regenerate:
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/color_utils.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
+			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
@@ -169,7 +170,8 @@ verify-regenerate: $(PHC_BIN)
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/color_utils.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
+			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
