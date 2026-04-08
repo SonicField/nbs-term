@@ -84,16 +84,11 @@ $(BUILDDIR)/test_parser: $(TESTDIR)/test_parser.c $(SRCDIR)/sgr.phc $(SRCDIR)/sc
 $(BUILDDIR)/test_screen: $(TESTDIR)/test_screen.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_screen.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
 
-$(BUILDDIR)/test_render_bitmap: $(TESTDIR)/test_render_bitmap.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/render_bitmap.phc | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_render_bitmap.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
-
-test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(BUILDDIR)/test_render_bitmap $(EXTENSION_SO)
+test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \
 	./$(BUILDDIR)/test_parser || exit_code=1; \
 	echo ""; \
 	./$(BUILDDIR)/test_screen || exit_code=1; \
-	echo ""; \
-	./$(BUILDDIR)/test_render_bitmap || exit_code=1; \
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_integration.py || exit_code=1; \
 	echo ""; \
@@ -136,15 +131,11 @@ regenerate:
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/vga_font_8x16.h $(SRCDIR)/render_bitmap.phc \
 			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
 		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
-		grep -v '^\s*#ifndef VGA_FONT' | \
-		grep -v '^\s*#define VGA_FONT' | \
-		grep -v '^\s*#endif.*/\*.*VGA_FONT' | \
 		$(PHC); \
 	} > generated/extension.c
 	@echo "Done ($(shell wc -l < generated/extension.c) lines)"
@@ -173,15 +164,11 @@ verify-regenerate: $(PHC_BIN)
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/vga_font_8x16.h $(SRCDIR)/render_bitmap.phc \
 			$(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
 		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
-		grep -v '^\s*#ifndef VGA_FONT' | \
-		grep -v '^\s*#define VGA_FONT' | \
-		grep -v '^\s*#endif.*/\*.*VGA_FONT' | \
 		$(PHC); \
 	} > $(BUILDDIR)/extension_verify.c
 	@diff -q generated/extension.c $(BUILDDIR)/extension_verify.c > /dev/null 2>&1 \

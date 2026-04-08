@@ -66,12 +66,12 @@ The distribution path strips `#include` directives and prepends standard headers
 
 | File | Lines | Responsibility |
 |------|------:|---------------|
-| sgr.phc | ~100 | SGR attribute parsing |
-| screen.phc | ~400 | Screen buffer, cursor, scroll |
+| sgr.phc | ~100 | SGR attribute parsing — `phc_flags CellAttr`, `phc_descr Color` |
+| screen.phc | ~500 | Screen buffer, cursor, scroll, dirty tracking |
 | vt_parser.phc | ~600 | VT escape sequence state machine |
-| input.phc | ~200 | Key encoding for terminal input |
-| render.phc | ~150 | Screen state extraction for Python |
-| extension.phc | ~200 | CPython module glue |
+| input.phc | ~200 | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey` |
+| render.phc | ~150 | Screen state extraction for Python (canvas spans) |
+| extension.phc | ~250 | CPython module glue |
 | color.phc | ~165 | CIELAB colour conversion (sRGB ↔ perceptual) |
 
 ### Makefile Targets
@@ -89,16 +89,16 @@ The distribution path strips `#include` directives and prepends standard headers
 
 ## Test Suite
 
-277 tests. Run with `make test`.
+268 tests. Run with `make test`.
 
 ```
-test_parser:        117 tests — VT state machine, CSI, SGR, UTF-8
-test_screen:         57 tests — cursor, scroll, erase, resize, scrollback
-test_integration:    23 tests — Python ↔ C extension
-test_orchestration:   9 tests — SSH data flow, threading
-test_gui_logic:      44 tests — selection, kbdint bridge, coordinates, gamma
-test_config:         18 tests — config loading, defaults, overrides
-test_ssh_integration: 3 tests — SSH transport (skipped without nbs-ssh)
+test_parser:         117 tests — VT state machine, CSI, SGR, UTF-8
+test_screen:          57 tests — cursor, scroll, erase, resize, scrollback
+test_integration:     23 tests — Python ↔ C extension
+test_orchestration:    9 tests — SSH data flow, threading
+test_gui_logic:       44 tests — selection, kbdint bridge, coordinates, gamma
+test_config:          18 tests — config loading, defaults, overrides
+test_ssh_integration:  3 tests — SSH transport (skipped without nbs-ssh)
 ```
 
 C tests compile through the phc pipeline and use the test framework from the phc submodule.
@@ -141,14 +141,14 @@ nbs-term/
 ├── pyproject.toml           Package metadata + dependencies
 ├── generated/extension.c   Pre-generated C (committed, portable)
 ├── src/                    Phoenics source files
-│   ├── sgr.phc
-│   ├── screen.phc
-│   ├── vt_parser.phc
-│   ├── input.phc
-│   ├── render.phc
-│   ├── extension.phc
-│   └── color.phc
-├── tests/                  Test suite
+│   ├── sgr.phc             SGR attributes (phc_flags CellAttr, phc_descr Color)
+│   ├── screen.phc          Screen buffer, cursor, scroll, dirty tracking
+│   ├── vt_parser.phc       VT escape sequence state machine
+│   ├── input.phc           Key encoding (phc_flags Modifier, phc_enum SpecialKey)
+│   ├── render.phc          Canvas span extraction
+│   ├── color.phc           CIELAB colour conversion
+│   └── extension.phc       CPython module glue
+├── tests/                  Test suite (268 tests)
 ├── docs/                   Documentation
 ├── deps/phc/               phc submodule (for developers)
 └── feature-requests/       Planned improvements

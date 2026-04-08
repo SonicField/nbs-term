@@ -30,10 +30,10 @@ Seven Phoenics source files, compiled as one translation unit:
 
 | File | Responsibility |
 |------|---------------|
-| `sgr.phc` | SGR attribute parsing (bold, dim, italic, underline, colours) |
-| `screen.phc` | Screen buffer, cursor, scroll regions, alternate screen |
+| `sgr.phc` | SGR attribute parsing — `phc_flags CellAttr`, `phc_descr Color` |
+| `screen.phc` | Screen buffer, cursor, scroll regions, alternate screen, dirty tracking |
 | `vt_parser.phc` | VT state machine — CSI, OSC, DCS, escape sequences |
-| `input.phc` | Key encoding — converts keystrokes to terminal escape sequences |
+| `input.phc` | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey` |
 | `render.phc` | Extracts screen state for Python (spans with attributes) |
 | `color.phc` | CIELAB colour conversion (sRGB to perceptual space) |
 | `extension.phc` | CPython module definition, method table, type exports |
@@ -70,12 +70,13 @@ The certificate-backed agent key (from `IdentityFile` + `IdentityAgent` in SSH c
 
 ## Rendering
 
-The Python renderer reads spans from the C extension via `get_screen()` and draws them on a Tk canvas:
+The Python renderer uses a double-buffered canvas with configurable refresh rate:
 
-1. `feed(data)` → C extension updates screen buffer
-2. `_render()` clears canvas rows, draws text spans with colours and attributes
-3. Cursor drawn after render via `after_idle()` to prevent flicker
-4. Cursor uses `canvas.coords()` to move, not delete/recreate
+1. `feed(data)` buffers SSH data and schedules a render after `_refresh_ms` (configurable via `refresh_hz`)
+2. `_flush_and_render()` feeds all buffered data to the C extension, then calls `_render()`
+3. `_render()` uses dirty-row tracking (`get_dirty_rows()`) — only changed rows are redrawn
+4. Double-buffer tag system (`buf_0`/`buf_1`): new items drawn hidden, then swapped visible atomically
+5. Cursor rendered as a Unicode character (Block: U+2588, Underline: U+2581, Bar: U+258F) using the same font as terminal text — automatic pixel-perfect alignment
 
 ### Colour Pipeline
 
@@ -100,9 +101,9 @@ SGR attributes affecting colour:
 
 `~/.nbs/nbs-term.honest` (Honest format). Created with defaults on first run.
 
-Settings: font family, font size, cursor style (Block/Wireframe/Underline/Bar), cursor blink, foreground colour, background colour, gamma correction.
+Settings: font family, font size, cursor style (Block/Wireframe/Underline/Bar), cursor blink, foreground colour, background colour, gamma correction, refresh rate (Hz).
 
-Access preferences via Cmd+, (Mac) or Ctrl+, (Linux). Changes apply immediately — no restart needed.
+Access preferences via Cmd+, (Mac) or Ctrl+, (Linux). Changes apply immediately — no restart needed. Foreground and background colours are selectable via a 256-colour picker (16 ANSI + 216 colour cube + 24 grayscale). Non-monospace fonts are automatically rejected with a fallback to Menlo (Mac) or monospace (Linux).
 
 ## Key Bindings
 
@@ -141,7 +142,6 @@ root.mainloop()               loop.run_until_complete()
 | test_screen | 57 | Cursor, scroll, erase, resize, scrollback, alt screen |
 | test_integration | 23 | Python ↔ C extension interface |
 | test_orchestration | 9 | SSH data flow, threading model |
-| test_gui_logic | 35 | Selection coordinates, text extraction, kbdint bridge |
+| test_gui_logic | 44 | Selection coordinates, text extraction, kbdint bridge, gamma |
 | test_config | 18 | Config loading, defaults, CLI overrides, platform paths |
-| test_gui_logic (gamma) | 9 | Gamma correction math |
 | test_ssh_integration | 3 | SSH transport (skipped without nbs-ssh) |

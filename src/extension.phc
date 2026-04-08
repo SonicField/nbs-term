@@ -11,7 +11,6 @@
  *   term.encode_special(key, mods) — encode special key
  *   term.encode_paste(data)       — encode bracketed paste
  *   term.resize(rows, cols)       — resize terminal
- *   term.get_dirty_rows()         — get dirty row indices, clear flags
  *   term.get_cell(row, col)       — get cell at position
  */
 /* Python.h must be first — Python requirement */
@@ -30,21 +29,15 @@
 #include "vt_parser.phc"
 #include "input.phc"
 #include "render.phc"
-#include "render_bitmap.phc"
-
 /* --- Python Terminal object --- */
 
 typedef struct {
     PyObject_HEAD
     Terminal *term;
     VTParser *parser;
-    GlyphAtlas *atlas;
-    FrameBuffer *framebuf;
 } TerminalObject;
 
 static void Terminal_dealloc(TerminalObject *self) {
-    if (self->framebuf) framebuf_free(self->framebuf);
-    if (self->atlas) atlas_free(self->atlas);
     if (self->parser) vt_parser_free(self->parser);
     if (self->term) terminal_free(self->term);
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -73,22 +66,6 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
         Py_DECREF(self);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate parser");
         return NULL;  /* phc_defer fires terminal_free */
-    }
-
-    /* Initialize built-in VGA 8x16 bitmap font atlas */
-    self->atlas = atlas_from_vga_font();
-    if (!self->atlas) {
-        Py_DECREF(self);
-        PyErr_SetString(PyExc_MemoryError, "Failed to allocate font atlas");
-        return NULL;
-    }
-
-    /* Allocate frame buffer for current terminal size */
-    self->framebuf = framebuf_alloc(cols * 8, rows * 16);
-    if (!self->framebuf) {
-        Py_DECREF(self);
-        PyErr_SetString(PyExc_MemoryError, "Failed to allocate frame buffer");
-        return NULL;
     }
 
     phc_defer_cancel;  /* success — ownership transferred to TerminalObject */
@@ -207,16 +184,6 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-/* --- is_mostly_blank() -> bool --- */
-
-static PyObject *Terminal_is_mostly_blank(TerminalObject *self, PyObject *args) {
-    (void)args;
-    if (screen_is_mostly_blank(self->term->active)) {
-        Py_RETURN_TRUE;
-    }
-    Py_RETURN_FALSE;
-}
-
 /* --- get_dirty_rows() -> tuple of dirty row indices, then clears flags --- */
 
 static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
@@ -242,88 +209,6 @@ static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
     /* Clear all dirty flags */
     memset(scr->dirty, 0, (size_t)scr->rows);
 
-    return result;
-}
-
-/* --- set_font_atlas(width, height, data: bytes) --- */
-
-static PyObject *Terminal_set_font_atlas(TerminalObject *self, PyObject *args) {
-    int glyph_w, glyph_h;
-    const char *data;
-    Py_ssize_t data_len;
-    if (!PyArg_ParseTuple(args, "iiy#", &glyph_w, &glyph_h, &data, &data_len))
-        return NULL;
-
-    int num_glyphs = (int)(data_len / ((Py_ssize_t)glyph_w * glyph_h));
-    if (num_glyphs <= 0) {
-        PyErr_SetString(PyExc_ValueError, "Atlas data too small");
-        return NULL;
-    }
-
-    /* Free old atlas and framebuffer */
-    if (self->atlas) { atlas_free(self->atlas); self->atlas = NULL; }
-    if (self->framebuf) { framebuf_free(self->framebuf); self->framebuf = NULL; }
-
-    self->atlas = atlas_alloc(glyph_w, glyph_h, num_glyphs);
-    if (!self->atlas) {
-        PyErr_SetString(PyExc_MemoryError, "Failed to allocate glyph atlas");
-        return NULL;
-    }
-    memcpy(self->atlas->data, data, (size_t)data_len);
-
-    /* Allocate frame buffer sized for current terminal + padding */
-    ScreenBuffer *scr = self->term->active;
-    int fb_w = scr->cols * glyph_w;
-    int fb_h = scr->rows * glyph_h;
-    self->framebuf = framebuf_alloc(fb_w, fb_h);
-    if (!self->framebuf) {
-        atlas_free(self->atlas);
-        self->atlas = NULL;
-        PyErr_SetString(PyExc_MemoryError, "Failed to allocate frame buffer");
-        return NULL;
-    }
-
-    Py_RETURN_NONE;
-}
-
-/* --- render_frame(fg="#ffffff", bg="#000000") -> bytes (PPM) --- */
-
-static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
-    const char *fg = "#ffffff";
-    const char *bg = "#000000";
-    if (!PyArg_ParseTuple(args, "|ss", &fg, &bg))
-        return NULL;
-
-    if (!self->atlas || !self->framebuf) {
-        PyErr_SetString(PyExc_RuntimeError,
-            "Font atlas not set — call set_font_atlas() first");
-        return NULL;
-    }
-
-    /* Reallocate framebuf if terminal was resized */
-    ScreenBuffer *scr = self->term->active;
-    int need_w = scr->cols * self->atlas->glyph_w;
-    int need_h = scr->rows * self->atlas->glyph_h;
-    if (self->framebuf->width != need_w || self->framebuf->height != need_h) {
-        framebuf_free(self->framebuf);
-        self->framebuf = framebuf_alloc(need_w, need_h);
-        if (!self->framebuf) {
-            PyErr_SetString(PyExc_MemoryError, "Failed to reallocate frame buffer");
-            return NULL;
-        }
-    }
-
-    render_screen_to_framebuf(self->framebuf, scr, self->atlas, fg, bg);
-
-    size_t ppm_len = 0;
-    uint8_t *ppm = framebuf_to_ppm(self->framebuf, &ppm_len);
-    if (!ppm) {
-        PyErr_SetString(PyExc_MemoryError, "Failed to generate PPM");
-        return NULL;
-    }
-
-    PyObject *result = PyBytes_FromStringAndSize((const char *)ppm, (Py_ssize_t)ppm_len);
-    free(ppm);
     return result;
 }
 
@@ -458,14 +343,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode paste data, wrapping in bracketed paste if enabled."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
-    {"is_mostly_blank", (PyCFunction)Terminal_is_mostly_blank, METH_NOARGS,
-     "Return True if >90% of screen cells are empty/space."},
     {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
      "Get tuple of dirty row indices since last call, then clear flags."},
-    {"set_font_atlas", (PyCFunction)Terminal_set_font_atlas, METH_VARARGS,
-     "Set glyph atlas: set_font_atlas(glyph_w, glyph_h, data_bytes)."},
-    {"render_frame",   (PyCFunction)Terminal_render_frame,   METH_VARARGS,
-     "Render terminal to PPM bytes: render_frame(fg='#ffffff', bg='#000000')."},
     {"get_cell",       (PyCFunction)Terminal_get_cell,       METH_VARARGS,
      "Get cell at (row, col) as (codepoint, fg, bg, attrs)."},
     {"get_size",       (PyCFunction)Terminal_get_size,       METH_NOARGS,

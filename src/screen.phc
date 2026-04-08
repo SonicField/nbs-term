@@ -455,17 +455,6 @@ static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
     if (scr->cursor.col >= new_cols) scr->cursor.col = new_cols - 1;
 }
 
-/* Check if screen is mostly blank (>90% empty/space cells) */
-static int screen_is_mostly_blank(const ScreenBuffer *scr) {
-    int total = scr->rows * scr->cols;
-    int blank = 0;
-    for (int i = 0; i < total; i++) {
-        uint32_t cp = scr->cells[i].codepoint;
-        if (cp == 0 || cp == ' ') blank++;
-    }
-    return blank * 10 > total * 9;  /* >90% blank */
-}
-
 /* --- Terminal: combines screen buffers + scrollback --- */
 
 typedef struct {

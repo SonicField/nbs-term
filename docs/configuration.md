@@ -26,6 +26,7 @@ type
     fg         : String;
     bg         : String;
     gamma      : Real;
+    refresh_hz : Integer;
   end;
 
 var config : TerminalConfig = (
@@ -34,6 +35,7 @@ var config : TerminalConfig = (
   fg         : '#d0d0d0';
   bg         : '#000000';
   gamma      : 1.0;
+  refresh_hz : 60;
 );
 ```
 
@@ -48,19 +50,21 @@ var config : TerminalConfig = (
 | fg | String | #d0d0d0 | Default text colour (hex RGB) |
 | bg | String | #000000 | Terminal background colour (hex RGB) |
 | gamma | Real | 1.2 (Mac), 1.0 (Linux) | Colour gamma correction — higher values darken midtones |
+| refresh_hz | Integer | 60 | Render refresh rate in Hz (10-120). Lower values reduce flicker but increase input latency |
 
 ## Preferences Dialog
 
 Open with Cmd+, (Mac) or Ctrl+, (Linux/Windows). Changes apply immediately to the running terminal — no restart needed.
 
 The dialog provides:
-- Font family dropdown (monospace fonts)
+- Font family dropdown (validated monospace fonts only)
 - Font size spinner
 - Cursor style dropdown
 - Cursor blink checkbox
 - Gamma slider (0.5 to 2.0)
-
-Foreground and background colours are set by editing the config file directly.
+- Refresh rate slider (10-120 Hz)
+- Foreground colour button with 256-colour picker
+- Background colour button with 256-colour picker
 
 Save writes back to `~/.nbs/nbs-term.honest`.
 
@@ -70,7 +74,8 @@ Command-line arguments override config file values for a single session:
 
 ```bash
 nbs-term --font-size=20 --font-family=Consolas user@host
-nbs-term -v user@host    # verbose SSH logging to stderr
+nbs-term --refresh-hz=25 user@host   # lower refresh rate to reduce flicker
+nbs-term -v user@host                # verbose SSH logging to stderr
 ```
 
 ## Gamma Correction
