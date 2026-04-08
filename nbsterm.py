@@ -78,12 +78,13 @@ class TerminalWidget:
         self._blink_id = None
 
         # Font setup — use requested font (no silent fallback)
-        self.font = tkfont.Font(family=font_family, size=font_size)
+        # Named fonts so C render_frame() can reference them via Tcl
+        self.font = tkfont.Font(family=font_family, size=font_size, name="font_normal")
         self._font_cache = {
             0: self.font,
-            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
-            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
-            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
+            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold", name="font_bold"),
+            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic", name="font_italic"),
+            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic", name="font_bold_italic"),
         }
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
@@ -99,14 +100,6 @@ class TerminalWidget:
 
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
-
-        # Double-buffered render state: two sets of items, swap visibility
-        self._buf_items = [
-            [[] for _ in range(rows)],  # buffer 0
-            [[] for _ in range(rows)],  # buffer 1
-        ]
-        self._active_buf = 0  # currently visible buffer
-        self._row_items = self._buf_items[0]  # alias for compat
 
         # Backpressure: buffer incoming data, render on next idle cycle
         self._pending_data = bytearray()
@@ -228,128 +221,24 @@ class TerminalWidget:
             self._render()
 
     def _render(self):
-        """Double-buffered render with inline cursor.
-        The cursor is rendered as part of the text spans — not a separate
-        canvas item. This guarantees pixel-perfect alignment."""
-        dirty_rows = self.term.get_dirty_rows()
-        if not dirty_rows:
-            return
+        """Delegate rendering to C via Tcl. C manages double-buffering internally."""
+        # Cursor style: 0=Block, 1=Underline, 2=Bar
+        style_map = {"Block": 0, "Underline": 1, "Bar": 2}
+        cursor_style_int = style_map.get(self._cursor_style, 0)
 
-        screen = self.term.get_screen(self._fg, self._bg)
-        crow, ccol = self.term.get_cursor()
-        # Cursor is rendered inline — Block uses color inversion,
-        # Underline/Bar use small canvas rectangles alongside real text
-        show_cursor = self._cursor_visible
-
-        # Determine buffers: draw into the back buffer
-        front = self._active_buf
-        back = 1 - front
-        back_tag = f"buf_{back}"
-        front_tag = f"buf_{front}"
-        back_items = self._buf_items[back]
-
-        # Copy unchanged rows from front buffer to back buffer references
-        front_items = self._buf_items[front]
-        dirty_set = set(dirty_rows)
-
-        # Cursor row is always dirty (cursor may have moved)
-        if crow < self.rows:
-            dirty_set.add(crow)
-
-        for r in range(self.rows):
-            if r not in dirty_set:
-                back_items[r] = front_items[r]
-                for item_id in back_items[r]:
-                    self.canvas.itemconfigure(item_id, tags=(back_tag,))
-                front_items[r] = []
-                continue
-
-            if r >= len(screen):
-                continue
-
-            for item_id in back_items[r]:
-                self.canvas.delete(item_id)
-            back_items[r] = []
-
-            spans = screen[r]
-            # Track column position for cursor injection
-            col_offset = 0
-            x = PADDING
-            y = PADDING + r * self.char_height
-
-            for span in spans:
-                text, fg, bg, attrs = span
-
-                if self._gamma != 1.0:
-                    fg = gamma_correct(fg, self._gamma)
-                    bg = gamma_correct(bg, self._gamma)
-
-                if attrs & 0x02:  # ATTR_DIM
-                    fg = dim_color(fg)
-
-                if attrs & 0x20:  # ATTR_INVERSE
-                    fg, bg = bg, fg
-
-                display_font = self._font_cache.get(attrs & 0x05, self.font)
-
-                # Render span normally (no splitting at cursor)
-                text_width = display_font.measure(text)
-                rid = self.canvas.create_rectangle(
-                    x, y, x + text_width, y + self.char_height,
-                    fill=bg, outline="", state="hidden", tags=(back_tag,))
-                back_items[r].append(rid)
-                tid = self.canvas.create_text(
-                    x, y, text=text, fill=fg, font=display_font,
-                    anchor=tk.NW, state="hidden", tags=(back_tag,))
-                back_items[r].append(tid)
-
-                # Overlay cursor indicator if cursor is in this span
-                span_end = col_offset + len(text)
-                if show_cursor and r == crow and col_offset <= ccol < span_end:
-                    cur_idx = ccol - col_offset
-                    # Cursor x = span start + width of chars before cursor
-                    cx = x + display_font.measure(text[:cur_idx]) if cur_idx > 0 else x
-                    cw = self.char_width
-                    cur_color = self._cursor_color or fg
-                    cursor_style = self._cursor_style
-                    if cursor_style == "Block":
-                        # Block: overlay inverted bg rectangle + re-render char
-                        oid = self.canvas.create_rectangle(
-                            cx, y, cx + cw, y + self.char_height,
-                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(oid)
-                        real_char = text[cur_idx] if cur_idx < len(text) else " "
-                        otid = self.canvas.create_text(
-                            cx, y, text=real_char, fill=bg, font=display_font,
-                            anchor=tk.NW, state="hidden", tags=(back_tag,))
-                        back_items[r].append(otid)
-                    elif cursor_style == "Underline":
-                        uid = self.canvas.create_rectangle(
-                            cx, y + self.char_height - 2, cx + cw, y + self.char_height,
-                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(uid)
-                    else:  # Bar
-                        bid = self.canvas.create_rectangle(
-                            cx, y, cx + 2, y + self.char_height,
-                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
-                        back_items[r].append(bid)
-
-                x += text_width
-                col_offset = span_end
-
-        # Atomic swap: show back buffer, hide front buffer
-        self.canvas.itemconfigure(back_tag, state="normal")
-        self.canvas.itemconfigure(front_tag, state="hidden")
-
-        # Delete old front buffer items (now hidden)
-        for r in range(self.rows):
-            for item_id in front_items[r]:
-                self.canvas.delete(item_id)
-            front_items[r] = []
-
-        # Swap active buffer
-        self._active_buf = back
-        self._row_items = self._buf_items[back]
+        self.term.render_frame(
+            self.parent.tk.interpaddr(),
+            str(self.canvas),
+            self._cursor_visible,
+            cursor_style_int,
+            self._cursor_color or "",
+            self._fg,
+            self._bg,
+            self._gamma,
+            self.char_width,
+            self.char_height,
+            PADDING,
+        )
 
         # Restart blink timer
         if self._cursor_blink and self._blink_id is None:
@@ -385,15 +274,10 @@ class TerminalWidget:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-            # Reset both buffers on resize
+            # Reset render state on resize
             self.canvas.delete("buf_0")
             self.canvas.delete("buf_1")
-            self._buf_items = [
-                [[] for _ in range(new_rows)],
-                [[] for _ in range(new_rows)],
-            ]
-            self._active_buf = 0
-            self._row_items = self._buf_items[0]
+            self.term.render_reset()
             self._render()
             return (new_rows, new_cols)
         return None
@@ -1005,15 +889,10 @@ class TerminalApp:
             w.cols = new_cols
             w.rows = new_rows
             w.term.resize(new_rows, new_cols)
-            # Reset both buffers on resize
+            # Reset render state on resize
             w.canvas.delete("buf_0")
             w.canvas.delete("buf_1")
-            w._buf_items = [
-                [[] for _ in range(new_rows)],
-                [[] for _ in range(new_rows)],
-            ]
-            w._active_buf = 0
-            w._row_items = w._buf_items[0]
+            w.term.render_reset()
             self.ssh.resize(new_rows, new_cols)
         # Rerender
         w._render()

@@ -2450,12 +2450,25 @@ static PyObject *phc_sel_range(PyObject *self, PyObject *args) {
  * The preprocessor expands headers once, phc sees all phc_descr types,
  * and everything compiles as one unit. No type manifest needed here.
  */
+/* --- Render state for double-buffered canvas rendering --- */
+
+#define RENDER_MAX_ITEMS_PER_ROW 64
+#define RENDER_MAX_ROWS 256
+
+typedef struct {
+    int items[2][RENDER_MAX_ROWS][RENDER_MAX_ITEMS_PER_ROW]; /* item IDs per buffer/row */
+    int item_count[2][RENDER_MAX_ROWS];  /* count of items per buffer/row */
+    int active_buf;  /* 0 or 1 — currently visible buffer */
+    int initialized; /* whether render state has been set up */
+} RenderState;
+
 /* --- Python Terminal object --- */
 
 typedef struct {
     PyObject_HEAD
     Terminal *term;
     VTParser *parser;
+    RenderState render;
 } TerminalObject;
 
 static void Terminal_dealloc(TerminalObject *self) {
@@ -2487,6 +2500,9 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
         {  terminal_free(self->term); return NULL; }  /* phc_defer fires terminal_free */
      terminal_free(self->term);
 }
+
+    /* Initialize render state */
+    memset(&self->render, 0, sizeof(RenderState));
 
     
   /* success — ownership transferred to TerminalObject */
@@ -2903,6 +2919,406 @@ static PyObject *Terminal_extract_selected_text(TerminalObject *self, PyObject *
     return result;
 }
 
+/* --- Internal color helpers (C-only, no PyObject) --- */
+
+static void render_gamma(const char *hex, double gamma, char *out, int outsize) {
+    if (gamma == 1.0 || strlen(hex) != 7 || hex[0] != '#') {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    int ro = (int)(255.0 * pow((double)r / 255.0, gamma));
+    int go = (int)(255.0 * pow((double)g / 255.0, gamma));
+    int bo = (int)(255.0 * pow((double)b / 255.0, gamma));
+    if (ro > 255) ro = 255; if (go > 255) go = 255; if (bo > 255) bo = 255;
+    snprintf(out, (size_t)outsize, "#%02x%02x%02x", ro, go, bo);
+}
+
+static void render_dim(const char *hex, char *out, int outsize) {
+    if (strlen(hex) != 7 || hex[0] != '#') {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    r &= 0xFF; g &= 0xFF; b &= 0xFF;
+    snprintf(out, (size_t)outsize, "#%02x%02x%02x", r / 2, g / 2, b / 2);
+}
+
+/* --- Tcl_EvalObjv helpers --- */
+
+/* Store a canvas item ID returned by Tcl_EvalObjv into the render buffer. */
+static void render_store_item(Tcl_Interp *interp, RenderState *rs, int buf, int row) {
+    if (rs->item_count[buf][row] < RENDER_MAX_ITEMS_PER_ROW) {
+        int item_id = 0;
+        Tcl_Obj *result = Tcl_GetObjResult(interp);
+        Tcl_GetIntFromObj(interp, result, &item_id);
+        rs->items[buf][row][rs->item_count[buf][row]++] = item_id;
+    }
+}
+
+/* Call canvas create rectangle via Tcl_EvalObjv. Binary-safe (no brace quoting). */
+static void render_create_rect(Tcl_Interp *interp, Tcl_Obj *canvas,
+                               int x1, int y1, int x2, int y2,
+                               const char *fill, const char *tag,
+                               RenderState *rs, int buf, int row) {
+    Tcl_Obj *objv[14];
+    objv[0] = canvas;
+    objv[1] = Tcl_NewStringObj("create", -1);
+    objv[2] = Tcl_NewStringObj("rectangle", -1);
+    objv[3] = Tcl_NewIntObj(x1);
+    objv[4] = Tcl_NewIntObj(y1);
+    objv[5] = Tcl_NewIntObj(x2);
+    objv[6] = Tcl_NewIntObj(y2);
+    objv[7] = Tcl_NewStringObj("-fill", -1);
+    objv[8] = Tcl_NewStringObj(fill, -1);
+    objv[9] = Tcl_NewStringObj("-outline", -1);
+    objv[10] = Tcl_NewStringObj("", -1);
+    objv[11] = Tcl_NewStringObj("-state", -1);
+    objv[12] = Tcl_NewStringObj("hidden", -1);
+    objv[13] = Tcl_NewStringObj("-tags", -1);
+    Tcl_Obj *tag_obj = Tcl_NewStringObj(tag, -1);
+    /* 15 args total */
+    Tcl_Obj *full[15];
+    memcpy(full, objv, 14 * sizeof(Tcl_Obj *));
+    full[14] = tag_obj;
+    for (int i = 0; i < 15; i++) Tcl_IncrRefCount(full[i]);
+    if (Tcl_EvalObjv(interp, 15, full, 0) == TCL_OK) {
+        render_store_item(interp, rs, buf, row);
+    }
+    for (int i = 0; i < 15; i++) Tcl_DecrRefCount(full[i]);
+}
+
+/* Call canvas create text via Tcl_EvalObjv. Binary-safe. */
+static void render_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
+                               int px, int py, const char *text, int text_len,
+                               const char *fill, const char *font,
+                               const char *tag,
+                               RenderState *rs, int buf, int row) {
+    Tcl_Obj *objv[15];
+    objv[0] = canvas;
+    objv[1] = Tcl_NewStringObj("create", -1);
+    objv[2] = Tcl_NewStringObj("text", -1);
+    objv[3] = Tcl_NewIntObj(px);
+    objv[4] = Tcl_NewIntObj(py);
+    objv[5] = Tcl_NewStringObj("-text", -1);
+    objv[6] = Tcl_NewStringObj(text, text_len);  /* binary-safe */
+    objv[7] = Tcl_NewStringObj("-fill", -1);
+    objv[8] = Tcl_NewStringObj(fill, -1);
+    objv[9] = Tcl_NewStringObj("-font", -1);
+    objv[10] = Tcl_NewStringObj(font, -1);
+    objv[11] = Tcl_NewStringObj("-anchor", -1);
+    objv[12] = Tcl_NewStringObj("nw", -1);
+    objv[13] = Tcl_NewStringObj("-state", -1);
+    objv[14] = Tcl_NewStringObj("hidden", -1);
+    Tcl_Obj *tag_kw = Tcl_NewStringObj("-tags", -1);
+    Tcl_Obj *tag_obj = Tcl_NewStringObj(tag, -1);
+    Tcl_Obj *full[17];
+    memcpy(full, objv, 15 * sizeof(Tcl_Obj *));
+    full[15] = tag_kw;
+    full[16] = tag_obj;
+    for (int i = 0; i < 17; i++) Tcl_IncrRefCount(full[i]);
+    if (Tcl_EvalObjv(interp, 17, full, 0) == TCL_OK) {
+        render_store_item(interp, rs, buf, row);
+    }
+    for (int i = 0; i < 17; i++) Tcl_DecrRefCount(full[i]);
+}
+
+/* Call 'font measure <font> <text>' via Tcl_EvalObjv. Binary-safe. */
+static int render_font_measure(Tcl_Interp *interp, const char *font,
+                               const char *text, int text_len, int fallback) {
+    Tcl_Obj *objv[4];
+    objv[0] = Tcl_NewStringObj("font", -1);
+    objv[1] = Tcl_NewStringObj("measure", -1);
+    objv[2] = Tcl_NewStringObj(font, -1);
+    objv[3] = Tcl_NewStringObj(text, text_len);
+    for (int i = 0; i < 4; i++) Tcl_IncrRefCount(objv[i]);
+    int width = fallback;
+    if (Tcl_EvalObjv(interp, 4, objv, 0) == TCL_OK) {
+        Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &width);
+    }
+    for (int i = 0; i < 4; i++) Tcl_DecrRefCount(objv[i]);
+    return width;
+}
+
+/* Call 'canvas itemconfigure <id> -tags <tag>' via Tcl_EvalObjv. */
+static void render_retag(Tcl_Interp *interp, Tcl_Obj *canvas, int item_id,
+                         const char *tag) {
+    Tcl_Obj *objv[5];
+    objv[0] = canvas;
+    objv[1] = Tcl_NewStringObj("itemconfigure", -1);
+    objv[2] = Tcl_NewIntObj(item_id);
+    objv[3] = Tcl_NewStringObj("-tags", -1);
+    objv[4] = Tcl_NewStringObj(tag, -1);
+    for (int i = 0; i < 5; i++) Tcl_IncrRefCount(objv[i]);
+    Tcl_EvalObjv(interp, 5, objv, 0);
+    for (int i = 0; i < 5; i++) Tcl_DecrRefCount(objv[i]);
+}
+
+/* Call 'canvas delete <id>' via Tcl_EvalObjv. */
+static void render_delete(Tcl_Interp *interp, Tcl_Obj *canvas, int item_id) {
+    Tcl_Obj *objv[3];
+    objv[0] = canvas;
+    objv[1] = Tcl_NewStringObj("delete", -1);
+    objv[2] = Tcl_NewIntObj(item_id);
+    for (int i = 0; i < 3; i++) Tcl_IncrRefCount(objv[i]);
+    Tcl_EvalObjv(interp, 3, objv, 0);
+    for (int i = 0; i < 3; i++) Tcl_DecrRefCount(objv[i]);
+}
+
+/* Call 'canvas itemconfigure <tag> -state <state>' via Tcl_EvalObjv. */
+static void render_set_state(Tcl_Interp *interp, Tcl_Obj *canvas,
+                             const char *tag, const char *state) {
+    Tcl_Obj *objv[5];
+    objv[0] = canvas;
+    objv[1] = Tcl_NewStringObj("itemconfigure", -1);
+    objv[2] = Tcl_NewStringObj(tag, -1);
+    objv[3] = Tcl_NewStringObj("-state", -1);
+    objv[4] = Tcl_NewStringObj(state, -1);
+    for (int i = 0; i < 5; i++) Tcl_IncrRefCount(objv[i]);
+    Tcl_EvalObjv(interp, 5, objv, 0);
+    for (int i = 0; i < 5; i++) Tcl_DecrRefCount(objv[i]);
+}
+
+/* Extract one UTF-8 character starting at byte index cur_idx in text.
+ * Writes the character to out (must be >= 5 bytes). Returns byte length. */
+static int render_utf8_char_at(const char *text, int text_len, int cur_idx,
+                               char *out) {
+    if (cur_idx >= text_len) {
+        out[0] = ' '; out[1] = '\0';
+        return 1;
+    }
+    unsigned char first = (unsigned char)text[cur_idx];
+    int clen = 1;
+    if (first >= 0xF0) clen = 4;
+    else if (first >= 0xE0) clen = 3;
+    else if (first >= 0xC0) clen = 2;
+    if (cur_idx + clen > text_len) clen = text_len - cur_idx;
+    memcpy(out, text + cur_idx, (size_t)clen);
+    out[clen] = '\0';
+    return clen;
+}
+
+/* --- render_frame: double-buffered Tk canvas rendering from C ---
+ * All canvas commands use Tcl_EvalObjv (binary-safe, no injection).
+ * Color transforms use render_gamma/render_dim (reuse color_utils logic).
+ *
+ * Cursor styles: 0=Block, 1=Underline, 2=Bar */
+static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
+    unsigned long long interp_addr;
+    const char *canvas_path;
+    int cursor_visible, cursor_style;
+    const char *cursor_color_str, *fg_str, *bg_str;
+    double gamma_val;
+    int char_width, char_height, padding;
+
+    if (!PyArg_ParseTuple(args, "Kspisssdiiii", &interp_addr, &canvas_path,
+                          &cursor_visible, &cursor_style,
+                          &cursor_color_str, &fg_str, &bg_str,
+                          &gamma_val, &char_width, &char_height, &padding))
+        return NULL;
+
+    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
+    if (!interp) {
+        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
+        return NULL;
+    }
+
+    ScreenBuffer *scr = self->term->active;
+    RenderState *rs = &self->render;
+
+    /* Get dirty rows */
+    int dirty[RENDER_MAX_ROWS] = {0};
+    int rows = scr->rows < RENDER_MAX_ROWS ? scr->rows : RENDER_MAX_ROWS;
+    for (int r = 0; r < rows; r++) {
+        if (scr->dirty[r]) dirty[r] = 1;
+    }
+
+    int crow = scr->cursor.row;
+    int ccol = scr->cursor.col;
+    if (crow >= 0 && crow < rows) dirty[crow] = 1;
+
+    int any_dirty = 0;
+    for (int r = 0; r < rows; r++) {
+        if (dirty[r]) { any_dirty = 1; break; }
+    }
+    if (!any_dirty) Py_RETURN_NONE;
+
+    PyObject *screen = render_screen(scr, fg_str, bg_str);
+    if (!screen) return NULL;
+
+    int front = rs->active_buf;
+    int back = 1 - front;
+    char back_tag[16], front_tag[16];
+    snprintf(back_tag, sizeof(back_tag), "buf_%d", back);
+    snprintf(front_tag, sizeof(front_tag), "buf_%d", front);
+
+    /* Canvas Tcl_Obj — reused across all commands */
+    Tcl_Obj *canvas_obj = Tcl_NewStringObj(canvas_path, -1);
+    Tcl_IncrRefCount(canvas_obj);
+
+    for (int r = 0; r < rows; r++) {
+        if (!dirty[r]) {
+            /* Clean row: retag front items to back buffer */
+            for (int i = 0; i < rs->item_count[front][r]; i++) {
+                render_retag(interp, canvas_obj, rs->items[front][r][i], back_tag);
+            }
+            rs->item_count[back][r] = rs->item_count[front][r];
+            memcpy(rs->items[back][r], rs->items[front][r],
+                   (size_t)rs->item_count[front][r] * sizeof(int));
+            rs->item_count[front][r] = 0;
+            continue;
+        }
+
+        /* Dirty row: delete old back items */
+        for (int i = 0; i < rs->item_count[back][r]; i++) {
+            render_delete(interp, canvas_obj, rs->items[back][r][i]);
+        }
+        rs->item_count[back][r] = 0;
+
+        if (r >= PyList_GET_SIZE(screen)) continue;
+
+        PyObject *spans = PyList_GET_ITEM(screen, r);
+        int col_offset = 0;
+        int x = padding;
+        int y = padding + r * char_height;
+
+        for (Py_ssize_t si = 0; si < PyList_GET_SIZE(spans); si++) {
+            PyObject *span = PyList_GET_ITEM(spans, si);
+            const char *text;
+            Py_ssize_t text_len;
+            const char *span_fg, *span_bg;
+            int attrs;
+
+            if (!PyArg_ParseTuple(span, "s#ssi", &text, &text_len,
+                                  &span_fg, &span_bg, &attrs))
+            {
+                Tcl_DecrRefCount(canvas_obj);
+                Py_DECREF(screen);
+                return NULL;
+            }
+
+            /* Apply gamma, dim, inverse using color_utils logic */
+            char fg_buf[16], bg_buf[16], dim_buf[16];
+            if (gamma_val != 1.0) {
+                render_gamma(span_fg, gamma_val, fg_buf, sizeof(fg_buf));
+                render_gamma(span_bg, gamma_val, bg_buf, sizeof(bg_buf));
+                span_fg = fg_buf;
+                span_bg = bg_buf;
+            }
+            if (attrs & 0x02) {  /* DIM */
+                render_dim(span_fg, dim_buf, sizeof(dim_buf));
+                span_fg = dim_buf;
+            }
+            if (attrs & 0x20) {  /* INVERSE */
+                const char *tmp = span_fg;
+                span_fg = span_bg;
+                span_bg = tmp;
+            }
+
+            /* Font name based on attrs */
+            const char *font_tag = "font_normal";
+            if ((attrs & 0x05) == 0x05) font_tag = "font_bold_italic";
+            else if (attrs & 0x01) font_tag = "font_bold";
+            else if (attrs & 0x04) font_tag = "font_italic";
+
+            /* Text width via Tcl font measure (binary-safe) */
+            int text_width = render_font_measure(interp, font_tag, text,
+                                                  (int)text_len,
+                                                  (int)text_len * char_width);
+
+            /* Background rectangle */
+            render_create_rect(interp, canvas_obj, x, y,
+                              x + text_width, y + char_height,
+                              span_bg, back_tag, rs, back, r);
+
+            /* Text item */
+            render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
+                              span_fg, font_tag, back_tag, rs, back, r);
+
+            /* Cursor overlay */
+            int span_end = col_offset + (int)text_len;
+            if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
+                int cur_idx = ccol - col_offset;
+
+                /* Cursor x via font measure of prefix */
+                int cx = x;
+                if (cur_idx > 0) {
+                    cx = x + render_font_measure(interp, font_tag, text,
+                                                  cur_idx, cur_idx * char_width);
+                }
+                int cw = char_width;
+                const char *cur_color = (cursor_color_str[0] != '\0') ? cursor_color_str : span_fg;
+
+                if (cursor_style == 0) {
+                    /* Block: inverted bg + re-render char */
+                    render_create_rect(interp, canvas_obj, cx, y,
+                                      cx + cw, y + char_height,
+                                      cur_color, back_tag, rs, back, r);
+                    /* Extract full UTF-8 character at cursor */
+                    char cur_char[8];
+                    render_utf8_char_at(text, (int)text_len, cur_idx, cur_char);
+                    render_create_text(interp, canvas_obj, cx, y,
+                                      cur_char, (int)strlen(cur_char),
+                                      span_bg, font_tag, back_tag, rs, back, r);
+                } else if (cursor_style == 1) {
+                    /* Underline */
+                    render_create_rect(interp, canvas_obj, cx,
+                                      y + char_height - 2,
+                                      cx + cw, y + char_height,
+                                      cur_color, back_tag, rs, back, r);
+                } else {
+                    /* Bar */
+                    render_create_rect(interp, canvas_obj, cx, y,
+                                      cx + 2, y + char_height,
+                                      cur_color, back_tag, rs, back, r);
+                }
+            }
+
+            x += text_width;
+            col_offset = span_end;
+        }
+    }
+
+    Py_DECREF(screen);
+
+    /* Atomic swap: show back, hide front */
+    render_set_state(interp, canvas_obj, back_tag, "normal");
+    render_set_state(interp, canvas_obj, front_tag, "hidden");
+
+    /* Delete old front buffer items */
+    for (int r = 0; r < rows; r++) {
+        for (int i = 0; i < rs->item_count[front][r]; i++) {
+            render_delete(interp, canvas_obj, rs->items[front][r][i]);
+        }
+        rs->item_count[front][r] = 0;
+    }
+
+    Tcl_DecrRefCount(canvas_obj);
+
+    /* Clear dirty flags */
+    memset(scr->dirty, 0, (size_t)rows);
+
+    /* Swap active buffer */
+    rs->active_buf = back;
+
+    Py_RETURN_NONE;
+}
+
+/* --- render_reset: clear render state (call on resize) --- */
+static PyObject *Terminal_render_reset(TerminalObject *self, PyObject *args) {
+    (void)args;
+    memset(&self->render, 0, sizeof(RenderState));
+    Py_RETURN_NONE;
+}
+
 /* --- Method table --- */
 
 static PyMethodDef Terminal_methods[] = {
@@ -2934,6 +3350,10 @@ static PyMethodDef Terminal_methods[] = {
      "Get scrollback line by index (0=oldest). Returns list of (text, fg, bg, attrs) spans."},
     {"extract_selected_text", (PyCFunction)Terminal_extract_selected_text, METH_VARARGS,
      "Extract text from selection range: (start_row, start_col, end_row, end_col) -> str."},
+    {"render_frame", (PyCFunction)Terminal_render_frame, METH_VARARGS,
+     "Render dirty rows to Tk canvas via Tcl. Manages double-buffering internally."},
+    {"render_reset", (PyCFunction)Terminal_render_reset, METH_NOARGS,
+     "Reset render state (call on resize)."},
     {NULL, NULL, 0, NULL}
 };
 
