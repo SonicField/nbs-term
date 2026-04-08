@@ -40,6 +40,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
+PADDING = 8  # pixels of margin around terminal content
 SCROLLBACK_LINES = 10000
 
 
@@ -134,9 +135,9 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col)."""
-        col = max(0, min(x // self.char_width, self.cols - 1))
-        row = max(0, min(y // self.char_height, self.rows - 1))
+        """Convert pixel coordinates to (row, col), accounting for padding."""
+        col = max(0, min((x - PADDING) // self.char_width, self.cols - 1))
+        row = max(0, min((y - PADDING) // self.char_height, self.rows - 1))
         return (row, col)
 
     def _on_mouse_down(self, event):
@@ -178,9 +179,9 @@ class TerminalWidget:
         for r in range(start[0], end[0] + 1):
             c0 = start[1] if r == start[0] else 0
             c1 = end[1] if r == end[0] else self.cols - 1
-            x0 = c0 * self.char_width
-            y0 = r * self.char_height
-            x1 = (c1 + 1) * self.char_width
+            x0 = PADDING + c0 * self.char_width
+            y0 = PADDING + r * self.char_height
+            x1 = PADDING + (c1 + 1) * self.char_width
             y1 = y0 + self.char_height
             # Background
             bg_item = self.canvas.create_rectangle(
@@ -192,7 +193,7 @@ class TerminalWidget:
             for c in range(c0, c1 + 1):
                 cell = self.term.get_cell(r, c)
                 if cell and cell[0] > 0:
-                    tx = c * self.char_width
+                    tx = PADDING + c * self.char_width
                     text_item = self.canvas.create_text(
                         tx, y0, text=chr(cell[0]), fill=self._bg,
                         font=self.font, anchor=tk.NW,
@@ -262,8 +263,8 @@ class TerminalWidget:
             self._row_items[r] = []
 
             spans = screen[r]
-            x = 0
-            y = r * self.char_height
+            x = PADDING
+            y = PADDING + r * self.char_height
 
             for span in spans:
                 text, fg, bg, attrs = span
@@ -327,8 +328,8 @@ class TerminalWidget:
     def _cursor_coords(self):
         """Calculate cursor rectangle coordinates for current position and style."""
         crow, ccol = self.term.get_cursor()
-        cx = ccol * self.char_width
-        cy = crow * self.char_height
+        cx = PADDING + ccol * self.char_width
+        cy = PADDING + crow * self.char_height
         style = self._cursor_style
         if style == "Underline":
             return (cx, cy + self.char_height - 2, cx + self.char_width, cy + self.char_height)
@@ -423,8 +424,8 @@ class TerminalWidget:
 
     def handle_resize(self, event):
         """Handle window resize."""
-        new_cols = max(1, event.width // self.char_width)
-        new_rows = max(1, event.height // self.char_height)
+        new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
+        new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
@@ -827,8 +828,8 @@ class TerminalApp:
         # Recalculate terminal grid from new font metrics
         canvas_w = w.canvas.winfo_width()
         canvas_h = w.canvas.winfo_height()
-        new_cols = max(1, canvas_w // w.char_width)
-        new_rows = max(1, canvas_h // w.char_height)
+        new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
+        new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
         if new_cols != w.cols or new_rows != w.rows:
             w.cols = new_cols
             w.rows = new_rows
