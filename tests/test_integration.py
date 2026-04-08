@@ -224,6 +224,85 @@ class TestRealisticSequence(unittest.TestCase):
         self.assertEqual(cell[0], 0)
 
 
+class TestDirtyTracking(unittest.TestCase):
+    """Verify dirty-row tracking — the renderer's early-return gate."""
+
+    def test_initial_all_dirty(self):
+        """New terminal should have all rows dirty."""
+        t = _nbsterm.Terminal(4, 10)
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 4)
+
+    def test_clean_after_get(self):
+        """After get_dirty_rows(), no rows are dirty."""
+        t = _nbsterm.Terminal(4, 10)
+        t.get_dirty_rows()  # clear
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 0)
+
+    def test_feed_dirties_rows(self):
+        """Feeding data should mark affected rows dirty."""
+        t = _nbsterm.Terminal(4, 10)
+        t.get_dirty_rows()  # clear
+        t.feed(b"Hello")  # writes to row 0
+        dirty = t.get_dirty_rows()
+        self.assertIn(0, dirty)
+
+    def test_single_row_update(self):
+        """Writing to one row should dirty only that row."""
+        t = _nbsterm.Terminal(4, 10)
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[3;1H")  # move to row 2
+        t.get_dirty_rows()  # clear cursor move dirtying
+        t.feed(b"X")  # write to row 2
+        dirty = t.get_dirty_rows()
+        self.assertIn(2, dirty)
+
+    def test_idle_no_dirty(self):
+        """No feed after clear → no dirty rows (renderer skips)."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"Hello")
+        t.get_dirty_rows()  # clear
+        # No further feed
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 0)
+
+    def test_alt_screen_all_dirty(self):
+        """Alt screen switch should mark all rows dirty."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"Hello")
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[?1049h")  # switch to alt
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 4)
+
+    def test_alt_screen_back_all_dirty(self):
+        """Switching back from alt should mark all rows dirty."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"\x1b[?1049h")  # alt
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[?1049l")  # back to main
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 4)
+
+    def test_erase_display_dirties_all(self):
+        """CSI 2J (erase display) should dirty all rows."""
+        t = _nbsterm.Terminal(4, 10)
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[2J")
+        dirty = t.get_dirty_rows()
+        self.assertEqual(len(dirty), 4)
+
+    def test_scroll_dirties_rows(self):
+        """Scrolling should dirty affected rows."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"A\r\nB\r\nC\r\nD")
+        t.get_dirty_rows()  # clear
+        t.feed(b"\r\nE")  # scroll up, new line
+        dirty = t.get_dirty_rows()
+        self.assertGreater(len(dirty), 0)
+
+
 if __name__ == '__main__':
     # Run with verbose output and summary
     result = unittest.main(verbosity=2, exit=False)
