@@ -260,11 +260,12 @@ class TerminalWidget:
         """Process all buffered data and render once per frame."""
         self._render_scheduled = False
         if self._pending_data:
-            # Reset cursor blink on new data — cursor always visible after input
             self._cursor_visible = True
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
-            self._render()
+        # Always render — cursor row is always dirty, so even without
+        # new SSH data, cursor position changes are drawn
+        self._render()
 
     def _render(self):
         """Double-buffered render with inline cursor.
@@ -516,6 +517,10 @@ class TerminalWidget:
 
         if data:
             self._write_callback(data)
+            # Trigger a quick render so cursor updates are visible immediately
+            if not self._render_scheduled:
+                self._render_scheduled = True
+                self.parent.after(1, self._flush_and_render)
 
     def handle_resize(self, event):
         """Handle window resize."""

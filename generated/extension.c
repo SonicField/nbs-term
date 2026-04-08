@@ -542,20 +542,25 @@ static void screen_cursor_clamp(ScreenBuffer *scr) {
 }
 
 static void screen_cursor_up(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;  /* old row */
     scr->cursor.row -= n;
     if (scr->cursor.row < scr->scroll_top)
         scr->cursor.row = scr->scroll_top;
+    scr->dirty[scr->cursor.row] = 1;  /* new row */
     scr->cursor.wrap_pending = 0;
 }
 
 static void screen_cursor_down(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.row += n;
     if (scr->cursor.row > scr->scroll_bottom)
         scr->cursor.row = scr->scroll_bottom;
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.wrap_pending = 0;
 }
 
 static void screen_cursor_forward(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.col += n;
     if (scr->cursor.col >= scr->cols)
         scr->cursor.col = scr->cols - 1;
@@ -563,6 +568,7 @@ static void screen_cursor_forward(ScreenBuffer *scr, int n) {
 }
 
 static void screen_cursor_back(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.col -= n;
     if (scr->cursor.col < 0)
         scr->cursor.col = 0;
@@ -570,9 +576,11 @@ static void screen_cursor_back(ScreenBuffer *scr, int n) {
 }
 
 static void screen_cursor_set(ScreenBuffer *scr, int row, int col) {
+    scr->dirty[scr->cursor.row] = 1;  /* old row */
     scr->cursor.row = row;
     scr->cursor.col = col;
     screen_cursor_clamp(scr);
+    scr->dirty[scr->cursor.row] = 1;  /* new row */
 }
 
 /* --- Screen: erase operations --- */
@@ -670,6 +678,7 @@ static void screen_delete_lines(ScreenBuffer *scr, Scrollback *sb, int n) {
 /* --- Screen: tab stops --- */
 
 static void screen_tab(ScreenBuffer *scr) {
+    scr->dirty[scr->cursor.row] = 1;
     int col = scr->cursor.col;
     col = ((col / 8) + 1) * 8;
     if (col >= scr->cols) col = scr->cols - 1;
@@ -920,7 +929,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 670
+#line 679
 
 /* --- UTF-8 decoder state --- */
 
@@ -1509,7 +1518,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1263
+#line 1272
 
     return VTState_mk_Ground();
 }
@@ -1574,7 +1583,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1289
+#line 1298
 
 /* --- Input event types --- */
 
@@ -1667,7 +1676,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1298
+#line 1307
 
 /* --- UTF-8 encoding --- */
 
@@ -1820,7 +1829,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1385
+#line 1394
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1954,7 +1963,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1517
+#line 1526
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */

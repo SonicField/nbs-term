@@ -277,20 +277,25 @@ static void screen_cursor_clamp(ScreenBuffer *scr) {
 }
 
 static void screen_cursor_up(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;  /* old row */
     scr->cursor.row -= n;
     if (scr->cursor.row < scr->scroll_top)
         scr->cursor.row = scr->scroll_top;
+    scr->dirty[scr->cursor.row] = 1;  /* new row */
     scr->cursor.wrap_pending = 0;
 }
 
 static void screen_cursor_down(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.row += n;
     if (scr->cursor.row > scr->scroll_bottom)
         scr->cursor.row = scr->scroll_bottom;
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.wrap_pending = 0;
 }
 
 static void screen_cursor_forward(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.col += n;
     if (scr->cursor.col >= scr->cols)
         scr->cursor.col = scr->cols - 1;
@@ -298,6 +303,7 @@ static void screen_cursor_forward(ScreenBuffer *scr, int n) {
 }
 
 static void screen_cursor_back(ScreenBuffer *scr, int n) {
+    scr->dirty[scr->cursor.row] = 1;
     scr->cursor.col -= n;
     if (scr->cursor.col < 0)
         scr->cursor.col = 0;
@@ -305,9 +311,11 @@ static void screen_cursor_back(ScreenBuffer *scr, int n) {
 }
 
 static void screen_cursor_set(ScreenBuffer *scr, int row, int col) {
+    scr->dirty[scr->cursor.row] = 1;  /* old row */
     scr->cursor.row = row;
     scr->cursor.col = col;
     screen_cursor_clamp(scr);
+    scr->dirty[scr->cursor.row] = 1;  /* new row */
 }
 
 /* --- Screen: erase operations --- */
@@ -405,6 +413,7 @@ static void screen_delete_lines(ScreenBuffer *scr, Scrollback *sb, int n) {
 /* --- Screen: tab stops --- */
 
 static void screen_tab(ScreenBuffer *scr) {
+    scr->dirty[scr->cursor.row] = 1;
     int col = scr->cursor.col;
     col = ((col / 8) + 1) * 8;
     if (col >= scr->cols) col = scr->cols - 1;
