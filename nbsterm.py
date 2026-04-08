@@ -229,15 +229,15 @@ class TerminalWidget:
 
     def feed(self, data):
         """Buffer SSH data for rendering. Must be called from main thread.
-        Multiple feed() calls between render cycles are coalesced into a
-        single feed+render — this provides backpressure under burst output."""
+        Data is coalesced and rendered at ~60fps (16ms intervals) to prevent
+        flicker from rapid clear+redraw cycles."""
         self._pending_data.extend(data)
         if not self._render_scheduled:
             self._render_scheduled = True
-            self.parent.after_idle(self._flush_and_render)
+            self.parent.after(16, self._flush_and_render)
 
     def _flush_and_render(self):
-        """Process all buffered data and render once."""
+        """Process all buffered data and render once per frame."""
         self._render_scheduled = False
         if self._pending_data:
             # Reset cursor blink on new data — cursor always visible after input
