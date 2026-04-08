@@ -7,6 +7,9 @@
 
 # phc preprocessor — built from deps/phc submodule or override with PHC_DIR
 PHC_DIR ?= deps/phc
+# nbs-ssh for SSH integration tests — override with NBS_SSH_DIR if needed
+NBS_SSH_DIR ?= $(wildcard ../nbs-ssh)
+NBS_SSH_PYTHONPATH := $(if $(NBS_SSH_DIR),$(NBS_SSH_DIR)/src:$(wildcard $(NBS_SSH_DIR)/venv/lib/python*/site-packages):,)
 PHC_BIN := $(PHC_DIR)/build/phc
 PHC := ASAN_OPTIONS=detect_leaks=0 $(PHC_BIN)
 CC ?= gcc
@@ -96,7 +99,7 @@ test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_config.py || exit_code=1; \
 	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_ssh_integration.py || exit_code=1; \
+	PYTHONPATH=$(NBS_SSH_PYTHONPATH)$$PYTHONPATH $(PYTHON) $(TESTDIR)/test_ssh_integration.py || exit_code=1; \
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_orchestration.py || exit_code=1; \
 	echo ""; \
