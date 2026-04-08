@@ -124,6 +124,11 @@ class TerminalWidget:
         self._pending_data = bytearray()
         self._render_scheduled = False
 
+        # Fade-on-erase: old items fade out behind new content
+        self._fade_items = []  # canvas item IDs being faded
+        self._fade_steps = 0   # remaining fade steps
+        self._fade_target = self._bg  # color to fade toward
+
         # Selection state
         self._sel_start = None  # (row, col) of selection start
         self._sel_end = None    # (row, col) of selection end
@@ -330,11 +335,26 @@ class TerminalWidget:
         self.canvas.itemconfigure(back_tag, state="normal")
         self.canvas.itemconfigure(front_tag, state="hidden")
 
-        # Delete old front buffer items (now hidden)
-        for r in range(self.rows):
-            for item_id in front_items[r]:
-                self.canvas.delete(item_id)
-            front_items[r] = []
+        # Handle old front buffer items: fade or delete
+        full_redraw = len(dirty_set) >= self.rows * 0.8
+        if full_redraw and any(front_items[r] for r in range(self.rows)):
+            # Full-screen change — fade old items instead of deleting
+            for r in range(self.rows):
+                for item_id in front_items[r]:
+                    self.canvas.addtag_withtag("fade", item_id)
+                    self.canvas.tag_lower(item_id)
+                front_items[r] = []
+            self._fade_items_pending = True
+            self._fade_steps = 4
+            self._fade_alpha = 1.0
+            if not hasattr(self, '_fade_scheduled') or not self._fade_scheduled:
+                self._fade_scheduled = True
+                self.parent.after(self._refresh_ms, self._fade_step)
+        else:
+            for r in range(self.rows):
+                for item_id in front_items[r]:
+                    self.canvas.delete(item_id)
+                front_items[r] = []
 
         # Swap active buffer
         self._active_buf = back
@@ -342,6 +362,28 @@ class TerminalWidget:
 
         # Position cursor after row updates
         self._show_cursor_after_render()
+
+    def _fade_step(self):
+        """Advance one fade step — dim old items toward background."""
+        self._fade_scheduled = False
+        if self._fade_steps <= 0:
+            self.canvas.delete("fade")
+            return
+
+        self._fade_steps -= 1
+        self._fade_alpha *= 0.5  # exponential decay
+
+        # Blend all fade-tagged items toward background
+        try:
+            self.canvas.itemconfigure("fade", stipple="gray50" if self._fade_steps > 1 else "gray25")
+        except tk.TclError:
+            pass
+
+        if self._fade_steps > 0:
+            self._fade_scheduled = True
+            self.parent.after(self._refresh_ms, self._fade_step)
+        else:
+            self.canvas.delete("fade")
 
     def _show_cursor_after_render(self):
         """Position cursor after Tk has processed all canvas operations.
