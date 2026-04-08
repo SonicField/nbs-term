@@ -19,29 +19,30 @@ phc_descr Color {
 
 /* --- Cell attributes (bitmask) --- */
 
-#define ATTR_NONE        0
-#define ATTR_BOLD        (1 << 0)
-#define ATTR_DIM         (1 << 1)
-#define ATTR_ITALIC      (1 << 2)
-#define ATTR_UNDERLINE   (1 << 3)
-#define ATTR_BLINK       (1 << 4)
-#define ATTR_INVERSE     (1 << 5)
-#define ATTR_HIDDEN      (1 << 6)
-#define ATTR_STRIKETHROUGH (1 << 7)
+phc_flags CellAttr {
+    Bold,
+    Dim,
+    Italic,
+    Underline,
+    Blink,
+    Inverse,
+    Hidden,
+    Strikethrough
+};
 
 /* --- Pen state: current SGR attributes for new characters --- */
 
 typedef struct {
     Color fg;
     Color bg;
-    uint16_t attrs;
+    CellAttr attrs;
 } Pen;
 
 static inline Pen pen_default(void) {
     Pen p;
     p.fg = Color_mk_Default();
     p.bg = Color_mk_Default();
-    p.attrs = ATTR_NONE;
+    p.attrs = 0;
     return p;
 }
 
@@ -50,35 +51,35 @@ static inline void pen_apply_sgr(Pen *pen, int param) {
     if (param == 0) {
         *pen = pen_default();
     } else if (param == 1) {
-        pen->attrs |= ATTR_BOLD;
+        pen->attrs |= CellAttr_Bold;
     } else if (param == 2) {
-        pen->attrs |= ATTR_DIM;
+        pen->attrs |= CellAttr_Dim;
     } else if (param == 3) {
-        pen->attrs |= ATTR_ITALIC;
+        pen->attrs |= CellAttr_Italic;
     } else if (param == 4) {
-        pen->attrs |= ATTR_UNDERLINE;
+        pen->attrs |= CellAttr_Underline;
     } else if (param == 5) {
-        pen->attrs |= ATTR_BLINK;
+        pen->attrs |= CellAttr_Blink;
     } else if (param == 7) {
-        pen->attrs |= ATTR_INVERSE;
+        pen->attrs |= CellAttr_Inverse;
     } else if (param == 8) {
-        pen->attrs |= ATTR_HIDDEN;
+        pen->attrs |= CellAttr_Hidden;
     } else if (param == 9) {
-        pen->attrs |= ATTR_STRIKETHROUGH;
+        pen->attrs |= CellAttr_Strikethrough;
     } else if (param == 22) {
-        pen->attrs &= (uint16_t)~(ATTR_BOLD | ATTR_DIM);
+        pen->attrs &= ~(CellAttr_Bold | CellAttr_Dim);
     } else if (param == 23) {
-        pen->attrs &= (uint16_t)~ATTR_ITALIC;
+        pen->attrs &= ~CellAttr_Italic;
     } else if (param == 24) {
-        pen->attrs &= (uint16_t)~ATTR_UNDERLINE;
+        pen->attrs &= ~CellAttr_Underline;
     } else if (param == 25) {
-        pen->attrs &= (uint16_t)~ATTR_BLINK;
+        pen->attrs &= ~CellAttr_Blink;
     } else if (param == 27) {
-        pen->attrs &= (uint16_t)~ATTR_INVERSE;
+        pen->attrs &= ~CellAttr_Inverse;
     } else if (param == 28) {
-        pen->attrs &= (uint16_t)~ATTR_HIDDEN;
+        pen->attrs &= ~CellAttr_Hidden;
     } else if (param == 29) {
-        pen->attrs &= (uint16_t)~ATTR_STRIKETHROUGH;
+        pen->attrs &= ~CellAttr_Strikethrough;
     } else if (param >= 30 && param <= 37) {
         pen->fg = Color_mk_Indexed((uint8_t)(param - 30));
     } else if (param == 39) {

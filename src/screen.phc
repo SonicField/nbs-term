@@ -19,7 +19,7 @@ typedef struct {
     uint32_t codepoint;  /* Unicode codepoint, 0 = empty */
     Color fg;
     Color bg;
-    uint16_t attrs;
+    CellAttr attrs;
     uint8_t wide;        /* 1 if this is a wide character */
     uint8_t wide_cont;   /* 1 if this is continuation of a wide char */
 } Cell;

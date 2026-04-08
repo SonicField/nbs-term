@@ -66,7 +66,7 @@ TEST(alloc_cells_empty) {
             ASSERT_EQ(cell->codepoint, 0);
             ASSERT_EQ(cell->fg.tag, Color_Default);
             ASSERT_EQ(cell->bg.tag, Color_Default);
-            ASSERT_EQ(cell->attrs, ATTR_NONE);
+            ASSERT_EQ(cell->attrs, 0);
         }
     }
     screen_free(scr);
@@ -93,12 +93,12 @@ TEST(cell_empty_defaults) {
 TEST(cell_from_pen_values) {
     Pen pen = pen_default();
     pen.fg = Color_mk_Indexed(1);
-    pen.attrs = ATTR_BOLD;
+    pen.attrs = CellAttr_Bold;
     Cell c = cell_from_pen('A', &pen);
     ASSERT_EQ(c.codepoint, 'A');
     ASSERT_EQ(c.fg.tag, Color_Indexed);
     ASSERT_EQ(c.fg.Indexed.index, 1);
-    ASSERT_EQ(c.attrs, ATTR_BOLD);
+    ASSERT_EQ(c.attrs, CellAttr_Bold);
 }
 
 TEST(cell_write_read) {
@@ -115,7 +115,7 @@ TEST(cell_attributes_readback) {
     c.codepoint = 'Z';
     c.fg = Color_mk_RGB(255, 0, 0);
     c.bg = Color_mk_Indexed(42);
-    c.attrs = ATTR_BOLD | ATTR_UNDERLINE;
+    c.attrs = CellAttr_Bold | CellAttr_Underline;
     *screen_cell(scr, 0, 0) = c;
 
     const Cell *r = screen_cell_const(scr, 0, 0);
@@ -124,8 +124,8 @@ TEST(cell_attributes_readback) {
     ASSERT_EQ(r->fg.RGB.r, 255);
     ASSERT_EQ(r->bg.tag, Color_Indexed);
     ASSERT_EQ(r->bg.Indexed.index, 42);
-    ASSERT_EQ(r->attrs & ATTR_BOLD, ATTR_BOLD);
-    ASSERT_EQ(r->attrs & ATTR_UNDERLINE, ATTR_UNDERLINE);
+    ASSERT_EQ(r->attrs & CellAttr_Bold, CellAttr_Bold);
+    ASSERT_EQ(r->attrs & CellAttr_Underline, CellAttr_Underline);
     screen_free(scr);
 }
 
@@ -561,15 +561,15 @@ TEST(pen_defaults) {
     Pen p = pen_default();
     ASSERT_EQ(p.fg.tag, Color_Default);
     ASSERT_EQ(p.bg.tag, Color_Default);
-    ASSERT_EQ(p.attrs, ATTR_NONE);
+    ASSERT_EQ(p.attrs, 0);
 }
 
 TEST(pen_bold_on_off) {
     Pen p = pen_default();
     pen_apply_sgr(&p, 1);
-    ASSERT_EQ(p.attrs & ATTR_BOLD, ATTR_BOLD);
+    ASSERT_EQ(p.attrs & CellAttr_Bold, CellAttr_Bold);
     pen_apply_sgr(&p, 22);
-    ASSERT_EQ(p.attrs & ATTR_BOLD, 0);
+    ASSERT_EQ(p.attrs & CellAttr_Bold, 0);
 }
 
 TEST(pen_fg_color) {

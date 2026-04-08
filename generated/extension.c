@@ -9,6 +9,7 @@
 
 extern void abort(void);
 #define phc_free(pp) do { free(*(pp)); *(pp) = ((void*)0); } while(0)
+extern int snprintf(char *, unsigned long, const char *, ...);
 /*
  * sgr.phc — SGR (Select Graphic Rendition) attribute types
  *
@@ -89,29 +90,60 @@ static inline Color_RGB_t Color_as_RGB(Color v) {
 
 /* --- Cell attributes (bitmask) --- */
 
-#define ATTR_NONE        0
-#define ATTR_BOLD        (1 << 0)
-#define ATTR_DIM         (1 << 1)
-#define ATTR_ITALIC      (1 << 2)
-#define ATTR_UNDERLINE   (1 << 3)
-#define ATTR_BLINK       (1 << 4)
-#define ATTR_INVERSE     (1 << 5)
-#define ATTR_HIDDEN      (1 << 6)
-#define ATTR_STRIKETHROUGH (1 << 7)
+typedef unsigned int CellAttr;
+#define CellAttr_Bold (1u << 0)
+#define CellAttr_Dim (1u << 1)
+#define CellAttr_Italic (1u << 2)
+#define CellAttr_Underline (1u << 3)
+#define CellAttr_Blink (1u << 4)
+#define CellAttr_Inverse (1u << 5)
+#define CellAttr_Hidden (1u << 6)
+#define CellAttr_Strikethrough (1u << 7)
+#define CellAttr__ALL (CellAttr_Bold | CellAttr_Dim | CellAttr_Italic | CellAttr_Underline | CellAttr_Blink | CellAttr_Inverse | CellAttr_Hidden | CellAttr_Strikethrough)
+#define CellAttr__COUNT 8
+#define CellAttr__MAX_STRING 61
+
+static inline int CellAttr_has(CellAttr flags, CellAttr flag) {
+    return (flags & flag) == flag;
+}
+
+static inline CellAttr CellAttr_set(CellAttr flags, CellAttr flag) {
+    return flags | flag;
+}
+
+static inline CellAttr CellAttr_clear(CellAttr flags, CellAttr flag) {
+    return flags & ~flag;
+}
+
+static inline const char *CellAttr_to_string(CellAttr p, char *buf, unsigned long len) {
+    buf[0] = '\0';
+    unsigned long pos = 0;
+    if (p & CellAttr_Bold) { pos += snprintf(buf + pos, len - pos, "%sBold", pos ? "|" : ""); }
+    if (p & CellAttr_Dim) { pos += snprintf(buf + pos, len - pos, "%sDim", pos ? "|" : ""); }
+    if (p & CellAttr_Italic) { pos += snprintf(buf + pos, len - pos, "%sItalic", pos ? "|" : ""); }
+    if (p & CellAttr_Underline) { pos += snprintf(buf + pos, len - pos, "%sUnderline", pos ? "|" : ""); }
+    if (p & CellAttr_Blink) { pos += snprintf(buf + pos, len - pos, "%sBlink", pos ? "|" : ""); }
+    if (p & CellAttr_Inverse) { pos += snprintf(buf + pos, len - pos, "%sInverse", pos ? "|" : ""); }
+    if (p & CellAttr_Hidden) { pos += snprintf(buf + pos, len - pos, "%sHidden", pos ? "|" : ""); }
+    if (p & CellAttr_Strikethrough) { pos += snprintf(buf + pos, len - pos, "%sStrikethrough", pos ? "|" : ""); }
+    if (pos == 0) { snprintf(buf, len, "(none)"); }
+    return buf;
+}
+#line 29
 
 /* --- Pen state: current SGR attributes for new characters --- */
 
 typedef struct {
     Color fg;
     Color bg;
-    uint16_t attrs;
+    CellAttr attrs;
 } Pen;
 
 static inline Pen pen_default(void) {
     Pen p;
     p.fg = Color_mk_Default();
     p.bg = Color_mk_Default();
-    p.attrs = ATTR_NONE;
+    p.attrs = 0;
     return p;
 }
 
@@ -120,35 +152,35 @@ static inline void pen_apply_sgr(Pen *pen, int param) {
     if (param == 0) {
         *pen = pen_default();
     } else if (param == 1) {
-        pen->attrs |= ATTR_BOLD;
+        pen->attrs |= CellAttr_Bold;
     } else if (param == 2) {
-        pen->attrs |= ATTR_DIM;
+        pen->attrs |= CellAttr_Dim;
     } else if (param == 3) {
-        pen->attrs |= ATTR_ITALIC;
+        pen->attrs |= CellAttr_Italic;
     } else if (param == 4) {
-        pen->attrs |= ATTR_UNDERLINE;
+        pen->attrs |= CellAttr_Underline;
     } else if (param == 5) {
-        pen->attrs |= ATTR_BLINK;
+        pen->attrs |= CellAttr_Blink;
     } else if (param == 7) {
-        pen->attrs |= ATTR_INVERSE;
+        pen->attrs |= CellAttr_Inverse;
     } else if (param == 8) {
-        pen->attrs |= ATTR_HIDDEN;
+        pen->attrs |= CellAttr_Hidden;
     } else if (param == 9) {
-        pen->attrs |= ATTR_STRIKETHROUGH;
+        pen->attrs |= CellAttr_Strikethrough;
     } else if (param == 22) {
-        pen->attrs &= (uint16_t)~(ATTR_BOLD | ATTR_DIM);
+        pen->attrs &= ~(CellAttr_Bold | CellAttr_Dim);
     } else if (param == 23) {
-        pen->attrs &= (uint16_t)~ATTR_ITALIC;
+        pen->attrs &= ~CellAttr_Italic;
     } else if (param == 24) {
-        pen->attrs &= (uint16_t)~ATTR_UNDERLINE;
+        pen->attrs &= ~CellAttr_Underline;
     } else if (param == 25) {
-        pen->attrs &= (uint16_t)~ATTR_BLINK;
+        pen->attrs &= ~CellAttr_Blink;
     } else if (param == 27) {
-        pen->attrs &= (uint16_t)~ATTR_INVERSE;
+        pen->attrs &= ~CellAttr_Inverse;
     } else if (param == 28) {
-        pen->attrs &= (uint16_t)~ATTR_HIDDEN;
+        pen->attrs &= ~CellAttr_Hidden;
     } else if (param == 29) {
-        pen->attrs &= (uint16_t)~ATTR_STRIKETHROUGH;
+        pen->attrs &= ~CellAttr_Strikethrough;
     } else if (param >= 30 && param <= 37) {
         pen->fg = Color_mk_Indexed((uint8_t)(param - 30));
     } else if (param == 39) {
@@ -201,7 +233,7 @@ static inline int color_equal(Color a, Color other) {
         } break; }
     default: break;
 }
-#line 130
+#line 131
     return 0;
 }
 
@@ -220,7 +252,7 @@ typedef struct {
     uint32_t codepoint;  /* Unicode codepoint, 0 = empty */
     Color fg;
     Color bg;
-    uint16_t attrs;
+    CellAttr attrs;
     uint8_t wide;        /* 1 if this is a wide character */
     uint8_t wide_cont;   /* 1 if this is continuation of a wide char */
 } Cell;
@@ -826,7 +858,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 640
+#line 641
 
 /* --- UTF-8 decoder state --- */
 
@@ -1415,7 +1447,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1233
+#line 1234
 
     return VTState_mk_Ground();
 }
@@ -1534,7 +1566,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1267
+#line 1268
 
 /* --- UTF-8 encoding --- */
 
@@ -1763,7 +1795,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1494
+#line 1495
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */

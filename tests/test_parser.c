@@ -487,7 +487,7 @@ TEST(sgr_reset) {
     feed_str(c.parser, "\x1b[0m");
     feed_str(c.parser, "X");
     const Cell *cell = cell_at(c.term, 0, 0);
-    ASSERT_EQ(cell->attrs, ATTR_NONE);
+    ASSERT_EQ(cell->attrs, 0);
     ASSERT_EQ(cell->fg.tag, Color_Default);
     free_ctx(&c);
 }
@@ -495,15 +495,15 @@ TEST(sgr_reset) {
 TEST(sgr_bold) {
     TestCtx c = make_ctx(24, 80);
     feed_str(c.parser, "\x1b[1mA\x1b[0mB");
-    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & ATTR_BOLD, ATTR_BOLD);
-    ASSERT_EQ(cell_at(c.term, 0, 1)->attrs & ATTR_BOLD, 0);
+    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & CellAttr_Bold, CellAttr_Bold);
+    ASSERT_EQ(cell_at(c.term, 0, 1)->attrs & CellAttr_Bold, 0);
     free_ctx(&c);
 }
 
 TEST(sgr_underline) {
     TestCtx c = make_ctx(24, 80);
     feed_str(c.parser, "\x1b[4mU");
-    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & ATTR_UNDERLINE, ATTR_UNDERLINE);
+    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & CellAttr_Underline, CellAttr_Underline);
     free_ctx(&c);
 }
 
@@ -572,8 +572,8 @@ TEST(sgr_combined) {
     TestCtx c = make_ctx(24, 80);
     feed_str(c.parser, "\x1b[1;4;31mX");
     const Cell *cell = cell_at(c.term, 0, 0);
-    ASSERT_EQ(cell->attrs & ATTR_BOLD, ATTR_BOLD);
-    ASSERT_EQ(cell->attrs & ATTR_UNDERLINE, ATTR_UNDERLINE);
+    ASSERT_EQ(cell->attrs & CellAttr_Bold, CellAttr_Bold);
+    ASSERT_EQ(cell->attrs & CellAttr_Underline, CellAttr_Underline);
     ASSERT_EQ(cell->fg.tag, Color_Indexed);
     ASSERT_EQ(cell->fg.Indexed.index, 1);
     free_ctx(&c);
@@ -582,8 +582,8 @@ TEST(sgr_combined) {
 TEST(sgr_interleaved) {
     TestCtx c = make_ctx(24, 80);
     feed_str(c.parser, "\x1b[1mA\x1b[0mB");
-    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & ATTR_BOLD, ATTR_BOLD);
-    ASSERT_EQ(cell_at(c.term, 0, 1)->attrs & ATTR_BOLD, 0);
+    ASSERT_EQ(cell_at(c.term, 0, 0)->attrs & CellAttr_Bold, CellAttr_Bold);
+    ASSERT_EQ(cell_at(c.term, 0, 1)->attrs & CellAttr_Bold, 0);
     ASSERT_EQ(cell_at(c.term, 0, 0)->codepoint, 'A');
     ASSERT_EQ(cell_at(c.term, 0, 1)->codepoint, 'B');
     free_ctx(&c);
@@ -784,7 +784,7 @@ TEST(csi_empty_params_sgr) {
     feed_str(c.parser, "X");
     const Cell *cell = cell_at(c.term, 0, 0);
     /* All params default to 0 = reset. Attributes should be cleared. */
-    ASSERT_EQ(cell->attrs, ATTR_NONE);
+    ASSERT_EQ(cell->attrs, 0);
     ASSERT_EQ(cell->fg.tag, Color_Default);
     free_ctx(&c);
 }
