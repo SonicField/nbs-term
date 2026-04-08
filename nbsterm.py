@@ -80,8 +80,8 @@ class TerminalWidget:
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
                  font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
-                 cursor_style="Block", cursor_blink=True, gamma=1.0,
-                 fg=DEFAULT_FG, bg=DEFAULT_BG, refresh_hz=60):
+                 cursor_style="Block", cursor_blink=True, cursor_color=None,
+                 gamma=1.0, fg=DEFAULT_FG, bg=DEFAULT_BG, refresh_hz=60):
         self.parent = parent
         self._refresh_ms = max(1, 1000 // refresh_hz)
         self.rows = rows
@@ -91,28 +91,17 @@ class TerminalWidget:
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
+        self._cursor_color = cursor_color  # None = use fg
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup — validate monospace by checking actual rendered metrics
-        mono_fallbacks = [
-            font_family, "Menlo", "Monaco", "SF Mono", "Courier New",
-            "DejaVu Sans Mono", "Consolas", "Liberation Mono", "Courier",
-        ]
-        chosen_family = font_family
-        for candidate in mono_fallbacks:
-            test_font = tkfont.Font(family=candidate, size=font_size)
-            test_chars = "MWil@_"
-            widths = {test_font.measure(c * 10) for c in test_chars}
-            if len(widths) == 1:
-                chosen_family = test_font.actual("family")
-                break
-        self.font = tkfont.Font(family=chosen_family, size=font_size)
+        # Font setup — use requested font (no silent fallback)
+        self.font = tkfont.Font(family=font_family, size=font_size)
         self._font_cache = {
             0: self.font,
-            0x01: tkfont.Font(family=chosen_family, size=font_size, weight="bold"),
-            0x04: tkfont.Font(family=chosen_family, size=font_size, slant="italic"),
-            0x05: tkfont.Font(family=chosen_family, size=font_size, weight="bold", slant="italic"),
+            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
+            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
+            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
         }
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
@@ -356,12 +345,13 @@ class TerminalWidget:
                     # Cursor cell — render the real character with cursor styling
                     real_char = text[cur_idx] if cur_idx < len(text) else " "
                     cw = self.char_width  # exact grid cell width, matches other cells
+                    cur_color = self._cursor_color or fg  # custom color or fg
                     cursor_style = self._cursor_style
                     if cursor_style == "Block":
                         # Block: real character with inverted colors
                         rid = self.canvas.create_rectangle(
                             x, y, x + cw, y + self.char_height,
-                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
                         back_items[r].append(rid)
                         tid = self.canvas.create_text(
                             x, y, text=real_char, fill=bg, font=display_font,
@@ -377,10 +367,9 @@ class TerminalWidget:
                             x, y, text=real_char, fill=fg, font=display_font,
                             anchor=tk.NW, state="hidden", tags=(back_tag,))
                         back_items[r].append(tid)
-                        # Underline bar (2px at bottom of cell)
                         uid = self.canvas.create_rectangle(
                             x, y + self.char_height - 2, x + cw, y + self.char_height,
-                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
                         back_items[r].append(uid)
                     else:
                         # Bar: real character + thin bar at left edge
@@ -392,10 +381,9 @@ class TerminalWidget:
                             x, y, text=real_char, fill=fg, font=display_font,
                             anchor=tk.NW, state="hidden", tags=(back_tag,))
                         back_items[r].append(tid)
-                        # Bar (2px at left of cell)
                         bid = self.canvas.create_rectangle(
                             x, y, x + 2, y + self.char_height,
-                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                            fill=cur_color, outline="", state="hidden", tags=(back_tag,))
                         back_items[r].append(bid)
                     x += cw
 
@@ -931,51 +919,78 @@ class PreferencesDialog(tk.Toplevel):
         tk.Checkbutton(self, text="Blink", variable=self._cursor_blink).grid(
             row=5, column=1, sticky="w", padx=10, pady=2)
 
+        tk.Label(self, text="Color:").grid(row=6, column=0, sticky="e", padx=10)
+        self._cursor_color = config.cursor.color or ""
+        cc_frame = tk.Frame(self)
+        cc_frame.grid(row=6, column=1, sticky="w", padx=10, pady=2)
+        self._cc_swatch = tk.Label(cc_frame, text="  ",
+                                   bg=config.cursor.color if config.cursor.color else config.fg,
+                                   width=4, relief=tk.SUNKEN)
+        self._cc_swatch.pack(side=tk.LEFT)
+        tk.Button(cc_frame, text="Pick...",
+                  command=self._pick_cursor_color).pack(side=tk.LEFT, padx=5)
+        tk.Button(cc_frame, text="Default",
+                  command=self._reset_cursor_color).pack(side=tk.LEFT)
+
         # Color section
         tk.Label(self, text="Color", font=("", 12, "bold")).grid(
-            row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+            row=7, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
 
-        tk.Label(self, text="Foreground:").grid(row=7, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Foreground:").grid(row=8, column=0, sticky="e", padx=10)
         self._fg_color = config.fg
         fg_frame = tk.Frame(self)
-        fg_frame.grid(row=7, column=1, sticky="w", padx=10, pady=2)
+        fg_frame.grid(row=8, column=1, sticky="w", padx=10, pady=2)
         self._fg_swatch = tk.Label(fg_frame, text="  ", bg=config.fg,
                                    width=4, relief=tk.SUNKEN)
         self._fg_swatch.pack(side=tk.LEFT)
         tk.Button(fg_frame, text="Pick...",
                   command=lambda: self._open_picker("fg")).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(self, text="Background:").grid(row=8, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Background:").grid(row=9, column=0, sticky="e", padx=10)
         self._bg_color = config.bg
         bg_frame = tk.Frame(self)
-        bg_frame.grid(row=8, column=1, sticky="w", padx=10, pady=2)
+        bg_frame.grid(row=9, column=1, sticky="w", padx=10, pady=2)
         self._bg_swatch = tk.Label(bg_frame, text="  ", bg=config.bg,
                                    width=4, relief=tk.SUNKEN)
         self._bg_swatch.pack(side=tk.LEFT)
         tk.Button(bg_frame, text="Pick...",
                   command=lambda: self._open_picker("bg")).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(self, text="Gamma:").grid(row=9, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Gamma:").grid(row=10, column=0, sticky="e", padx=10)
         self._gamma = tk.DoubleVar(value=config.gamma)
         tk.Scale(self, from_=0.5, to=2.0, resolution=0.05,
                  orient=tk.HORIZONTAL, variable=self._gamma, length=150).grid(
-            row=9, column=1, padx=10, pady=2)
+            row=10, column=1, padx=10, pady=2)
 
         # Performance section
         tk.Label(self, text="Performance", font=("", 12, "bold")).grid(
-            row=10, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
+            row=11, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5))
 
-        tk.Label(self, text="Refresh (Hz):").grid(row=11, column=0, sticky="e", padx=10)
+        tk.Label(self, text="Refresh (Hz):").grid(row=12, column=0, sticky="e", padx=10)
         self._refresh_hz = tk.IntVar(value=config.refresh_hz)
         tk.Scale(self, from_=10, to=120, resolution=5,
                  orient=tk.HORIZONTAL, variable=self._refresh_hz, length=150).grid(
-            row=11, column=1, padx=10, pady=2)
+            row=12, column=1, padx=10, pady=2)
 
         # Buttons
         btn_frame = tk.Frame(self)
-        btn_frame.grid(row=12, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=13, column=0, columnspan=2, pady=10)
         tk.Button(btn_frame, text="Save", command=self._save).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _pick_cursor_color(self):
+        """Open color picker for cursor color."""
+        ColorPicker256(self, title="Cursor Color",
+                       initial=self._cursor_color or self._config.fg,
+                       callback=self._set_cursor_color)
+
+    def _set_cursor_color(self, color):
+        self._cursor_color = color
+        self._cc_swatch.configure(bg=color)
+
+    def _reset_cursor_color(self):
+        self._cursor_color = ""
+        self._cc_swatch.configure(bg=self._config.fg)
 
     def _open_picker(self, which):
         """Open the 256-color picker for fg or bg."""
@@ -997,6 +1012,7 @@ class PreferencesDialog(tk.Toplevel):
         self._config.font.size = self._font_size.get()
         self._config.cursor.style = self._cursor_style.get()
         self._config.cursor.blink = self._cursor_blink.get()
+        self._config.cursor.color = self._cursor_color
         self._config.fg = self._fg_color
         self._config.bg = self._bg_color
         self._config.gamma = self._gamma.get()
@@ -1024,6 +1040,7 @@ class TerminalApp:
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
+                cursor_color=config.cursor.color or None,
                 gamma=config.gamma, fg=config.fg, bg=config.bg,
                 refresh_hz=config.refresh_hz,
             )
@@ -1111,6 +1128,7 @@ class TerminalApp:
         # Update cursor
         w._cursor_style = config.cursor.style
         w._cursor_blink = config.cursor.blink
+        w._cursor_color = config.cursor.color or None
         # Recalculate terminal grid from new font metrics
         canvas_w = w.canvas.winfo_width()
         canvas_h = w.canvas.winfo_height()

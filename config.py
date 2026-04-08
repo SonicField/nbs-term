@@ -64,6 +64,7 @@ class FontConfig:
 class CursorConfig:
     style: str = "Block"  # Block, Underline, Bar
     blink: bool = True
+    color: str = ""  # empty = use fg color
 
 
 @dataclass
