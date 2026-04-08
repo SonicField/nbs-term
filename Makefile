@@ -99,6 +99,8 @@ test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_config.py || exit_code=1; \
 	echo ""; \
+	$(PYTHON) $(TESTDIR)/test_color_functions.py || exit_code=1; \
+	echo ""; \
 	PYTHONPATH=$(NBS_SSH_PYTHONPATH)$$PYTHONPATH $(PYTHON) $(TESTDIR)/test_ssh_integration.py || exit_code=1; \
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_orchestration.py || exit_code=1; \
