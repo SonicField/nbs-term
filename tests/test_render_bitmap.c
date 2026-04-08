@@ -197,6 +197,85 @@ TEST(composite_glyph_transparent_bg) {
     atlas_free(atlas);
 }
 
+TEST(composite_glyph_alpha_blend) {
+    /* Composite a glyph with intermediate alpha (anti-aliased edge).
+     * Alpha=128 should produce a 50/50 blend of fg and bg. */
+    GlyphAtlas *atlas = atlas_alloc(8, 16, 256);
+    ASSERT_NOT_NULL(atlas);
+
+    /* Fill glyph 'B' with 50% alpha (128) — simulates anti-aliased edge */
+    uint8_t *glyph_b = atlas->data + 66 * 8 * 16;
+    for (int i = 0; i < 8 * 16; i++) {
+        glyph_b[i] = 128;
+    }
+
+    FrameBuffer *fb = framebuf_alloc(8, 16);
+    ASSERT_NOT_NULL(fb);
+
+    framebuf_clear(fb, 0, 0, 0);
+    composite_glyph(fb, atlas, 66 /* 'B' */, 0, 0,
+                    255, 0, 0,      /* fg: red */
+                    0, 0, 255);     /* bg: blue */
+
+    /* Alpha=128: out = fg*128/255 + bg*127/255
+     * R = 255*128/255 + 0*127/255 = 128
+     * G = 0*128/255 + 0*127/255 = 0
+     * B = 0*128/255 + 255*127/255 = 127 */
+    ASSERT_EQ(fb->pixels[0], 128);  /* R: blended */
+    ASSERT_EQ(fb->pixels[1], 0);    /* G: zero from both */
+    ASSERT_EQ(fb->pixels[2], 127);  /* B: blended */
+
+    framebuf_free(fb);
+    atlas_free(atlas);
+}
+
+TEST(composite_glyph_gradient_alpha) {
+    /* Verify alpha blending works across a range of alpha values.
+     * Tests the anti-aliased rendering path with varying opacity. */
+    GlyphAtlas *atlas = atlas_alloc(8, 16, 256);
+    ASSERT_NOT_NULL(atlas);
+
+    /* Fill glyph 'C' row-by-row with increasing alpha: 0, 16, 32, ..., 240 */
+    uint8_t *glyph_c = atlas->data + 67 * 8 * 16;
+    for (int row = 0; row < 16; row++) {
+        uint8_t alpha = (uint8_t)(row * 16);
+        for (int col = 0; col < 8; col++) {
+            glyph_c[row * 8 + col] = alpha;
+        }
+    }
+
+    FrameBuffer *fb = framebuf_alloc(8, 16);
+    ASSERT_NOT_NULL(fb);
+
+    framebuf_clear(fb, 0, 0, 0);
+    composite_glyph(fb, atlas, 67 /* 'C' */, 0, 0,
+                    255, 255, 255,  /* fg: white */
+                    0, 0, 0);       /* bg: black */
+
+    /* Row 0: alpha=0 → pure bg (black) */
+    ASSERT_EQ(fb->pixels[0], 0);
+    ASSERT_EQ(fb->pixels[1], 0);
+    ASSERT_EQ(fb->pixels[2], 0);
+
+    /* Row 8: alpha=128 → 50% blend (128) */
+    int row8_idx = (8 * 8) * 3;
+    ASSERT_EQ(fb->pixels[row8_idx], 128);
+
+    /* Row 15: alpha=240 → nearly white (240) */
+    int row15_idx = (15 * 8) * 3;
+    ASSERT_EQ(fb->pixels[row15_idx], 240);
+
+    /* Monotonically increasing: each row should be brighter than the last */
+    for (int row = 1; row < 16; row++) {
+        int prev_idx = ((row - 1) * 8) * 3;
+        int curr_idx = (row * 8) * 3;
+        ASSERT(fb->pixels[curr_idx] >= fb->pixels[prev_idx]);
+    }
+
+    framebuf_free(fb);
+    atlas_free(atlas);
+}
+
 TEST(composite_glyph_oob_codepoint) {
     /* Out-of-range codepoint should fill with bg color, not crash */
     GlyphAtlas *atlas = make_test_atlas();
@@ -490,6 +569,8 @@ TEST_MAIN(
     /* Glyph compositing */
     RUN_TEST(composite_glyph_solid_fg);
     RUN_TEST(composite_glyph_transparent_bg);
+    RUN_TEST(composite_glyph_alpha_blend);
+    RUN_TEST(composite_glyph_gradient_alpha);
     RUN_TEST(composite_glyph_oob_codepoint);
 
     /* Screen rendering */
