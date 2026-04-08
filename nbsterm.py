@@ -40,19 +40,42 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
+PADDING = 8  # pixels of margin around terminal content
 SCROLLBACK_LINES = 10000
 
 
+def dim_color(hex_color):
+    """Reduce a hex color to ~50% brightness for DIM/faint text (SGR 2)."""
+    if not hex_color.startswith("#") or len(hex_color) != 7:
+        return hex_color
+    r = int(hex_color[1:3], 16) // 2
+    g = int(hex_color[3:5], 16) // 2
+    b = int(hex_color[5:7], 16) // 2
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def gamma_correct(hex_color, gamma):
+    """Apply gamma correction to a hex color string."""
+    if gamma == 1.0 or not hex_color.startswith("#") or len(hex_color) != 7:
+        return hex_color
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    r = int(255 * (r / 255) ** gamma)
+    g = int(255 * (g / 255) ** gamma)
+    b = int(255 * (b / 255) ** gamma)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class TerminalWidget:
-    """Tk PhotoImage-based terminal display.
-    Renders the terminal to a pixel buffer in C, presents as a single
-    Tk PhotoImage per frame. Zero flicker — one image swap per frame."""
+    """Tk canvas-based terminal display."""
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
                  font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
                  cursor_style="Block", cursor_blink=True, gamma=1.0,
-                 fg=DEFAULT_FG, bg=DEFAULT_BG):
+                 fg=DEFAULT_FG, bg=DEFAULT_BG, refresh_hz=60):
         self.parent = parent
+        self._refresh_ms = max(1, 1000 // refresh_hz)
         self.rows = rows
         self._gamma = gamma
         self._fg = fg
@@ -63,13 +86,18 @@ class TerminalWidget:
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup — built-in VGA 8x16 bitmap font
+        # Font setup — cache all 4 style variants
         self.font = tkfont.Font(family=font_family, size=font_size)
-        # Use embedded font dimensions (VGA 8x16)
-        self.char_width = 8
-        self.char_height = 16
+        self._font_cache = {
+            0: self.font,
+            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold"),
+            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic"),
+            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic"),
+        }
+        self.char_width = self.font.measure("M")
+        self.char_height = self.font.metrics("linespace")
 
-        # Canvas — single PhotoImage item, no retained-mode scene graph
+        # Canvas
         width = self.cols * self.char_width
         height = self.rows * self.char_height
         self.canvas = tk.Canvas(
@@ -78,14 +106,18 @@ class TerminalWidget:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Terminal engine — built-in VGA 8x16 font atlas auto-created
+        # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
 
-        # PhotoImage for display — single canvas image item
-        self._photo = None
-        self._image_item = None
+        # Double-buffered render state: two sets of items, swap visibility
+        self._buf_items = [
+            [[] for _ in range(rows)],  # buffer 0
+            [[] for _ in range(rows)],  # buffer 1
+        ]
+        self._active_buf = 0  # currently visible buffer
+        self._row_items = self._buf_items[0]  # alias for compat
 
-        # Cursor overlay
+        # Cursor
         self._cursor_item = None
 
         # Backpressure: buffer incoming data, render on next idle cycle
@@ -109,9 +141,9 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col)."""
-        col = max(0, min(x // self.char_width, self.cols - 1))
-        row = max(0, min(y // self.char_height, self.rows - 1))
+        """Convert pixel coordinates to (row, col), accounting for padding."""
+        col = max(0, min((x - PADDING) // self.char_width, self.cols - 1))
+        row = max(0, min((y - PADDING) // self.char_height, self.rows - 1))
         return (row, col)
 
     def _on_mouse_down(self, event):
@@ -204,37 +236,118 @@ class TerminalWidget:
 
     def feed(self, data):
         """Buffer SSH data for rendering. Must be called from main thread.
-        Data is coalesced and rendered at ~60fps (16ms intervals)."""
+        Data is coalesced at the configured refresh rate to reduce flicker
+        from SSH data chunking."""
         self._pending_data.extend(data)
         if not self._render_scheduled:
             self._render_scheduled = True
-            self.parent.after(16, self._flush_and_render)
+            self.parent.after(self._refresh_ms, self._flush_and_render)
 
     def _flush_and_render(self):
         """Process all buffered data and render once per frame."""
         self._render_scheduled = False
         if self._pending_data:
+            # Reset cursor blink on new data — cursor always visible after input
             self._cursor_visible = True
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
             self._render()
 
     def _render(self):
-        """Render terminal to PhotoImage — one image swap per frame.
-        All pixel rendering happens in C. Python just updates the PhotoImage."""
-        ppm_data = self.term.render_frame(self._fg, self._bg)
-        self._photo = tk.PhotoImage(data=ppm_data)
+        """Double-buffered render: draw to hidden buffer, then swap.
+        All canvas modifications happen while the buffer is hidden,
+        so no intermediate states are visible."""
+        dirty_rows = self.term.get_dirty_rows()
+        if not dirty_rows:
+            self._show_cursor_after_render()
+            return
 
-        if self._image_item is None:
-            self._image_item = self.canvas.create_image(
-                0, 0, image=self._photo, anchor=tk.NW)
-        else:
-            self.canvas.itemconfigure(self._image_item, image=self._photo)
+        screen = self.term.get_screen(self._fg, self._bg)
 
-        # Cursor overlay
+        # Determine buffers: draw into the back buffer
+        front = self._active_buf
+        back = 1 - front
+        back_tag = f"buf_{back}"
+        front_tag = f"buf_{front}"
+        back_items = self._buf_items[back]
+
+        # Copy unchanged rows from front buffer to back buffer references
+        front_items = self._buf_items[front]
+        dirty_set = set(dirty_rows)
+
+        for r in range(self.rows):
+            if r not in dirty_set:
+                # Clean row — back buffer reuses front buffer's items
+                back_items[r] = front_items[r]
+                # Retag these items to the back buffer
+                for item_id in back_items[r]:
+                    self.canvas.itemconfigure(item_id, tags=(back_tag,))
+                front_items[r] = []
+                continue
+
+            if r >= len(screen):
+                continue
+
+            # Dirty row — delete old back buffer items, create new ones
+            for item_id in back_items[r]:
+                self.canvas.delete(item_id)
+            back_items[r] = []
+
+            spans = screen[r]
+            x = PADDING
+            y = PADDING + r * self.char_height
+
+            for span in spans:
+                text, fg, bg, attrs = span
+
+                if self._gamma != 1.0:
+                    fg = gamma_correct(fg, self._gamma)
+                    bg = gamma_correct(bg, self._gamma)
+
+                if attrs & 0x02:  # ATTR_DIM
+                    fg = dim_color(fg)
+
+                if attrs & 0x20:  # ATTR_INVERSE
+                    fg, bg = bg, fg
+
+                text_width = self.char_width * len(text)
+                rect_id = self.canvas.create_rectangle(
+                    x, y, x + text_width, y + self.char_height,
+                    fill=bg, outline="", state="hidden", tags=(back_tag,),
+                )
+                back_items[r].append(rect_id)
+
+                display_font = self._font_cache.get(attrs & 0x05, self.font)
+
+                text_id = self.canvas.create_text(
+                    x, y, text=text, fill=fg, font=display_font,
+                    anchor=tk.NW, state="hidden", tags=(back_tag,),
+                )
+                back_items[r].append(text_id)
+                x += self.char_width * len(text)
+
+        # Atomic swap: show back buffer, hide front buffer
+        self.canvas.itemconfigure(back_tag, state="normal")
+        self.canvas.itemconfigure(front_tag, state="hidden")
+
+        # Delete old front buffer items (now hidden)
+        for r in range(self.rows):
+            for item_id in front_items[r]:
+                self.canvas.delete(item_id)
+            front_items[r] = []
+
+        # Swap active buffer
+        self._active_buf = back
+        self._row_items = self._buf_items[back]
+
+        # Position cursor after row updates
+        self._show_cursor_after_render()
+
+    def _show_cursor_after_render(self):
+        """Position cursor after Tk has processed all canvas operations.
+        Moves existing cursor item instead of delete/recreate to prevent flicker."""
         if self._cursor_visible:
             self._position_cursor()
-
         if self._cursor_blink and self._blink_id is None:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
@@ -252,10 +365,10 @@ class TerminalWidget:
             self._blink_id = self.parent.after(530, self._toggle_blink)
 
     def _cursor_coords(self):
-        """Calculate cursor rectangle coordinates."""
+        """Calculate cursor rectangle coordinates for current position and style."""
         crow, ccol = self.term.get_cursor()
-        cx = ccol * self.char_width
-        cy = crow * self.char_height
+        cx = PADDING + ccol * self.char_width
+        cy = PADDING + crow * self.char_height
         style = self._cursor_style
         if style == "Underline":
             return (cx, cy + self.char_height - 2, cx + self.char_width, cy + self.char_height)
@@ -350,15 +463,21 @@ class TerminalWidget:
 
     def handle_resize(self, event):
         """Handle window resize."""
-        new_cols = max(1, event.width // self.char_width)
-        new_rows = max(1, event.height // self.char_height)
+        new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
+        new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-            self._image_item = None  # force re-create on next render
-            self._cursor_item = None
-            self.canvas.delete("all")
+            # Reset both buffers on resize
+            self.canvas.delete("buf_0")
+            self.canvas.delete("buf_1")
+            self._buf_items = [
+                [[] for _ in range(new_rows)],
+                [[] for _ in range(new_rows)],
+            ]
+            self._active_buf = 0
+            self._row_items = self._buf_items[0]
             self._render()
             return (new_rows, new_cols)
         return None
@@ -669,6 +788,7 @@ class TerminalApp:
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
                 gamma=config.gamma, fg=config.fg, bg=config.bg,
+                refresh_hz=config.refresh_hz,
             )
         else:
             self.widget = TerminalWidget(self.root)
@@ -756,16 +876,23 @@ class TerminalApp:
         # Recalculate terminal grid from new font metrics
         canvas_w = w.canvas.winfo_width()
         canvas_h = w.canvas.winfo_height()
-        new_cols = max(1, canvas_w // w.char_width)
-        new_rows = max(1, canvas_h // w.char_height)
+        new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
+        new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
         if new_cols != w.cols or new_rows != w.rows:
             w.cols = new_cols
             w.rows = new_rows
             w.term.resize(new_rows, new_cols)
-            w._image_item = None
-            w._cursor_item = None
-            w.canvas.delete("all")
+            # Reset both buffers on resize
+            w.canvas.delete("buf_0")
+            w.canvas.delete("buf_1")
+            w._buf_items = [
+                [[] for _ in range(new_rows)],
+                [[] for _ in range(new_rows)],
+            ]
+            w._active_buf = 0
+            w._row_items = w._buf_items[0]
             self.ssh.resize(new_rows, new_cols)
+        # Rerender
         w._render()
 
     def _on_ssh_error(self, error_msg):
@@ -821,6 +948,8 @@ def main():
                         help="initial terminal rows (overrides config)")
     parser.add_argument("--cols", type=int,
                         help="initial terminal columns (overrides config)")
+    parser.add_argument("--refresh-hz", type=int, dest="refresh_hz",
+                        help="refresh rate in Hz (25-120, overrides config)")
     args = parser.parse_args()
 
     if args.verbose:

@@ -37,7 +37,8 @@ type
     fg     : String;
     bg     : String;
     rows   : Integer;
-    cols   : Integer;
+    cols       : Integer;
+    refresh_hz : Integer;
   end;
 
 var config : TerminalConfig = (
@@ -46,8 +47,9 @@ var config : TerminalConfig = (
   gamma  : 1.20;
   fg     : '#d0d0d0';
   bg     : '#000000';
-  rows   : 24;
-  cols   : 80;
+  rows       : 24;
+  cols       : 80;
+  refresh_hz : 60;
 );
 """
 
@@ -73,6 +75,7 @@ class TerminalConfig:
     bg: str = "#000000"
     rows: int = 24
     cols: int = 80
+    refresh_hz: int = 60
 
     def __post_init__(self):
         if self.font is None:
@@ -267,6 +270,13 @@ def load_config(cli_args=None):
             except ValueError:
                 pass
 
+        val = _honest_get(config_path, "config", "refresh_hz")
+        if val:
+            try:
+                config.refresh_hz = max(1, min(120, int(val)))
+            except ValueError:
+                pass
+
     # CLI overrides take precedence
     if cli_args:
         if getattr(cli_args, "font_size", None) is not None:
@@ -277,6 +287,8 @@ def load_config(cli_args=None):
             config.rows = cli_args.rows
         if getattr(cli_args, "cols", None) is not None:
             config.cols = cli_args.cols
+        if getattr(cli_args, "refresh_hz", None) is not None:
+            config.refresh_hz = max(1, min(120, cli_args.refresh_hz))
 
     return config
 
@@ -315,7 +327,8 @@ type
     fg     : String;
     bg     : String;
     rows   : Integer;
-    cols   : Integer;
+    cols       : Integer;
+    refresh_hz : Integer;
   end;
 
 var config : TerminalConfig = (
@@ -324,8 +337,9 @@ var config : TerminalConfig = (
   gamma  : {config.gamma:.2f};
   fg     : '{config.fg}';
   bg     : '{config.bg}';
-  rows   : {config.rows};
-  cols   : {config.cols};
+  rows       : {config.rows};
+  cols       : {config.cols};
+  refresh_hz : {config.refresh_hz};
 );
 """
     try:
