@@ -904,22 +904,12 @@ class PreferencesDialog(tk.Toplevel):
 
         tk.Label(self, text="Family:").grid(row=1, column=0, sticky="e", padx=10)
         self._font_family = tk.StringVar(value=config.font.family)
-        # Filter to verified monospace fonts available on this system
-        mono_whitelist = [
-            "Menlo", "Monaco", "SF Mono", "Courier New", "Courier",
-            "Consolas", "Lucida Console",
-            "DejaVu Sans Mono", "Liberation Mono", "Noto Mono",
-            "Ubuntu Mono", "Fira Code", "JetBrains Mono", "Hack",
-            "Source Code Pro", "Inconsolata", "IBM Plex Mono",
-            "monospace",
-        ]
-        available = set(tkfont.families())
-        fonts = [f for f in mono_whitelist if f in available or f == "monospace"]
-        if not fonts:
-            fonts = ["monospace"]
-        if config.font.family not in fonts:
-            fonts.insert(0, config.font.family)
-        family_menu = tk.OptionMenu(self, self._font_family, *fonts)
+        # Show all system fonts sorted, current selection first
+        all_fonts = sorted(set(tkfont.families()))
+        if config.font.family in all_fonts:
+            all_fonts.remove(config.font.family)
+            all_fonts.insert(0, config.font.family)
+        family_menu = tk.OptionMenu(self, self._font_family, *all_fonts)
         family_menu.grid(row=1, column=1, sticky="w", padx=10, pady=2)
 
         tk.Label(self, text="Size:").grid(row=2, column=0, sticky="e", padx=10)
