@@ -276,7 +276,8 @@ class TerminalWidget:
 
         screen = self.term.get_screen(self._fg, self._bg)
         crow, ccol = self.term.get_cursor()
-        cursor_char = self._CURSOR_CHARS.get(self._cursor_style, "\u2588")
+        # Cursor is rendered inline — Block uses color inversion,
+        # Underline/Bar use small canvas rectangles alongside real text
         show_cursor = self._cursor_visible
 
         # Determine buffers: draw into the back buffer
@@ -349,16 +350,50 @@ class TerminalWidget:
                         back_items[r].append(tid)
                         x += bw
 
-                    # Cursor character (inverted colors)
-                    cw = display_font.measure(cursor_char)
-                    rid = self.canvas.create_rectangle(
-                        x, y, x + cw, y + self.char_height,
-                        fill=fg, outline="", state="hidden", tags=(back_tag,))
-                    back_items[r].append(rid)
-                    tid = self.canvas.create_text(
-                        x, y, text=cursor_char, fill=bg, font=display_font,
-                        anchor=tk.NW, state="hidden", tags=(back_tag,))
-                    back_items[r].append(tid)
+                    # Cursor cell — render the real character with cursor styling
+                    real_char = text[cur_idx] if cur_idx < len(text) else " "
+                    cw = display_font.measure(real_char)
+                    cursor_style = self._cursor_style
+                    if cursor_style == "Block":
+                        # Block: real character with inverted colors
+                        rid = self.canvas.create_rectangle(
+                            x, y, x + cw, y + self.char_height,
+                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(rid)
+                        tid = self.canvas.create_text(
+                            x, y, text=real_char, fill=bg, font=display_font,
+                            anchor=tk.NW, state="hidden", tags=(back_tag,))
+                        back_items[r].append(tid)
+                    elif cursor_style == "Underline":
+                        # Underline: real character + underline bar below
+                        rid = self.canvas.create_rectangle(
+                            x, y, x + cw, y + self.char_height,
+                            fill=bg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(rid)
+                        tid = self.canvas.create_text(
+                            x, y, text=real_char, fill=fg, font=display_font,
+                            anchor=tk.NW, state="hidden", tags=(back_tag,))
+                        back_items[r].append(tid)
+                        # Underline bar (2px at bottom of cell)
+                        uid = self.canvas.create_rectangle(
+                            x, y + self.char_height - 2, x + cw, y + self.char_height,
+                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(uid)
+                    else:
+                        # Bar: real character + thin bar at left edge
+                        rid = self.canvas.create_rectangle(
+                            x, y, x + cw, y + self.char_height,
+                            fill=bg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(rid)
+                        tid = self.canvas.create_text(
+                            x, y, text=real_char, fill=fg, font=display_font,
+                            anchor=tk.NW, state="hidden", tags=(back_tag,))
+                        back_items[r].append(tid)
+                        # Bar (2px at left of cell)
+                        bid = self.canvas.create_rectangle(
+                            x, y, x + 2, y + self.char_height,
+                            fill=fg, outline="", state="hidden", tags=(back_tag,))
+                        back_items[r].append(bid)
                     x += cw
 
                     # After cursor
