@@ -19,7 +19,7 @@ PYTHON := python3
 PYTHON_CFLAGS := $(shell $(PYTHON)-config --cflags)
 PYTHON_LDFLAGS := $(shell $(PYTHON)-config --ldflags --embed 2>/dev/null || $(PYTHON)-config --ldflags)
 CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fPIC
-LDFLAGS := -shared
+LDFLAGS := -shared -ltcl8.6
 
 # Sanitizer flags (for testing)
 ASAN_FLAGS := -fsanitize=address -fno-omit-frame-pointer
@@ -137,7 +137,7 @@ regenerate:
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
 			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/extension.phc | \
+			$(SRCDIR)/tk_render.phc $(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
@@ -171,7 +171,7 @@ verify-regenerate: $(PHC_BIN)
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
 			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/extension.phc | \
+			$(SRCDIR)/tk_render.phc $(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \

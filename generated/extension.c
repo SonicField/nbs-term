@@ -2341,6 +2341,47 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
 }
 
 /*
+ * tk_render.phc — Tk canvas rendering from C via Tcl_Eval
+ *
+ * Phase 3 of the phc port: render pipeline in Phoenics.
+ * Calls Tk's canvas API directly via the Tcl interpreter.
+ */
+
+
+/* --- Tcl interpreter access from Python's Tkinter ---
+ * Python's _tkinter module stores the Tcl_Interp as an integer address.
+ * We get it via: root.tk.interpaddr() → integer → (Tcl_Interp *) */
+
+/* Probe: draw a single rectangle on a canvas to test Tcl_Eval from C */
+static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
+    (void)self;
+    unsigned long long interp_addr;
+    const char *canvas_path;
+
+    if (!PyArg_ParseTuple(args, "Ks", &interp_addr, &canvas_path))
+        return NULL;
+
+    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
+
+    /* Try a simple canvas command */
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+        "%s create rectangle 10 10 50 50 -fill red -outline \"\"",
+        canvas_path);
+
+    int result = Tcl_Eval(interp, cmd);
+    if (result != TCL_OK) {
+        PyErr_Format(PyExc_RuntimeError,
+            "Tcl_Eval failed: %s", Tcl_GetStringResult(interp));
+        return NULL;
+    }
+
+    /* Return the canvas item ID */
+    const char *res = Tcl_GetStringResult(interp);
+    return PyUnicode_FromString(res);
+}
+
+/*
  * extension.phc — Python C extension entry points
  *
  * Exposes the terminal emulator to Python as the _nbsterm module.
@@ -2746,6 +2787,8 @@ static PyMethodDef module_methods[] = {
      "Set terminal config from Python values."},
     {"config_get",     (PyCFunction)phc_config_get, METH_NOARGS,
      "Get terminal config as a Python dict."},
+    {"tk_probe",       phc_tk_probe,       METH_VARARGS,
+     "Probe: draw a rectangle on a Tk canvas via Tcl_Eval from C."},
     {NULL, NULL, 0, NULL}
 };
 
