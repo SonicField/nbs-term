@@ -135,7 +135,8 @@ regenerate:
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
 		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
-		$(PHC); \
+		$(PHC) | \
+		grep -v 'extern int snprintf'; \
 	} > generated/extension.c
 	@echo "Done ($(shell wc -l < generated/extension.c) lines)"
 

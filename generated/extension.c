@@ -10,7 +10,6 @@
 extern void abort(void);
 #define phc_free(pp) do { free(*(pp)); *(pp) = ((void*)0); } while(0)
 extern int strcmp(const char *, const char *);
-extern int snprintf(char *, unsigned long, const char *, ...);
 /*
  * sgr.phc — SGR (Select Graphic Rendition) attribute types
  *
