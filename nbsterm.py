@@ -680,6 +680,8 @@ class SSHTransport:
         """Write data to SSH stdin from the asyncio thread."""
         if self._process:
             self._process.stdin.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+            # Ensure data is flushed to the transport immediately
+            await self._process.stdin.drain()
 
     def resize(self, rows, cols):
         """Resize the PTY. Thread-safe."""
