@@ -29,6 +29,7 @@
 #include "vt_parser.phc"
 #include "input.phc"
 #include "render.phc"
+#include "color_utils.phc"
 /* --- Python Terminal object --- */
 
 typedef struct {
@@ -400,6 +401,18 @@ static int add_key_constants(PyObject *m) {
     return 0;
 }
 
+/* --- Module-level methods (color utilities) --- */
+
+static PyMethodDef module_methods[] = {
+    {"dim_color",       phc_dim_color,       METH_VARARGS,
+     "Reduce hex color to ~50% brightness (DIM/SGR 2)."},
+    {"gamma_correct",   phc_gamma_correct,   METH_VARARGS,
+     "Apply gamma correction to a hex color string."},
+    {"xterm_256_color", phc_xterm_256_color, METH_VARARGS,
+     "Convert xterm 256-color palette index to hex color string."},
+    {NULL, NULL, 0, NULL}
+};
+
 /* --- Module definition --- */
 
 static PyModuleDef nbsterm_module = {
@@ -407,7 +420,7 @@ static PyModuleDef nbsterm_module = {
     "_nbsterm",
     "NBS Terminal Emulator C Extension",
     -1,
-    NULL, NULL, NULL, NULL, NULL
+    module_methods, NULL, NULL, NULL, NULL
 };
 
 PyMODINIT_FUNC PyInit__nbsterm(void) {

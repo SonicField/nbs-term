@@ -45,27 +45,9 @@ PADDING = 8  # pixels of margin around terminal content
 SCROLLBACK_LINES = 10000
 
 
-def dim_color(hex_color):
-    """Reduce a hex color to ~50% brightness for DIM/faint text (SGR 2)."""
-    if not hex_color.startswith("#") or len(hex_color) != 7:
-        return hex_color
-    r = int(hex_color[1:3], 16) // 2
-    g = int(hex_color[3:5], 16) // 2
-    b = int(hex_color[5:7], 16) // 2
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def gamma_correct(hex_color, gamma):
-    """Apply gamma correction to a hex color string."""
-    if gamma == 1.0 or not hex_color.startswith("#") or len(hex_color) != 7:
-        return hex_color
-    r = int(hex_color[1:3], 16)
-    g = int(hex_color[3:5], 16)
-    b = int(hex_color[5:7], 16)
-    r = int(255 * (r / 255) ** gamma)
-    g = int(255 * (g / 255) ** gamma)
-    b = int(255 * (b / 255) ** gamma)
-    return f"#{r:02x}{g:02x}{b:02x}"
+# Color utilities — implemented in C (src/color_utils.phc)
+dim_color = _nbsterm.dim_color
+gamma_correct = _nbsterm.gamma_correct
 
 
 class TerminalWidget:
@@ -702,28 +684,7 @@ class SSHTransport:
                 pass
 
 
-def xterm_256_color(index):
-    """Return hex color string for xterm 256-color palette index."""
-    if index < 16:
-        ansi = [
-            "#000000", "#cd0000", "#00cd00", "#cdcd00",
-            "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
-            "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
-            "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
-        ]
-        return ansi[index]
-    elif index < 232:
-        ci = index - 16
-        r = ci // 36
-        g = (ci // 6) % 6
-        b = ci % 6
-        r = r * 40 + 55 if r else 0
-        g = g * 40 + 55 if g else 0
-        b = b * 40 + 55 if b else 0
-        return f"#{r:02x}{g:02x}{b:02x}"
-    else:
-        v = (index - 232) * 10 + 8
-        return f"#{v:02x}{v:02x}{v:02x}"
+xterm_256_color = _nbsterm.xterm_256_color
 
 
 class ColorPicker256(tk.Toplevel):

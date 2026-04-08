@@ -1,0 +1,116 @@
+/*
+ * color_utils.phc — Color manipulation functions for the terminal renderer
+ *
+ * Ported from Python (nbsterm.py) to Phoenics for Phase 1 of the phc port.
+ * These are pure computation — no Tk or Python dependencies beyond PyObject.
+ */
+#ifndef NBSTERM_COLOR_UTILS_H
+#define NBSTERM_COLOR_UTILS_H
+
+#include <Python.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+/* --- dim_color: reduce hex color to ~50% brightness (SGR 2 DIM) ---
+ * Input:  "#rrggbb" hex string
+ * Output: "#rrggbb" with each component halved
+ * Invalid input is returned unchanged. */
+static PyObject *phc_dim_color(PyObject *self, PyObject *args) {
+    (void)self;
+    const char *hex;
+    if (!PyArg_ParseTuple(args, "s", &hex))
+        return NULL;
+
+    /* Validate: must be "#rrggbb" (7 chars, starts with #) */
+    if (strlen(hex) != 7 || hex[0] != '#') {
+        return PyUnicode_FromString(hex);  /* passthrough invalid */
+    }
+
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        return PyUnicode_FromString(hex);
+    }
+    r &= 0xFF; g &= 0xFF; b &= 0xFF;
+
+    char out[8];
+    snprintf(out, sizeof(out), "#%02x%02x%02x", r / 2, g / 2, b / 2);
+    return PyUnicode_FromString(out);
+}
+
+/* --- gamma_correct: apply gamma correction to a hex color ---
+ * Input:  "#rrggbb" hex string, gamma float
+ * Output: "#rrggbb" with gamma applied: out = 255 * (in/255)^gamma
+ * If gamma == 1.0 or input is invalid, returns unchanged. */
+static PyObject *phc_gamma_correct(PyObject *self, PyObject *args) {
+    (void)self;
+    const char *hex;
+    double gamma;
+    if (!PyArg_ParseTuple(args, "sd", &hex, &gamma))
+        return NULL;
+
+    /* Identity or invalid input — passthrough */
+    if (gamma == 1.0 || strlen(hex) != 7 || hex[0] != '#') {
+        return PyUnicode_FromString(hex);
+    }
+
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        return PyUnicode_FromString(hex);
+    }
+    r &= 0xFF; g &= 0xFF; b &= 0xFF;
+
+    int ro = (int)(255.0 * pow((double)r / 255.0, gamma));
+    int go = (int)(255.0 * pow((double)g / 255.0, gamma));
+    int bo = (int)(255.0 * pow((double)b / 255.0, gamma));
+    if (ro > 255) ro = 255; if (go > 255) go = 255; if (bo > 255) bo = 255;
+
+    char out[8];
+    snprintf(out, sizeof(out), "#%02x%02x%02x", ro, go, bo);
+    return PyUnicode_FromString(out);
+}
+
+/* --- xterm_256_color: convert palette index to hex color ---
+ * Input:  integer 0-255
+ * Output: "#rrggbb" hex string for that xterm palette entry */
+static PyObject *phc_xterm_256_color(PyObject *self, PyObject *args) {
+    (void)self;
+    int index;
+    if (!PyArg_ParseTuple(args, "i", &index))
+        return NULL;
+
+    char out[8];
+
+    if (index < 0 || index > 255) {
+        return PyUnicode_FromString("#000000");
+    }
+
+    if (index < 16) {
+        /* Standard 16 ANSI colors */
+        static const char *ansi[16] = {
+            "#000000", "#cd0000", "#00cd00", "#cdcd00",
+            "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+            "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+            "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+        };
+        return PyUnicode_FromString(ansi[index]);
+    } else if (index < 232) {
+        /* 6x6x6 color cube */
+        int ci = index - 16;
+        int r = ci / 36;
+        int g = (ci / 6) % 6;
+        int b = ci % 6;
+        r = r ? r * 40 + 55 : 0;
+        g = g ? g * 40 + 55 : 0;
+        b = b ? b * 40 + 55 : 0;
+        snprintf(out, sizeof(out), "#%02x%02x%02x", r, g, b);
+        return PyUnicode_FromString(out);
+    } else {
+        /* Grayscale ramp */
+        int v = (index - 232) * 10 + 8;
+        snprintf(out, sizeof(out), "#%02x%02x%02x", v, v, v);
+        return PyUnicode_FromString(out);
+    }
+}
+
+#endif /* NBSTERM_COLOR_UTILS_H */
