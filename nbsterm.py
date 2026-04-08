@@ -378,67 +378,14 @@ class TerminalWidget:
             self._render()
 
     def handle_key(self, event):
-        """Handle a Tk key event."""
+        """Handle a Tk key event — dispatch to C for encoding."""
         if not self._write_callback:
             return
 
-        # Map Tk keysym to _nbsterm key constants
-        # Mac: Ctrl=0x4, Command=0x8, Alt/Option=0x10
-        # Linux: Ctrl=0x4, Alt=0x8
-        modifiers = 0
-        if event.state & 0x1:
-            modifiers |= _nbsterm.MOD_SHIFT
-        if sys.platform == "darwin":
-            alt_mask = 0x10  # Option key on Mac
-        else:
-            alt_mask = 0x8
-        if event.state & alt_mask:
-            modifiers |= _nbsterm.MOD_ALT
-        if event.state & 0x4:
-            modifiers |= _nbsterm.MOD_CTRL
-
-        # Special keys
-        special_map = {
-            "Up": _nbsterm.KEY_UP,
-            "Down": _nbsterm.KEY_DOWN,
-            "Right": _nbsterm.KEY_RIGHT,
-            "Left": _nbsterm.KEY_LEFT,
-            "Home": _nbsterm.KEY_HOME,
-            "End": _nbsterm.KEY_END,
-            "Insert": _nbsterm.KEY_INSERT,
-            "Delete": _nbsterm.KEY_DELETE,
-            "Prior": _nbsterm.KEY_PAGEUP,
-            "Next": _nbsterm.KEY_PAGEDOWN,
-            "F1": _nbsterm.KEY_F1, "F2": _nbsterm.KEY_F2,
-            "F3": _nbsterm.KEY_F3, "F4": _nbsterm.KEY_F4,
-            "F5": _nbsterm.KEY_F5, "F6": _nbsterm.KEY_F6,
-            "F7": _nbsterm.KEY_F7, "F8": _nbsterm.KEY_F8,
-            "F9": _nbsterm.KEY_F9, "F10": _nbsterm.KEY_F10,
-            "F11": _nbsterm.KEY_F11, "F12": _nbsterm.KEY_F12,
-        }
-
-        keysym = event.keysym
-        if keysym in special_map:
-            data = self.term.encode_special(special_map[keysym], modifiers)
-        elif keysym == "Return":
-            data = b"\r"
-        elif keysym == "BackSpace":
-            data = b"\x7f"
-        elif keysym == "Tab":
-            data = b"\t"
-        elif keysym == "Escape":
-            data = b"\x1b"
-        elif (event.state & 0x4) and len(keysym) == 1 and keysym.isalpha():
-            # Ctrl+letter: send control character directly (Ctrl-A=1, Ctrl-C=3, etc.)
-            data = bytes([ord(keysym.upper()) - 0x40])
-        elif (event.state & alt_mask) and len(keysym) == 1:
-            # Alt/Meta+key: send ESC prefix + character
-            data = b"\x1b" + keysym.encode("utf-8")
-        elif event.char and len(event.char) > 0 and ord(event.char[0]) >= 1:
-            # Regular character
-            data = self.term.encode_key(ord(event.char[0]), modifiers)
-        else:
-            return  # Unhandled key (Shift, Control alone, etc.)
+        char_code = ord(event.char[0]) if event.char and len(event.char) > 0 else 0
+        is_mac = sys.platform == "darwin"
+        data = self.term.encode_tk_event(
+            event.keysym, event.state, char_code, is_mac)
 
         if data:
             self._write_callback(data)

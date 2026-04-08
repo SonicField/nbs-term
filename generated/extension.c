@@ -2586,6 +2586,86 @@ static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
     return result;
 }
 
+/* --- encode_tk_event(keysym, state, char_code, is_mac) -> bytes or None ---
+ * Maps a Tk key event to terminal bytes. Consolidates the Python
+ * handle_key dispatch table into C. */
+static PyObject *Terminal_encode_tk_event(TerminalObject *self, PyObject *args) {
+    const char *keysym;
+    int state, char_code, is_mac;
+    if (!PyArg_ParseTuple(args, "siip", &keysym, &state, &char_code, &is_mac))
+        return NULL;
+
+    /* Build modifiers from Tk state */
+    int modifiers = 0;
+    if (state & 0x1) modifiers |= Modifier_Shift;
+    int alt_mask = is_mac ? 0x10 : 0x8;
+    if (state & alt_mask) modifiers |= Modifier_Alt;
+    if (state & 0x4) modifiers |= Modifier_Ctrl;
+
+    char buf[32];
+    int n = 0;
+    int app_cursor = self->term->active->mode_app_cursor;
+
+    /* Special keys */
+    struct { const char *name; int key; } special_map[] = {
+        {"Up", SpecialKey_Up}, {"Down", SpecialKey_Down},
+        {"Right", SpecialKey_Right}, {"Left", SpecialKey_Left},
+        {"Home", SpecialKey_Home}, {"End", SpecialKey_End},
+        {"Insert", SpecialKey_Insert}, {"Delete", SpecialKey_Delete},
+        {"Prior", SpecialKey_PageUp}, {"Next", SpecialKey_PageDown},
+        {"F1", SpecialKey_F1}, {"F2", SpecialKey_F2},
+        {"F3", SpecialKey_F3}, {"F4", SpecialKey_F4},
+        {"F5", SpecialKey_F5}, {"F6", SpecialKey_F6},
+        {"F7", SpecialKey_F7}, {"F8", SpecialKey_F8},
+        {"F9", SpecialKey_F9}, {"F10", SpecialKey_F10},
+        {"F11", SpecialKey_F11}, {"F12", SpecialKey_F12},
+        {NULL, 0}
+    };
+
+    for (int i = 0; special_map[i].name; i++) {
+        if (strcmp(keysym, special_map[i].name) == 0) {
+            n = encode_special_key(special_map[i].key, modifiers, app_cursor,
+                                   buf, sizeof(buf));
+            return PyBytes_FromStringAndSize(buf, n);
+        }
+    }
+
+    /* Simple keys */
+    if (strcmp(keysym, "Return") == 0) {
+        return PyBytes_FromStringAndSize("\r", 1);
+    } else if (strcmp(keysym, "BackSpace") == 0) {
+        return PyBytes_FromStringAndSize("\x7f", 1);
+    } else if (strcmp(keysym, "Tab") == 0) {
+        return PyBytes_FromStringAndSize("\t", 1);
+    } else if (strcmp(keysym, "Escape") == 0) {
+        return PyBytes_FromStringAndSize("\x1b", 1);
+    }
+
+    /* Ctrl+letter */
+    if ((state & 0x4) && strlen(keysym) == 1 &&
+        ((keysym[0] >= 'a' && keysym[0] <= 'z') ||
+         (keysym[0] >= 'A' && keysym[0] <= 'Z'))) {
+        char ctrl = (keysym[0] & 0x1F);  /* Ctrl-A=1, Ctrl-C=3, etc */
+        return PyBytes_FromStringAndSize(&ctrl, 1);
+    }
+
+    /* Alt+key */
+    if ((state & alt_mask) && strlen(keysym) == 1) {
+        buf[0] = '\x1b';
+        buf[1] = keysym[0];
+        return PyBytes_FromStringAndSize(buf, 2);
+    }
+
+    /* Regular character */
+    if (char_code >= 1) {
+        n = encode_key_event(char_code, modifiers, app_cursor, buf, sizeof(buf));
+        return PyBytes_FromStringAndSize(buf, n);
+    }
+
+    /* Unhandled key */
+    Py_RETURN_NONE;
+}
+
 /* --- get_cell(row, col) -> (codepoint, fg, bg, attrs) or None --- */
 
 static PyObject *Terminal_get_cell(TerminalObject *self, PyObject *args) {
@@ -2715,6 +2795,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode a special key (arrow, F-key, etc.) to bytes."},
     {"encode_paste",   (PyCFunction)Terminal_encode_paste,   METH_VARARGS,
      "Encode paste data, wrapping in bracketed paste if enabled."},
+    {"encode_tk_event", (PyCFunction)Terminal_encode_tk_event, METH_VARARGS,
+     "Encode a Tk key event to terminal bytes."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
     {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
