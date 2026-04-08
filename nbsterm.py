@@ -71,6 +71,14 @@ def gamma_correct(hex_color, gamma):
 class TerminalWidget:
     """Tk canvas-based terminal display."""
 
+    # Unicode cursor characters — rendered inline with text for perfect alignment
+    _CURSOR_CHARS = {
+        "Block": "\u2588",      # █ Full block
+        "Wireframe": "\u2588",  # █
+        "Underline": "\u2581",  # ▁ Lower one eighth block
+        "Bar": "\u258f",        # ▏ Left one eighth block
+    }
+
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
                  font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
                  cursor_style="Block", cursor_blink=True, gamma=1.0,
