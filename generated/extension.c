@@ -3043,6 +3043,9 @@ static int render_font_measure(Tcl_Interp *interp, const char *font,
     int width = fallback;
     if (Tcl_EvalObjv(interp, 4, objv, 0) == TCL_OK) {
         Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &width);
+    } else {
+        /* Font measure failed — warn rather than silently degrade */
+        fprintf(stderr, "nbsterm: font measure failed for '%s', using char_width fallback\n", font);
     }
     for (int i = 0; i < 4; i++) Tcl_DecrRefCount(objv[i]);
     return width;
