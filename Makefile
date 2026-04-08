@@ -84,11 +84,16 @@ $(BUILDDIR)/test_parser: $(TESTDIR)/test_parser.c $(SRCDIR)/sgr.phc $(SRCDIR)/sc
 $(BUILDDIR)/test_screen: $(TESTDIR)/test_screen.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_screen.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
 
-test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
+$(BUILDDIR)/test_render_bitmap: $(TESTDIR)/test_render_bitmap.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/render_bitmap.phc | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_render_bitmap.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
+
+test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(BUILDDIR)/test_render_bitmap $(EXTENSION_SO)
 	@exit_code=0; \
 	./$(BUILDDIR)/test_parser || exit_code=1; \
 	echo ""; \
 	./$(BUILDDIR)/test_screen || exit_code=1; \
+	echo ""; \
+	./$(BUILDDIR)/test_render_bitmap || exit_code=1; \
 	echo ""; \
 	$(PYTHON) $(TESTDIR)/test_integration.py || exit_code=1; \
 	echo ""; \
