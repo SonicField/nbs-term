@@ -254,9 +254,17 @@ class TerminalWidget:
         if self._cursor_item:
             self.canvas.itemconfigure(self._cursor_item, state="hidden")
 
+        dirty_rows = self.term.get_dirty_rows()
+        if not dirty_rows:
+            self.parent.after_idle(self._show_cursor_after_render)
+            return
+
         screen = self.term.get_screen(self._fg, self._bg)
 
-        for r in range(min(len(screen), self.rows)):
+        for r in dirty_rows:
+            if r >= len(screen) or r >= self.rows:
+                continue
+
             # Clear old items for this row
             for item_id in self._row_items[r]:
                 self.canvas.delete(item_id)

@@ -386,6 +386,9 @@ typedef struct {
     int mode_bracketed_paste;
     int mode_app_cursor;       /* DECCKM: application cursor keys */
     int mode_app_keypad;       /* DECKPAM/DECKPNM */
+
+    /* Dirty tracking: one flag per row, set on modification */
+    uint8_t *dirty;
 } ScreenBuffer;
 
 static ScreenBuffer *screen_alloc(int rows, int cols) {
@@ -395,9 +398,13 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
     scr->cols = cols;
     scr->cells = calloc((size_t)(rows * cols), sizeof(Cell));
     if (!scr->cells) { free(scr); return NULL; }
+    scr->dirty = calloc((size_t)rows, sizeof(uint8_t));
+    if (!scr->dirty) { free(scr->cells); free(scr); return NULL; }
     for (int i = 0; i < rows * cols; i++) {
         scr->cells[i] = cell_empty();
     }
+    /* Mark all rows dirty initially so first render draws everything */
+    memset(scr->dirty, 1, (size_t)rows);
     scr->cursor.row = 0;
     scr->cursor.col = 0;
     scr->cursor.pen = pen_default();
@@ -409,6 +416,7 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
 
 static void screen_free(ScreenBuffer *scr) {
     if (!scr) return;
+    free(scr->dirty);
     free(scr->cells);
     free(scr);
 }
@@ -427,6 +435,7 @@ static void screen_clear_line(ScreenBuffer *scr, int row, int from_col, int to_c
     for (int c = from_col; c <= to_col && c < scr->cols; c++) {
         scr->cells[row * scr->cols + c] = cell_empty();
     }
+    scr->dirty[row] = 1;
 }
 
 static void screen_clear_region(ScreenBuffer *scr, int top, int left, int bottom, int right) {
@@ -457,6 +466,11 @@ static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
                 (size_t)(lines_to_move * scr->cols) * sizeof(Cell));
     }
 
+    /* Mark all rows in scroll region dirty */
+    for (int r = top; r <= bottom; r++) {
+        scr->dirty[r] = 1;
+    }
+
     /* Clear vacated lines at bottom */
     for (int r = bottom - count + 1; r <= bottom; r++) {
         screen_clear_line(scr, r, 0, scr->cols - 1);
@@ -475,6 +489,11 @@ static void screen_scroll_down(ScreenBuffer *scr, int count) {
         memmove(&scr->cells[(top + count) * scr->cols],
                 &scr->cells[top * scr->cols],
                 (size_t)(lines_to_move * scr->cols) * sizeof(Cell));
+    }
+
+    /* Mark all rows in scroll region dirty */
+    for (int r = top; r <= bottom; r++) {
+        scr->dirty[r] = 1;
     }
 
     for (int r = top; r < top + count; r++) {
@@ -501,6 +520,7 @@ static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoin
     /* Place character */
     Cell *c = screen_cell(scr, cur->row, cur->col);
     *c = cell_from_pen(codepoint, &cur->pen);
+    scr->dirty[cur->row] = 1;
 
     /* Advance cursor */
     if (cur->col < scr->cols - 1) {
@@ -607,6 +627,7 @@ static void screen_insert_chars(ScreenBuffer *scr, int n) {
     for (int i = 0; i < n; i++) {
         scr->cells[row * scr->cols + col + i] = cell_empty();
     }
+    scr->dirty[row] = 1;
 }
 
 /* DCH - Delete Characters */
@@ -623,6 +644,7 @@ static void screen_delete_chars(ScreenBuffer *scr, int n) {
     for (int i = scr->cols - n; i < scr->cols; i++) {
         scr->cells[row * scr->cols + i] = cell_empty();
     }
+    scr->dirty[row] = 1;
 }
 
 /* IL - Insert Lines */
@@ -670,6 +692,8 @@ static void screen_reverse_index(ScreenBuffer *scr) {
 static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
     Cell *new_cells = calloc((size_t)(new_rows * new_cols), sizeof(Cell));
     if (!new_cells) return;
+    uint8_t *new_dirty = calloc((size_t)new_rows, sizeof(uint8_t));
+    if (!new_dirty) { free(new_cells); return; }
     for (int i = 0; i < new_rows * new_cols; i++) {
         new_cells[i] = cell_empty();
     }
@@ -683,11 +707,15 @@ static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
     }
 
     free(scr->cells);
+    free(scr->dirty);
     scr->cells = new_cells;
+    scr->dirty = new_dirty;
     scr->rows = new_rows;
     scr->cols = new_cols;
     scr->scroll_top = 0;
     scr->scroll_bottom = new_rows - 1;
+    /* Mark all rows dirty after resize */
+    memset(scr->dirty, 1, (size_t)new_rows);
     if (scr->cursor.row >= new_rows) scr->cursor.row = new_rows - 1;
     if (scr->cursor.col >= new_cols) scr->cursor.col = new_cols - 1;
 }
@@ -749,6 +777,8 @@ static void terminal_switch_alt(Terminal *term, int to_alt) {
         term->main_screen->cursor = term->main_screen->saved_cursor;
         term->using_alt = 0;
     }
+    /* Canvas still shows the old screen — mark all rows on new active screen dirty */
+    memset(term->active->dirty, 1, (size_t)term->active->rows);
 }
 
 static void terminal_resize(Terminal *term, int rows, int cols) {
@@ -890,7 +920,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 640
+#line 670
 
 /* --- UTF-8 decoder state --- */
 
@@ -1479,7 +1509,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1233
+#line 1263
 
     return VTState_mk_Ground();
 }
@@ -1544,7 +1574,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1259
+#line 1289
 
 /* --- Input event types --- */
 
@@ -1637,7 +1667,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1268
+#line 1298
 
 /* --- UTF-8 encoding --- */
 
@@ -1790,7 +1820,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1355
+#line 1385
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1924,7 +1954,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1487
+#line 1517
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2046,6 +2076,7 @@ static PyObject *render_screen(const ScreenBuffer *scr,
  *   term.encode_special(key, mods) — encode special key
  *   term.encode_paste(data)       — encode bracketed paste
  *   term.resize(rows, cols)       — resize terminal
+ *   term.get_dirty_rows()         — get dirty row indices, clear flags
  *   term.get_cell(row, col)       — get cell at position
  */
 /* Python.h must be first — Python requirement */
@@ -2211,6 +2242,34 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- get_dirty_rows() -> tuple of dirty row indices, then clears flags --- */
+
+static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
+    (void)args;
+    ScreenBuffer *scr = self->term->active;
+
+    /* Count dirty rows first to size the tuple */
+    int count = 0;
+    for (int r = 0; r < scr->rows; r++) {
+        if (scr->dirty[r]) count++;
+    }
+
+    PyObject *result = PyTuple_New(count);
+    if (!result) return NULL;
+
+    int idx = 0;
+    for (int r = 0; r < scr->rows; r++) {
+        if (scr->dirty[r]) {
+            PyTuple_SET_ITEM(result, idx++, PyLong_FromLong(r));
+        }
+    }
+
+    /* Clear all dirty flags */
+    memset(scr->dirty, 0, (size_t)scr->rows);
+
+    return result;
+}
+
 /* --- get_cell(row, col) -> (codepoint, fg, bg, attrs) or None --- */
 
 static PyObject *Terminal_get_cell(TerminalObject *self, PyObject *args) {
@@ -2342,6 +2401,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode paste data, wrapping in bracketed paste if enabled."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
+    {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
+     "Get tuple of dirty row indices since last call, then clear flags."},
     {"get_cell",       (PyCFunction)Terminal_get_cell,       METH_VARARGS,
      "Get cell at (row, col) as (codepoint, fg, bg, attrs)."},
     {"get_size",       (PyCFunction)Terminal_get_size,       METH_NOARGS,

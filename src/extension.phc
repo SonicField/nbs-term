@@ -11,6 +11,7 @@
  *   term.encode_special(key, mods) — encode special key
  *   term.encode_paste(data)       — encode bracketed paste
  *   term.resize(rows, cols)       — resize terminal
+ *   term.get_dirty_rows()         — get dirty row indices, clear flags
  *   term.get_cell(row, col)       — get cell at position
  */
 /* Python.h must be first — Python requirement */
@@ -185,6 +186,34 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- get_dirty_rows() -> tuple of dirty row indices, then clears flags --- */
+
+static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
+    (void)args;
+    ScreenBuffer *scr = self->term->active;
+
+    /* Count dirty rows first to size the tuple */
+    int count = 0;
+    for (int r = 0; r < scr->rows; r++) {
+        if (scr->dirty[r]) count++;
+    }
+
+    PyObject *result = PyTuple_New(count);
+    if (!result) return NULL;
+
+    int idx = 0;
+    for (int r = 0; r < scr->rows; r++) {
+        if (scr->dirty[r]) {
+            PyTuple_SET_ITEM(result, idx++, PyLong_FromLong(r));
+        }
+    }
+
+    /* Clear all dirty flags */
+    memset(scr->dirty, 0, (size_t)scr->rows);
+
+    return result;
+}
+
 /* --- get_cell(row, col) -> (codepoint, fg, bg, attrs) or None --- */
 
 static PyObject *Terminal_get_cell(TerminalObject *self, PyObject *args) {
@@ -316,6 +345,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode paste data, wrapping in bracketed paste if enabled."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
+    {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
+     "Get tuple of dirty row indices since last call, then clear flags."},
     {"get_cell",       (PyCFunction)Terminal_get_cell,       METH_VARARGS,
      "Get cell at (row, col) as (codepoint, fg, bg, attrs)."},
     {"get_size",       (PyCFunction)Terminal_get_size,       METH_NOARGS,
