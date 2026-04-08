@@ -89,14 +89,14 @@ The distribution path strips `#include` directives and prepends standard headers
 
 ## Test Suite
 
-268 tests. Run with `make test`.
+277 tests. Run with `make test`.
 
 ```
 test_parser:        117 tests — VT state machine, CSI, SGR, UTF-8
 test_screen:         57 tests — cursor, scroll, erase, resize, scrollback
 test_integration:    23 tests — Python ↔ C extension
 test_orchestration:   9 tests — SSH data flow, threading
-test_gui_logic:      35 tests — selection, kbdint bridge, coordinates
+test_gui_logic:      44 tests — selection, kbdint bridge, coordinates, gamma
 test_config:         18 tests — config loading, defaults, overrides
 test_ssh_integration: 3 tests — SSH transport (skipped without nbs-ssh)
 ```
