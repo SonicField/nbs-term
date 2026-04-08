@@ -353,7 +353,7 @@ class TerminalWidget:
 
                     # Cursor cell — render the real character with cursor styling
                     real_char = text[cur_idx] if cur_idx < len(text) else " "
-                    cw = display_font.measure(real_char)
+                    cw = self.char_width  # exact grid cell width, matches other cells
                     cursor_style = self._cursor_style
                     if cursor_style == "Block":
                         # Block: real character with inverted colors
