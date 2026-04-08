@@ -74,7 +74,6 @@ class TerminalWidget:
     # Unicode cursor characters — rendered inline with text for perfect alignment
     _CURSOR_CHARS = {
         "Block": "\u2588",      # █ Full block
-        "Wireframe": "\u2588",  # █
         "Underline": "\u2581",  # ▁ Lower one eighth block
         "Bar": "\u258f",        # ▏ Left one eighth block
     }
@@ -897,7 +896,7 @@ class PreferencesDialog(tk.Toplevel):
         tk.Label(self, text="Style:").grid(row=4, column=0, sticky="e", padx=10)
         self._cursor_style = tk.StringVar(value=config.cursor.style)
         styles = tk.OptionMenu(self, self._cursor_style,
-                               "Block", "Wireframe", "Underline", "Bar")
+                               "Block", "Underline", "Bar")
         styles.grid(row=4, column=1, sticky="w", padx=10, pady=2)
 
         self._cursor_blink = tk.BooleanVar(value=config.cursor.blink)

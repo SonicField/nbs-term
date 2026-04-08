@@ -18,7 +18,7 @@ log = logging.getLogger("nbs-term")
 # Default config file content (written when none exists)
 DEFAULT_CONFIG = """\
 type
-  CursorStyle = (Block, Wireframe, Underline, Bar);
+  CursorStyle = (Block, Underline, Bar);
 
   FontConfig = record
     family : String;
@@ -62,7 +62,7 @@ class FontConfig:
 
 @dataclass
 class CursorConfig:
-    style: str = "Block"  # Block, Wireframe, Underline, Bar
+    style: str = "Block"  # Block, Underline, Bar
     blink: bool = True
 
 
@@ -308,7 +308,7 @@ def save_config(config):
     blink_str = "True" if config.cursor.blink else "False"
     content = f"""\
 type
-  CursorStyle = (Block, Wireframe, Underline, Bar);
+  CursorStyle = (Block, Underline, Bar);
 
   FontConfig = record
     family : String;
