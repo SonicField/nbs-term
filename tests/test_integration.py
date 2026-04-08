@@ -293,6 +293,26 @@ class TestDirtyTracking(unittest.TestCase):
         dirty = t.get_dirty_rows()
         self.assertEqual(len(dirty), 4)
 
+    def test_cursor_move_dirties_rows(self):
+        """Cursor movement should dirty both old and new cursor rows."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"Hello")  # cursor on row 0
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[2;1H")  # move cursor to row 1
+        dirty = t.get_dirty_rows()
+        # Both old row (0) and new row (1) should be dirty
+        self.assertIn(0, dirty)
+        self.assertIn(1, dirty)
+
+    def test_cursor_move_same_row_dirties(self):
+        """Cursor movement within same row should dirty that row."""
+        t = _nbsterm.Terminal(4, 10)
+        t.feed(b"Hello")  # cursor at row 0, col 5
+        t.get_dirty_rows()  # clear
+        t.feed(b"\x1b[1;1H")  # move to row 0, col 0 (same row)
+        dirty = t.get_dirty_rows()
+        self.assertIn(0, dirty)
+
     def test_scroll_dirties_rows(self):
         """Scrolling should dirty affected rows."""
         t = _nbsterm.Terminal(4, 10)
