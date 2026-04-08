@@ -720,6 +720,17 @@ static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
     if (scr->cursor.col >= new_cols) scr->cursor.col = new_cols - 1;
 }
 
+/* Check if screen is mostly blank (>90% empty/space cells) */
+static int screen_is_mostly_blank(const ScreenBuffer *scr) {
+    int total = scr->rows * scr->cols;
+    int blank = 0;
+    for (int i = 0; i < total; i++) {
+        uint32_t cp = scr->cells[i].codepoint;
+        if (cp == 0 || cp == ' ') blank++;
+    }
+    return blank * 10 > total * 9;  /* >90% blank */
+}
+
 /* --- Terminal: combines screen buffers + scrollback --- */
 
 typedef struct {
@@ -920,7 +931,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 670
+#line 681
 
 /* --- UTF-8 decoder state --- */
 
@@ -1509,7 +1520,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1263
+#line 1274
 
     return VTState_mk_Ground();
 }
@@ -1574,7 +1585,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1289
+#line 1300
 
 /* --- Input event types --- */
 
@@ -1667,7 +1678,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1298
+#line 1309
 
 /* --- UTF-8 encoding --- */
 
@@ -1820,7 +1831,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1385
+#line 1396
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1954,7 +1965,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1517
+#line 1528
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2512,7 +2523,7 @@ static RGB color_to_rgb(Color c, RGB default_color) {
         } break; }
     default: break;
 }
-#line 2073
+#line 2084
     return result;
 }
 
@@ -2935,6 +2946,16 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- is_mostly_blank() -> bool --- */
+
+static PyObject *Terminal_is_mostly_blank(TerminalObject *self, PyObject *args) {
+    (void)args;
+    if (screen_is_mostly_blank(self->term->active)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
 /* --- get_dirty_rows() -> tuple of dirty row indices, then clears flags --- */
 
 static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
@@ -3176,6 +3197,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode paste data, wrapping in bracketed paste if enabled."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
+    {"is_mostly_blank", (PyCFunction)Terminal_is_mostly_blank, METH_NOARGS,
+     "Return True if >90% of screen cells are empty/space."},
     {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
      "Get tuple of dirty row indices since last call, then clear flags."},
     {"set_font_atlas", (PyCFunction)Terminal_set_font_atlas, METH_VARARGS,

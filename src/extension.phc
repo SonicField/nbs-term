@@ -207,6 +207,16 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- is_mostly_blank() -> bool --- */
+
+static PyObject *Terminal_is_mostly_blank(TerminalObject *self, PyObject *args) {
+    (void)args;
+    if (screen_is_mostly_blank(self->term->active)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
 /* --- get_dirty_rows() -> tuple of dirty row indices, then clears flags --- */
 
 static PyObject *Terminal_get_dirty_rows(TerminalObject *self, PyObject *args) {
@@ -448,6 +458,8 @@ static PyMethodDef Terminal_methods[] = {
      "Encode paste data, wrapping in bracketed paste if enabled."},
     {"resize",         (PyCFunction)Terminal_resize,         METH_VARARGS,
      "Resize the terminal to new dimensions."},
+    {"is_mostly_blank", (PyCFunction)Terminal_is_mostly_blank, METH_NOARGS,
+     "Return True if >90% of screen cells are empty/space."},
     {"get_dirty_rows", (PyCFunction)Terminal_get_dirty_rows,  METH_NOARGS,
      "Get tuple of dirty row indices since last call, then clear flags."},
     {"set_font_atlas", (PyCFunction)Terminal_set_font_atlas, METH_VARARGS,

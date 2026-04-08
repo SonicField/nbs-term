@@ -354,28 +354,6 @@ class TerminalWidget:
         # Position cursor after row updates
         self._show_cursor_after_render()
 
-    def _fade_step(self):
-        """Advance one fade step — dim old items toward background."""
-        self._fade_scheduled = False
-        if self._fade_steps <= 0:
-            self.canvas.delete("fade")
-            return
-
-        self._fade_steps -= 1
-        self._fade_alpha *= 0.5  # exponential decay
-
-        # Blend all fade-tagged items toward background
-        try:
-            self.canvas.itemconfigure("fade", stipple="gray50" if self._fade_steps > 1 else "gray25")
-        except tk.TclError:
-            pass
-
-        if self._fade_steps > 0:
-            self._fade_scheduled = True
-            self.parent.after(self._refresh_ms, self._fade_step)
-        else:
-            self.canvas.delete("fade")
-
     def _show_cursor_after_render(self):
         """Position cursor after Tk has processed all canvas operations.
         Moves existing cursor item instead of delete/recreate to prevent flicker."""
