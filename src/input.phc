@@ -16,10 +16,11 @@
 
 /* --- Modifier bitmask --- */
 
-#define MOD_NONE  0
-#define MOD_SHIFT (1 << 0)
-#define MOD_ALT   (1 << 1)
-#define MOD_CTRL  (1 << 2)
+phc_flags Modifier {
+    Shift,
+    Alt,
+    Ctrl
+};
 
 /* --- Input event types --- */
 
@@ -64,12 +65,12 @@ static int encode_key_event(int codepoint, int modifiers, int app_cursor,
                             char *buf, int bufsize) {
     (void)app_cursor;
     /* Ctrl+letter */
-    if ((modifiers & MOD_CTRL) && codepoint >= 'a' && codepoint <= 'z') {
+    if ((modifiers & Modifier_Ctrl) && codepoint >= 'a' && codepoint <= 'z') {
         if (bufsize < 1) return 0;
         buf[0] = (char)(codepoint - 'a' + 1);
         return 1;
     }
-    if ((modifiers & MOD_CTRL) && codepoint >= 'A' && codepoint <= 'Z') {
+    if ((modifiers & Modifier_Ctrl) && codepoint >= 'A' && codepoint <= 'Z') {
         if (bufsize < 1) return 0;
         buf[0] = (char)(codepoint - 'A' + 1);
         return 1;
@@ -77,7 +78,7 @@ static int encode_key_event(int codepoint, int modifiers, int app_cursor,
 
     /* Alt prefix */
     int offset = 0;
-    if (modifiers & MOD_ALT) {
+    if (modifiers & Modifier_Alt) {
         if (bufsize < 2) return 0;
         buf[0] = 0x1B;
         offset = 1;
@@ -130,9 +131,9 @@ static int encode_special_key(int key, int modifiers, int app_cursor,
     /* xterm modifier encoding: modifier_param = modifier_bits + 1
      * Bits: 1=Shift, 2=Alt, 4=Ctrl. So Shift=2, Alt=3, Ctrl=5, Shift+Ctrl=6, etc. */
     int mod_param = 0;
-    if (modifiers & MOD_SHIFT) mod_param |= 1;
-    if (modifiers & MOD_ALT)   mod_param |= 2;
-    if (modifiers & MOD_CTRL)  mod_param |= 4;
+    if (modifiers & Modifier_Shift) mod_param |= 1;
+    if (modifiers & Modifier_Alt)   mod_param |= 2;
+    if (modifiers & Modifier_Ctrl)  mod_param |= 4;
     if (mod_param) mod_param++;  /* xterm convention: value = bits + 1 */
 
     /* Arrow keys */

@@ -1470,10 +1470,36 @@ static void vt_parser_feed(VTParser *parser, const uint8_t *data, int len) {
 
 /* --- Modifier bitmask --- */
 
-#define MOD_NONE  0
-#define MOD_SHIFT (1 << 0)
-#define MOD_ALT   (1 << 1)
-#define MOD_CTRL  (1 << 2)
+typedef unsigned int Modifier;
+#define Modifier_Shift (1u << 0)
+#define Modifier_Alt (1u << 1)
+#define Modifier_Ctrl (1u << 2)
+#define Modifier__ALL (Modifier_Shift | Modifier_Alt | Modifier_Ctrl)
+#define Modifier__COUNT 3
+#define Modifier__MAX_STRING 15
+
+static inline int Modifier_has(Modifier flags, Modifier flag) {
+    return (flags & flag) == flag;
+}
+
+static inline Modifier Modifier_set(Modifier flags, Modifier flag) {
+    return flags | flag;
+}
+
+static inline Modifier Modifier_clear(Modifier flags, Modifier flag) {
+    return flags & ~flag;
+}
+
+static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned long len) {
+    buf[0] = '\0';
+    unsigned long pos = 0;
+    if (p & Modifier_Shift) { pos += snprintf(buf + pos, len - pos, "%sShift", pos ? "|" : ""); }
+    if (p & Modifier_Alt) { pos += snprintf(buf + pos, len - pos, "%sAlt", pos ? "|" : ""); }
+    if (p & Modifier_Ctrl) { pos += snprintf(buf + pos, len - pos, "%sCtrl", pos ? "|" : ""); }
+    if (pos == 0) { snprintf(buf, len, "(none)"); }
+    return buf;
+}
+#line 1260
 
 /* --- Input event types --- */
 
@@ -1566,7 +1592,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1268
+#line 1269
 
 /* --- UTF-8 encoding --- */
 
@@ -1602,12 +1628,12 @@ static int encode_key_event(int codepoint, int modifiers, int app_cursor,
                             char *buf, int bufsize) {
     (void)app_cursor;
     /* Ctrl+letter */
-    if ((modifiers & MOD_CTRL) && codepoint >= 'a' && codepoint <= 'z') {
+    if ((modifiers & Modifier_Ctrl) && codepoint >= 'a' && codepoint <= 'z') {
         if (bufsize < 1) return 0;
         buf[0] = (char)(codepoint - 'a' + 1);
         return 1;
     }
-    if ((modifiers & MOD_CTRL) && codepoint >= 'A' && codepoint <= 'Z') {
+    if ((modifiers & Modifier_Ctrl) && codepoint >= 'A' && codepoint <= 'Z') {
         if (bufsize < 1) return 0;
         buf[0] = (char)(codepoint - 'A' + 1);
         return 1;
@@ -1615,7 +1641,7 @@ static int encode_key_event(int codepoint, int modifiers, int app_cursor,
 
     /* Alt prefix */
     int offset = 0;
-    if (modifiers & MOD_ALT) {
+    if (modifiers & Modifier_Alt) {
         if (bufsize < 2) return 0;
         buf[0] = 0x1B;
         offset = 1;
@@ -1668,9 +1694,9 @@ static int encode_special_key(int key, int modifiers, int app_cursor,
     /* xterm modifier encoding: modifier_param = modifier_bits + 1
      * Bits: 1=Shift, 2=Alt, 4=Ctrl. So Shift=2, Alt=3, Ctrl=5, Shift+Ctrl=6, etc. */
     int mod_param = 0;
-    if (modifiers & MOD_SHIFT) mod_param |= 1;
-    if (modifiers & MOD_ALT)   mod_param |= 2;
-    if (modifiers & MOD_CTRL)  mod_param |= 4;
+    if (modifiers & Modifier_Shift) mod_param |= 1;
+    if (modifiers & Modifier_Alt)   mod_param |= 2;
+    if (modifiers & Modifier_Ctrl)  mod_param |= 4;
     if (mod_param) mod_param++;  /* xterm convention: value = bits + 1 */
 
     /* Arrow keys */
@@ -1795,7 +1821,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1495
+#line 1496
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2266,9 +2292,9 @@ static int add_key_constants(PyObject *m) {
     if (PyModule_AddIntConstant(m, "KEY_F10", KEY_F10) < 0) return -1;
     if (PyModule_AddIntConstant(m, "KEY_F11", KEY_F11) < 0) return -1;
     if (PyModule_AddIntConstant(m, "KEY_F12", KEY_F12) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_SHIFT", MOD_SHIFT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_ALT", MOD_ALT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_CTRL", MOD_CTRL) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_SHIFT", Modifier_Shift) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_ALT", Modifier_Alt) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_CTRL", Modifier_Ctrl) < 0) return -1;
     return 0;
 }
 

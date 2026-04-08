@@ -369,9 +369,9 @@ static int add_key_constants(PyObject *m) {
     if (PyModule_AddIntConstant(m, "KEY_F10", KEY_F10) < 0) return -1;
     if (PyModule_AddIntConstant(m, "KEY_F11", KEY_F11) < 0) return -1;
     if (PyModule_AddIntConstant(m, "KEY_F12", KEY_F12) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_SHIFT", MOD_SHIFT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_ALT", MOD_ALT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "MOD_CTRL", MOD_CTRL) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_SHIFT", Modifier_Shift) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_ALT", Modifier_Alt) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "MOD_CTRL", Modifier_Ctrl) < 0) return -1;
     return 0;
 }
 

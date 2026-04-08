@@ -1192,67 +1192,67 @@ static void assert_encodes_to(int key, int mods, int app_cursor,
 }
 
 TEST(input_arrow_up) {
-    assert_encodes_to(KEY_UP, MOD_NONE, 0, "\x1b[A", 3);
+    assert_encodes_to(KEY_UP, 0, 0, "\x1b[A", 3);
 }
 
 TEST(input_arrow_up_app_cursor) {
-    assert_encodes_to(KEY_UP, MOD_NONE, 1, "\x1bOA", 3);
+    assert_encodes_to(KEY_UP, 0, 1, "\x1bOA", 3);
 }
 
 TEST(input_shift_up) {
     /* Shift=2 per xterm convention */
-    assert_encodes_to(KEY_UP, MOD_SHIFT, 0, "\x1b[1;2A", 6);
+    assert_encodes_to(KEY_UP, Modifier_Shift, 0, "\x1b[1;2A", 6);
 }
 
 TEST(input_ctrl_up) {
     /* Ctrl=5 per xterm convention */
-    assert_encodes_to(KEY_UP, MOD_CTRL, 0, "\x1b[1;5A", 6);
+    assert_encodes_to(KEY_UP, Modifier_Ctrl, 0, "\x1b[1;5A", 6);
 }
 
 TEST(input_alt_up) {
     /* Alt=3 per xterm convention */
-    assert_encodes_to(KEY_UP, MOD_ALT, 0, "\x1b[1;3A", 6);
+    assert_encodes_to(KEY_UP, Modifier_Alt, 0, "\x1b[1;3A", 6);
 }
 
 TEST(input_shift_ctrl_up) {
     /* Shift+Ctrl=6 per xterm convention */
-    assert_encodes_to(KEY_UP, MOD_SHIFT | MOD_CTRL, 0, "\x1b[1;6A", 6);
+    assert_encodes_to(KEY_UP, Modifier_Shift | Modifier_Ctrl, 0, "\x1b[1;6A", 6);
 }
 
 TEST(input_shift_delete) {
-    assert_encodes_to(KEY_DELETE, MOD_SHIFT, 0, "\x1b[3;2~", 6);
+    assert_encodes_to(KEY_DELETE, Modifier_Shift, 0, "\x1b[3;2~", 6);
 }
 
 TEST(input_f1_plain) {
-    assert_encodes_to(KEY_F1, MOD_NONE, 0, "\x1bOP", 3);
+    assert_encodes_to(KEY_F1, 0, 0, "\x1bOP", 3);
 }
 
 TEST(input_ctrl_f1) {
     /* F1-F4 with modifiers use CSI form */
-    assert_encodes_to(KEY_F1, MOD_CTRL, 0, "\x1b[1;5P", 6);
+    assert_encodes_to(KEY_F1, Modifier_Ctrl, 0, "\x1b[1;5P", 6);
 }
 
 TEST(input_f5_plain) {
-    assert_encodes_to(KEY_F5, MOD_NONE, 0, "\x1b[15~", 5);
+    assert_encodes_to(KEY_F5, 0, 0, "\x1b[15~", 5);
 }
 
 TEST(input_shift_f5) {
-    assert_encodes_to(KEY_F5, MOD_SHIFT, 0, "\x1b[15;2~", 7);
+    assert_encodes_to(KEY_F5, Modifier_Shift, 0, "\x1b[15;2~", 7);
 }
 
 TEST(input_home_end) {
-    assert_encodes_to(KEY_HOME, MOD_NONE, 0, "\x1b[H", 3);
-    assert_encodes_to(KEY_END, MOD_NONE, 0, "\x1b[F", 3);
+    assert_encodes_to(KEY_HOME, 0, 0, "\x1b[H", 3);
+    assert_encodes_to(KEY_END, 0, 0, "\x1b[F", 3);
 }
 
 TEST(input_ctrl_key) {
     char buf[32];
     /* Ctrl+A = 0x01 */
-    int n = encode_key_event('a', MOD_CTRL, 0, buf, sizeof(buf));
+    int n = encode_key_event('a', Modifier_Ctrl, 0, buf, sizeof(buf));
     ASSERT_EQ(n, 1);
     ASSERT_EQ(buf[0], 1);
     /* Ctrl+C = 0x03 */
-    n = encode_key_event('c', MOD_CTRL, 0, buf, sizeof(buf));
+    n = encode_key_event('c', Modifier_Ctrl, 0, buf, sizeof(buf));
     ASSERT_EQ(n, 1);
     ASSERT_EQ(buf[0], 3);
 }
@@ -1260,7 +1260,7 @@ TEST(input_ctrl_key) {
 TEST(input_alt_key) {
     char buf[32];
     /* Alt+x = ESC x */
-    int n = encode_key_event('x', MOD_ALT, 0, buf, sizeof(buf));
+    int n = encode_key_event('x', Modifier_Alt, 0, buf, sizeof(buf));
     ASSERT_EQ(n, 2);
     ASSERT_EQ(buf[0], 0x1B);
     ASSERT_EQ(buf[1], 'x');
@@ -1269,7 +1269,7 @@ TEST(input_alt_key) {
 TEST(input_utf8_encode) {
     char buf[32];
     /* Regular character: é (U+00E9) */
-    int n = encode_key_event(0xE9, MOD_NONE, 0, buf, sizeof(buf));
+    int n = encode_key_event(0xE9, 0, 0, buf, sizeof(buf));
     ASSERT_EQ(n, 2);
     ASSERT_EQ((uint8_t)buf[0], 0xC3);
     ASSERT_EQ((uint8_t)buf[1], 0xA9);
