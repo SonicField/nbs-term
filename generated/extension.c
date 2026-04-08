@@ -7,9 +7,13 @@
 #include <stdio.h>
 #include <assert.h>
 
+#ifndef abort
 extern void abort(void);
+#endif
 #define phc_free(pp) do { free(*(pp)); *(pp) = ((void*)0); } while(0)
+#ifndef strcmp
 extern int strcmp(const char *, const char *);
+#endif
 /*
  * sgr.phc — SGR (Select Graphic Rendition) attribute types
  *
@@ -116,17 +120,45 @@ static inline CellAttr CellAttr_clear(CellAttr flags, CellAttr flag) {
 }
 
 static inline const char *CellAttr_to_string(CellAttr p, char *buf, unsigned long len) {
-    buf[0] = '\0';
-    unsigned long pos = 0;
-    if (p & CellAttr_Bold) { pos += snprintf(buf + pos, len - pos, "%sBold", pos ? "|" : ""); }
-    if (p & CellAttr_Dim) { pos += snprintf(buf + pos, len - pos, "%sDim", pos ? "|" : ""); }
-    if (p & CellAttr_Italic) { pos += snprintf(buf + pos, len - pos, "%sItalic", pos ? "|" : ""); }
-    if (p & CellAttr_Underline) { pos += snprintf(buf + pos, len - pos, "%sUnderline", pos ? "|" : ""); }
-    if (p & CellAttr_Blink) { pos += snprintf(buf + pos, len - pos, "%sBlink", pos ? "|" : ""); }
-    if (p & CellAttr_Inverse) { pos += snprintf(buf + pos, len - pos, "%sInverse", pos ? "|" : ""); }
-    if (p & CellAttr_Hidden) { pos += snprintf(buf + pos, len - pos, "%sHidden", pos ? "|" : ""); }
-    if (p & CellAttr_Strikethrough) { pos += snprintf(buf + pos, len - pos, "%sStrikethrough", pos ? "|" : ""); }
-    if (pos == 0) { snprintf(buf, len, "(none)"); }
+    if (len == 0) return buf;
+    char *pos = buf;
+    char *end = buf + len - 1;
+    if (p & CellAttr_Bold) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Bold"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Dim) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Dim"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Italic) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Italic"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Underline) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Underline"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Blink) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Blink"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Inverse) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Inverse"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Hidden) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Hidden"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & CellAttr_Strikethrough) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Strikethrough"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (pos == buf) {
+        const char *s = "(none)"; while (*s && pos < end) *pos++ = *s++;
+    }
+    *pos = '\0';
     return buf;
 }
 #line 29
@@ -1491,12 +1523,25 @@ static inline Modifier Modifier_clear(Modifier flags, Modifier flag) {
 }
 
 static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned long len) {
-    buf[0] = '\0';
-    unsigned long pos = 0;
-    if (p & Modifier_Shift) { pos += snprintf(buf + pos, len - pos, "%sShift", pos ? "|" : ""); }
-    if (p & Modifier_Alt) { pos += snprintf(buf + pos, len - pos, "%sAlt", pos ? "|" : ""); }
-    if (p & Modifier_Ctrl) { pos += snprintf(buf + pos, len - pos, "%sCtrl", pos ? "|" : ""); }
-    if (pos == 0) { snprintf(buf, len, "(none)"); }
+    if (len == 0) return buf;
+    char *pos = buf;
+    char *end = buf + len - 1;
+    if (p & Modifier_Shift) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Shift"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & Modifier_Alt) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Alt"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (p & Modifier_Ctrl) {
+        if (pos != buf && pos < end) *pos++ = '|';
+        { const char *s = "Ctrl"; while (*s && pos < end) *pos++ = *s++; }
+    }
+    if (pos == buf) {
+        const char *s = "(none)"; while (*s && pos < end) *pos++ = *s++;
+    }
+    *pos = '\0';
     return buf;
 }
 #line 1259
