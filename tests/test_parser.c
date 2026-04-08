@@ -1192,57 +1192,57 @@ static void assert_encodes_to(int key, int mods, int app_cursor,
 }
 
 TEST(input_arrow_up) {
-    assert_encodes_to(KEY_UP, 0, 0, "\x1b[A", 3);
+    assert_encodes_to(SpecialKey_Up, 0, 0, "\x1b[A", 3);
 }
 
 TEST(input_arrow_up_app_cursor) {
-    assert_encodes_to(KEY_UP, 0, 1, "\x1bOA", 3);
+    assert_encodes_to(SpecialKey_Up, 0, 1, "\x1bOA", 3);
 }
 
 TEST(input_shift_up) {
     /* Shift=2 per xterm convention */
-    assert_encodes_to(KEY_UP, Modifier_Shift, 0, "\x1b[1;2A", 6);
+    assert_encodes_to(SpecialKey_Up, Modifier_Shift, 0, "\x1b[1;2A", 6);
 }
 
 TEST(input_ctrl_up) {
     /* Ctrl=5 per xterm convention */
-    assert_encodes_to(KEY_UP, Modifier_Ctrl, 0, "\x1b[1;5A", 6);
+    assert_encodes_to(SpecialKey_Up, Modifier_Ctrl, 0, "\x1b[1;5A", 6);
 }
 
 TEST(input_alt_up) {
     /* Alt=3 per xterm convention */
-    assert_encodes_to(KEY_UP, Modifier_Alt, 0, "\x1b[1;3A", 6);
+    assert_encodes_to(SpecialKey_Up, Modifier_Alt, 0, "\x1b[1;3A", 6);
 }
 
 TEST(input_shift_ctrl_up) {
     /* Shift+Ctrl=6 per xterm convention */
-    assert_encodes_to(KEY_UP, Modifier_Shift | Modifier_Ctrl, 0, "\x1b[1;6A", 6);
+    assert_encodes_to(SpecialKey_Up, Modifier_Shift | Modifier_Ctrl, 0, "\x1b[1;6A", 6);
 }
 
 TEST(input_shift_delete) {
-    assert_encodes_to(KEY_DELETE, Modifier_Shift, 0, "\x1b[3;2~", 6);
+    assert_encodes_to(SpecialKey_Delete, Modifier_Shift, 0, "\x1b[3;2~", 6);
 }
 
 TEST(input_f1_plain) {
-    assert_encodes_to(KEY_F1, 0, 0, "\x1bOP", 3);
+    assert_encodes_to(SpecialKey_F1, 0, 0, "\x1bOP", 3);
 }
 
 TEST(input_ctrl_f1) {
     /* F1-F4 with modifiers use CSI form */
-    assert_encodes_to(KEY_F1, Modifier_Ctrl, 0, "\x1b[1;5P", 6);
+    assert_encodes_to(SpecialKey_F1, Modifier_Ctrl, 0, "\x1b[1;5P", 6);
 }
 
 TEST(input_f5_plain) {
-    assert_encodes_to(KEY_F5, 0, 0, "\x1b[15~", 5);
+    assert_encodes_to(SpecialKey_F5, 0, 0, "\x1b[15~", 5);
 }
 
 TEST(input_shift_f5) {
-    assert_encodes_to(KEY_F5, Modifier_Shift, 0, "\x1b[15;2~", 7);
+    assert_encodes_to(SpecialKey_F5, Modifier_Shift, 0, "\x1b[15;2~", 7);
 }
 
 TEST(input_home_end) {
-    assert_encodes_to(KEY_HOME, 0, 0, "\x1b[H", 3);
-    assert_encodes_to(KEY_END, 0, 0, "\x1b[F", 3);
+    assert_encodes_to(SpecialKey_Home, 0, 0, "\x1b[H", 3);
+    assert_encodes_to(SpecialKey_End, 0, 0, "\x1b[F", 3);
 }
 
 TEST(input_ctrl_key) {

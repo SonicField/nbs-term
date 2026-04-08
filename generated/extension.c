@@ -9,6 +9,7 @@
 
 extern void abort(void);
 #define phc_free(pp) do { free(*(pp)); *(pp) = ((void*)0); } while(0)
+extern int strcmp(const char *, const char *);
 extern int snprintf(char *, unsigned long, const char *, ...);
 /*
  * sgr.phc — SGR (Select Graphic Rendition) attribute types
@@ -1666,28 +1667,86 @@ static int encode_key_event(int codepoint, int modifiers, int app_cursor,
 /* Encode a special key (arrow, function key, etc.)
  * key codes: defined below */
 
-#define KEY_UP       0x100
-#define KEY_DOWN     0x101
-#define KEY_RIGHT    0x102
-#define KEY_LEFT     0x103
-#define KEY_HOME     0x104
-#define KEY_END      0x105
-#define KEY_INSERT   0x106
-#define KEY_DELETE   0x107
-#define KEY_PAGEUP   0x108
-#define KEY_PAGEDOWN 0x109
-#define KEY_F1       0x110
-#define KEY_F2       0x111
-#define KEY_F3       0x112
-#define KEY_F4       0x113
-#define KEY_F5       0x114
-#define KEY_F6       0x115
-#define KEY_F7       0x116
-#define KEY_F8       0x117
-#define KEY_F9       0x118
-#define KEY_F10      0x119
-#define KEY_F11      0x11A
-#define KEY_F12      0x11B
+typedef enum {
+    SpecialKey_Up = 256,
+    SpecialKey_Down,
+    SpecialKey_Right,
+    SpecialKey_Left,
+    SpecialKey_Home,
+    SpecialKey_End,
+    SpecialKey_Insert,
+    SpecialKey_Delete,
+    SpecialKey_PageUp,
+    SpecialKey_PageDown = 265,
+    SpecialKey_F1 = 272,
+    SpecialKey_F2,
+    SpecialKey_F3,
+    SpecialKey_F4,
+    SpecialKey_F5,
+    SpecialKey_F6,
+    SpecialKey_F7,
+    SpecialKey_F8,
+    SpecialKey_F9,
+    SpecialKey_F10,
+    SpecialKey_F11,
+    SpecialKey_F12,
+    SpecialKey__COUNT = 22
+} SpecialKey;
+
+static inline const char *SpecialKey_to_string(SpecialKey c) {
+    switch (c) {
+        case SpecialKey_Up: return "Up";
+        case SpecialKey_Down: return "Down";
+        case SpecialKey_Right: return "Right";
+        case SpecialKey_Left: return "Left";
+        case SpecialKey_Home: return "Home";
+        case SpecialKey_End: return "End";
+        case SpecialKey_Insert: return "Insert";
+        case SpecialKey_Delete: return "Delete";
+        case SpecialKey_PageUp: return "PageUp";
+        case SpecialKey_PageDown: return "PageDown";
+        case SpecialKey_F1: return "F1";
+        case SpecialKey_F2: return "F2";
+        case SpecialKey_F3: return "F3";
+        case SpecialKey_F4: return "F4";
+        case SpecialKey_F5: return "F5";
+        case SpecialKey_F6: return "F6";
+        case SpecialKey_F7: return "F7";
+        case SpecialKey_F8: return "F8";
+        case SpecialKey_F9: return "F9";
+        case SpecialKey_F10: return "F10";
+        case SpecialKey_F11: return "F11";
+        case SpecialKey_F12: return "F12";
+        default: return "(unknown)";
+    }
+}
+
+static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
+    if (strcmp(s, "Up") == 0) { *out = SpecialKey_Up; return 1; }
+    if (strcmp(s, "Down") == 0) { *out = SpecialKey_Down; return 1; }
+    if (strcmp(s, "Right") == 0) { *out = SpecialKey_Right; return 1; }
+    if (strcmp(s, "Left") == 0) { *out = SpecialKey_Left; return 1; }
+    if (strcmp(s, "Home") == 0) { *out = SpecialKey_Home; return 1; }
+    if (strcmp(s, "End") == 0) { *out = SpecialKey_End; return 1; }
+    if (strcmp(s, "Insert") == 0) { *out = SpecialKey_Insert; return 1; }
+    if (strcmp(s, "Delete") == 0) { *out = SpecialKey_Delete; return 1; }
+    if (strcmp(s, "PageUp") == 0) { *out = SpecialKey_PageUp; return 1; }
+    if (strcmp(s, "PageDown") == 0) { *out = SpecialKey_PageDown; return 1; }
+    if (strcmp(s, "F1") == 0) { *out = SpecialKey_F1; return 1; }
+    if (strcmp(s, "F2") == 0) { *out = SpecialKey_F2; return 1; }
+    if (strcmp(s, "F3") == 0) { *out = SpecialKey_F3; return 1; }
+    if (strcmp(s, "F4") == 0) { *out = SpecialKey_F4; return 1; }
+    if (strcmp(s, "F5") == 0) { *out = SpecialKey_F5; return 1; }
+    if (strcmp(s, "F6") == 0) { *out = SpecialKey_F6; return 1; }
+    if (strcmp(s, "F7") == 0) { *out = SpecialKey_F7; return 1; }
+    if (strcmp(s, "F8") == 0) { *out = SpecialKey_F8; return 1; }
+    if (strcmp(s, "F9") == 0) { *out = SpecialKey_F9; return 1; }
+    if (strcmp(s, "F10") == 0) { *out = SpecialKey_F10; return 1; }
+    if (strcmp(s, "F11") == 0) { *out = SpecialKey_F11; return 1; }
+    if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
+    return 0;
+}
+#line 1356
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1700,9 +1759,9 @@ static int encode_special_key(int key, int modifiers, int app_cursor,
     if (mod_param) mod_param++;  /* xterm convention: value = bits + 1 */
 
     /* Arrow keys */
-    if (key >= KEY_UP && key <= KEY_LEFT) {
+    if (key >= SpecialKey_Up && key <= SpecialKey_Left) {
         const char codes[] = "ABCD";
-        char code = codes[key - KEY_UP];
+        char code = codes[key - SpecialKey_Up];
         if (mod_param) {
             /* Modifiers force CSI form: ESC[1;{mod}A */
             return snprintf(buf, (size_t)bufsize, "\x1b[1;%d%c", mod_param, code);
@@ -1714,37 +1773,37 @@ static int encode_special_key(int key, int modifiers, int app_cursor,
     }
 
     /* Home/End */
-    if (key == KEY_HOME) {
+    if (key == SpecialKey_Home) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[1;%dH", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[H");
     }
-    if (key == KEY_END) {
+    if (key == SpecialKey_End) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[1;%dF", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[F");
     }
 
     /* Insert/Delete/PageUp/PageDown — tilde-form: ESC[{num};{mod}~ */
-    if (key == KEY_INSERT) {
+    if (key == SpecialKey_Insert) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[2;%d~", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[2~");
     }
-    if (key == KEY_DELETE) {
+    if (key == SpecialKey_Delete) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[3;%d~", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[3~");
     }
-    if (key == KEY_PAGEUP) {
+    if (key == SpecialKey_PageUp) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[5;%d~", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[5~");
     }
-    if (key == KEY_PAGEDOWN) {
+    if (key == SpecialKey_PageDown) {
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[6;%d~", mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[6~");
     }
 
     /* Function keys F1-F4: SS3 form normally, CSI form with modifiers */
-    if (key >= KEY_F1 && key <= KEY_F4) {
+    if (key >= SpecialKey_F1 && key <= SpecialKey_F4) {
         const char codes[] = "PQRS";
-        char code = codes[key - KEY_F1];
+        char code = codes[key - SpecialKey_F1];
         if (mod_param) {
             /* Modifiers force CSI form: ESC[1;{mod}P */
             return snprintf(buf, (size_t)bufsize, "\x1b[1;%d%c", mod_param, code);
@@ -1752,9 +1811,9 @@ static int encode_special_key(int key, int modifiers, int app_cursor,
         return snprintf(buf, (size_t)bufsize, "\x1bO%c", code);
     }
     /* Function keys F5-F12: tilde-form */
-    if (key >= KEY_F5 && key <= KEY_F12) {
+    if (key >= SpecialKey_F5 && key <= SpecialKey_F12) {
         static const int nums[] = {15, 17, 18, 19, 20, 21, 23, 24};
-        int num = nums[key - KEY_F5];
+        int num = nums[key - SpecialKey_F5];
         if (mod_param) return snprintf(buf, (size_t)bufsize, "\x1b[%d;%d~", num, mod_param);
         return snprintf(buf, (size_t)bufsize, "\x1b[%d~", num);
     }
@@ -1821,7 +1880,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1496
+#line 1488
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2270,28 +2329,28 @@ static PyTypeObject TerminalType = {
 /* --- Key constants --- */
 
 static int add_key_constants(PyObject *m) {
-    if (PyModule_AddIntConstant(m, "KEY_UP", KEY_UP) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_DOWN", KEY_DOWN) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_RIGHT", KEY_RIGHT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_LEFT", KEY_LEFT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_HOME", KEY_HOME) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_END", KEY_END) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_INSERT", KEY_INSERT) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_DELETE", KEY_DELETE) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_PAGEUP", KEY_PAGEUP) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_PAGEDOWN", KEY_PAGEDOWN) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F1", KEY_F1) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F2", KEY_F2) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F3", KEY_F3) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F4", KEY_F4) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F5", KEY_F5) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F6", KEY_F6) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F7", KEY_F7) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F8", KEY_F8) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F9", KEY_F9) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F10", KEY_F10) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F11", KEY_F11) < 0) return -1;
-    if (PyModule_AddIntConstant(m, "KEY_F12", KEY_F12) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_UP", SpecialKey_Up) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_DOWN", SpecialKey_Down) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_RIGHT", SpecialKey_Right) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_LEFT", SpecialKey_Left) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_HOME", SpecialKey_Home) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_END", SpecialKey_End) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_INSERT", SpecialKey_Insert) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_DELETE", SpecialKey_Delete) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_PAGEUP", SpecialKey_PageUp) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_PAGEDOWN", SpecialKey_PageDown) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F1", SpecialKey_F1) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F2", SpecialKey_F2) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F3", SpecialKey_F3) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F4", SpecialKey_F4) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F5", SpecialKey_F5) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F6", SpecialKey_F6) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F7", SpecialKey_F7) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F8", SpecialKey_F8) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F9", SpecialKey_F9) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F10", SpecialKey_F10) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F11", SpecialKey_F11) < 0) return -1;
+    if (PyModule_AddIntConstant(m, "KEY_F12", SpecialKey_F12) < 0) return -1;
     if (PyModule_AddIntConstant(m, "MOD_SHIFT", Modifier_Shift) < 0) return -1;
     if (PyModule_AddIntConstant(m, "MOD_ALT", Modifier_Alt) < 0) return -1;
     if (PyModule_AddIntConstant(m, "MOD_CTRL", Modifier_Ctrl) < 0) return -1;
