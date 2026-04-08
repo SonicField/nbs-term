@@ -108,8 +108,13 @@ class TerminalWidget:
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
 
-        # Render state: list of canvas item IDs per row
-        self._row_items = [[] for _ in range(rows)]
+        # Double-buffered render state: two sets of items, swap visibility
+        self._buf_items = [
+            [[] for _ in range(rows)],  # buffer 0
+            [[] for _ in range(rows)],  # buffer 1
+        ]
+        self._active_buf = 0  # currently visible buffer
+        self._row_items = self._buf_items[0]  # alias for compat
 
         # Cursor
         self._cursor_item = None
@@ -248,9 +253,9 @@ class TerminalWidget:
             self._render()
 
     def _render(self):
-        """Redraw the screen from terminal state.
-        With dirty-row tracking, only changed rows are redrawn — cursor
-        stays visible during the (minimal) redraw."""
+        """Double-buffered render: draw to hidden buffer, then swap.
+        All canvas modifications happen while the buffer is hidden,
+        so no intermediate states are visible."""
         dirty_rows = self.term.get_dirty_rows()
         if not dirty_rows:
             self._show_cursor_after_render()
@@ -258,13 +263,34 @@ class TerminalWidget:
 
         screen = self.term.get_screen(self._fg, self._bg)
 
-        for r in dirty_rows:
-            if r >= len(screen) or r >= self.rows:
+        # Determine buffers: draw into the back buffer
+        front = self._active_buf
+        back = 1 - front
+        back_tag = f"buf_{back}"
+        front_tag = f"buf_{front}"
+        back_items = self._buf_items[back]
+
+        # Copy unchanged rows from front buffer to back buffer references
+        front_items = self._buf_items[front]
+        dirty_set = set(dirty_rows)
+
+        for r in range(self.rows):
+            if r not in dirty_set:
+                # Clean row — back buffer reuses front buffer's items
+                back_items[r] = front_items[r]
+                # Retag these items to the back buffer
+                for item_id in back_items[r]:
+                    self.canvas.itemconfigure(item_id, tags=(back_tag,))
+                front_items[r] = []
                 continue
 
-            # Save old items — delete AFTER new items are created
-            old_items = self._row_items[r]
-            self._row_items[r] = []
+            if r >= len(screen):
+                continue
+
+            # Dirty row — delete old back buffer items, create new ones
+            for item_id in back_items[r]:
+                self.canvas.delete(item_id)
+            back_items[r] = []
 
             spans = screen[r]
             x = PADDING
@@ -273,40 +299,45 @@ class TerminalWidget:
             for span in spans:
                 text, fg, bg, attrs = span
 
-                # Apply gamma correction
                 if self._gamma != 1.0:
                     fg = gamma_correct(fg, self._gamma)
                     bg = gamma_correct(bg, self._gamma)
 
-                # Handle DIM/faint (SGR 2) — reduce foreground to ~50% brightness
                 if attrs & 0x02:  # ATTR_DIM
                     fg = dim_color(fg)
 
-                # Handle inverse video before drawing anything
                 if attrs & 0x20:  # ATTR_INVERSE
                     fg, bg = bg, fg
 
-                # Draw background rectangle for every span to cover old content
                 text_width = self.char_width * len(text)
                 rect_id = self.canvas.create_rectangle(
                     x, y, x + text_width, y + self.char_height,
-                    fill=bg, outline="",
+                    fill=bg, outline="", state="hidden", tags=(back_tag,),
                 )
-                self._row_items[r].append(rect_id)
+                back_items[r].append(rect_id)
 
-                # Determine font style from cache
                 display_font = self._font_cache.get(attrs & 0x05, self.font)
 
                 text_id = self.canvas.create_text(
                     x, y, text=text, fill=fg, font=display_font,
-                    anchor=tk.NW,
+                    anchor=tk.NW, state="hidden", tags=(back_tag,),
                 )
-                self._row_items[r].append(text_id)
+                back_items[r].append(text_id)
                 x += self.char_width * len(text)
 
-            # Delete old items — now hidden behind new items (Tk z-order)
-            for item_id in old_items:
+        # Atomic swap: show back buffer, hide front buffer
+        self.canvas.itemconfigure(back_tag, state="normal")
+        self.canvas.itemconfigure(front_tag, state="hidden")
+
+        # Delete old front buffer items (now hidden)
+        for r in range(self.rows):
+            for item_id in front_items[r]:
                 self.canvas.delete(item_id)
+            front_items[r] = []
+
+        # Swap active buffer
+        self._active_buf = back
+        self._row_items = self._buf_items[back]
 
         # Position cursor after row updates
         self._show_cursor_after_render()
@@ -437,7 +468,15 @@ class TerminalWidget:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-            self._row_items = [[] for _ in range(new_rows)]
+            # Reset both buffers on resize
+            self.canvas.delete("buf_0")
+            self.canvas.delete("buf_1")
+            self._buf_items = [
+                [[] for _ in range(new_rows)],
+                [[] for _ in range(new_rows)],
+            ]
+            self._active_buf = 0
+            self._row_items = self._buf_items[0]
             self._render()
             return (new_rows, new_cols)
         return None
@@ -841,7 +880,15 @@ class TerminalApp:
             w.cols = new_cols
             w.rows = new_rows
             w.term.resize(new_rows, new_cols)
-            w._row_items = [[] for _ in range(new_rows)]
+            # Reset both buffers on resize
+            w.canvas.delete("buf_0")
+            w.canvas.delete("buf_1")
+            w._buf_items = [
+                [[] for _ in range(new_rows)],
+                [[] for _ in range(new_rows)],
+            ]
+            w._active_buf = 0
+            w._row_items = w._buf_items[0]
             self.ssh.resize(new_rows, new_cols)
         # Rerender
         w._render()
