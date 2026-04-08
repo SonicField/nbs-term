@@ -1,0 +1,51 @@
+/*
+ * selection.phc — Selection logic for terminal coordinate conversion
+ *
+ * Implements pixel-to-cell coordinate conversion and selection range ordering.
+ * These are module-level functions (no TerminalObject dependency).
+ * The canvas draw/delete calls remain in Python.
+ */
+#ifndef NBSTERM_SELECTION_H
+#define NBSTERM_SELECTION_H
+
+#include <Python.h>
+#include <stdint.h>
+
+/* --- pixel_to_cell(x, y, char_width, char_height, cols, rows) -> (row, col) ---
+ * Convert pixel coordinates to cell position with clamping. */
+static PyObject *phc_pixel_to_cell(PyObject *self, PyObject *args) {
+    (void)self;
+    int x, y, char_width, char_height, cols, rows;
+    if (!PyArg_ParseTuple(args, "iiiiii", &x, &y, &char_width, &char_height, &cols, &rows))
+        return NULL;
+
+    int col = x / char_width;
+    if (col < 0) col = 0;
+    if (col >= cols) col = cols - 1;
+
+    int row = y / char_height;
+    if (row < 0) row = 0;
+    if (row >= rows) row = rows - 1;
+
+    return Py_BuildValue("(ii)", row, col);
+}
+
+/* --- sel_range(start_row, start_col, end_row, end_col) -> (sr, sc, er, ec) ---
+ * Order selection endpoints so start <= end. */
+static PyObject *phc_sel_range(PyObject *self, PyObject *args) {
+    (void)self;
+    int sr, sc, er, ec;
+    if (!PyArg_ParseTuple(args, "iiii", &sr, &sc, &er, &ec))
+        return NULL;
+
+    /* Swap if start > end (lexicographic on row, col) */
+    if (sr > er || (sr == er && sc > ec)) {
+        int tmp;
+        tmp = sr; sr = er; er = tmp;
+        tmp = sc; sc = ec; ec = tmp;
+    }
+
+    return Py_BuildValue("(iiii)", sr, sc, er, ec);
+}
+
+#endif /* NBSTERM_SELECTION_H */

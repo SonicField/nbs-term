@@ -130,9 +130,9 @@ class TerminalWidget:
 
     def _pixel_to_cell(self, x, y):
         """Convert pixel coordinates to (row, col), accounting for padding."""
-        col = max(0, min((x - PADDING) // self.char_width, self.cols - 1))
-        row = max(0, min((y - PADDING) // self.char_height, self.rows - 1))
-        return (row, col)
+        return _nbsterm.pixel_to_cell(
+            x - PADDING, y - PADDING,
+            self.char_width, self.char_height, self.cols, self.rows)
 
     def _on_mouse_down(self, event):
         """Start selection."""
@@ -155,9 +155,8 @@ class TerminalWidget:
         s, e = self._sel_start, self._sel_end
         if s is None or e is None:
             return None, None
-        if (s[0], s[1]) > (e[0], e[1]):
-            s, e = e, s
-        return s, e
+        sr, sc, er, ec = _nbsterm.sel_range(s[0], s[1], e[0], e[1])
+        return (sr, sc), (er, ec)
 
     def _clear_selection_highlight(self):
         for item_id in self._sel_items:
@@ -199,19 +198,7 @@ class TerminalWidget:
         start, end = self._sel_range()
         if start is None or start == end:
             return ""
-        lines = []
-        for r in range(start[0], end[0] + 1):
-            c0 = start[1] if r == start[0] else 0
-            c1 = end[1] if r == end[0] else self.cols - 1
-            row_text = []
-            for c in range(c0, c1 + 1):
-                cell = self.term.get_cell(r, c)
-                if cell and cell[0] > 0:
-                    row_text.append(chr(cell[0]))
-                else:
-                    row_text.append(" ")
-            lines.append("".join(row_text).rstrip())
-        return "\n".join(lines)
+        return self.term.extract_selected_text(start[0], start[1], end[0], end[1])
 
     def copy_selection(self):
         """Copy selected text to system clipboard."""

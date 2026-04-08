@@ -401,6 +401,137 @@ class TestHostTargetParsing(unittest.TestCase):
         self.assertEqual(host, "host.com")
 
 
+class TestCPixelToCell(unittest.TestCase):
+    """Test _nbsterm.pixel_to_cell C function directly."""
+
+    def test_origin(self):
+        row, col = _nbsterm.pixel_to_cell(0, 0, 10, 20, 80, 24)
+        self.assertEqual((row, col), (0, 0))
+
+    def test_mid_cell(self):
+        row, col = _nbsterm.pixel_to_cell(5, 10, 10, 20, 80, 24)
+        self.assertEqual((row, col), (0, 0))
+
+    def test_second_col(self):
+        row, col = _nbsterm.pixel_to_cell(10, 0, 10, 20, 80, 24)
+        self.assertEqual((row, col), (0, 1))
+
+    def test_second_row(self):
+        row, col = _nbsterm.pixel_to_cell(0, 20, 10, 20, 80, 24)
+        self.assertEqual((row, col), (1, 0))
+
+    def test_negative_clamps_to_zero(self):
+        row, col = _nbsterm.pixel_to_cell(-10, -10, 10, 20, 80, 24)
+        self.assertEqual((row, col), (0, 0))
+
+    def test_overflow_clamps_to_max(self):
+        row, col = _nbsterm.pixel_to_cell(9999, 9999, 10, 20, 80, 24)
+        self.assertEqual((row, col), (23, 79))
+
+    def test_small_terminal(self):
+        row, col = _nbsterm.pixel_to_cell(100, 100, 10, 20, 5, 3)
+        self.assertEqual((row, col), (2, 4))
+
+    def test_matches_python(self):
+        """C version matches Python re-implementation for all edge cases."""
+        def py_pixel_to_cell(x, y, cw, ch, cols, rows):
+            col = max(0, min(x // cw, cols - 1))
+            row = max(0, min(y // ch, rows - 1))
+            return (row, col)
+
+        cases = [
+            (0, 0, 10, 20, 80, 24),
+            (5, 10, 10, 20, 80, 24),
+            (10, 0, 10, 20, 80, 24),
+            (0, 20, 10, 20, 80, 24),
+            (400, 240, 10, 20, 80, 24),
+            (9999, 9999, 10, 20, 80, 24),
+            (100, 100, 10, 20, 5, 3),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                self.assertEqual(
+                    _nbsterm.pixel_to_cell(*args),
+                    py_pixel_to_cell(*args),
+                )
+
+
+class TestCSelRange(unittest.TestCase):
+    """Test _nbsterm.sel_range C function directly."""
+
+    def test_forward(self):
+        sr, sc, er, ec = _nbsterm.sel_range(0, 5, 2, 10)
+        self.assertEqual((sr, sc, er, ec), (0, 5, 2, 10))
+
+    def test_backward_swaps(self):
+        sr, sc, er, ec = _nbsterm.sel_range(2, 10, 0, 5)
+        self.assertEqual((sr, sc, er, ec), (0, 5, 2, 10))
+
+    def test_same_row_forward(self):
+        sr, sc, er, ec = _nbsterm.sel_range(3, 2, 3, 8)
+        self.assertEqual((sr, sc, er, ec), (3, 2, 3, 8))
+
+    def test_same_row_backward_swaps(self):
+        sr, sc, er, ec = _nbsterm.sel_range(3, 8, 3, 2)
+        self.assertEqual((sr, sc, er, ec), (3, 2, 3, 8))
+
+    def test_same_point(self):
+        sr, sc, er, ec = _nbsterm.sel_range(5, 5, 5, 5)
+        self.assertEqual((sr, sc, er, ec), (5, 5, 5, 5))
+
+
+class TestCExtractSelectedText(unittest.TestCase):
+    """Test term.extract_selected_text C function directly."""
+
+    def test_single_word(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello World")
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 4), "Hello")
+
+    def test_empty_same_point(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello")
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 0), "")
+
+    def test_multiline(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Line 1\r\nLine 2\r\nLine 3")
+        self.assertEqual(t.extract_selected_text(0, 0, 2, 5), "Line 1\nLine 2\nLine 3")
+
+    def test_partial_line(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello World")
+        self.assertEqual(t.extract_selected_text(0, 6, 0, 10), "World")
+
+    def test_trailing_whitespace_stripped(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hi")
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 10), "Hi")
+
+    def test_empty_cells(self):
+        t = _nbsterm.Terminal(24, 80)
+        self.assertEqual(t.extract_selected_text(5, 0, 5, 9), "")
+
+    def test_with_sgr_colors(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"\x1b[31mRed\x1b[32mGreen\x1b[0m")
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 7), "RedGreen")
+
+    def test_backward_selection(self):
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello")
+        self.assertEqual(t.extract_selected_text(0, 4, 0, 0), "Hello")
+
+    def test_rstrip_preserves_spaces(self):
+        """C rstrip preserves trailing cp=32 spaces, strips only cp=0 NULs.
+        Matches iTerm2/GNOME Terminal convention."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hi   ")  # explicit spaces after text
+        # Select range covering text + trailing spaces (not NUL cells)
+        result = t.extract_selected_text(0, 0, 0, 4)
+        self.assertEqual(result, "Hi   ")
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun

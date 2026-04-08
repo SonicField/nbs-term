@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#include <tcl.h>
 
 #ifndef abort
 extern void abort(void);
@@ -2382,6 +2383,52 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
 }
 
 /*
+ * selection.phc — Selection logic for terminal coordinate conversion
+ *
+ * Implements pixel-to-cell coordinate conversion and selection range ordering.
+ * These are module-level functions (no TerminalObject dependency).
+ * The canvas draw/delete calls remain in Python.
+ */
+
+
+/* --- pixel_to_cell(x, y, char_width, char_height, cols, rows) -> (row, col) ---
+ * Convert pixel coordinates to cell position with clamping. */
+static PyObject *phc_pixel_to_cell(PyObject *self, PyObject *args) {
+    (void)self;
+    int x, y, char_width, char_height, cols, rows;
+    if (!PyArg_ParseTuple(args, "iiiiii", &x, &y, &char_width, &char_height, &cols, &rows))
+        return NULL;
+
+    int col = x / char_width;
+    if (col < 0) col = 0;
+    if (col >= cols) col = cols - 1;
+
+    int row = y / char_height;
+    if (row < 0) row = 0;
+    if (row >= rows) row = rows - 1;
+
+    return Py_BuildValue("(ii)", row, col);
+}
+
+/* --- sel_range(start_row, start_col, end_row, end_col) -> (sr, sc, er, ec) ---
+ * Order selection endpoints so start <= end. */
+static PyObject *phc_sel_range(PyObject *self, PyObject *args) {
+    (void)self;
+    int sr, sc, er, ec;
+    if (!PyArg_ParseTuple(args, "iiii", &sr, &sc, &er, &ec))
+        return NULL;
+
+    /* Swap if start > end (lexicographic on row, col) */
+    if (sr > er || (sr == er && sc > ec)) {
+        int tmp;
+        tmp = sr; sr = er; er = tmp;
+        tmp = sc; sc = ec; ec = tmp;
+    }
+
+    return Py_BuildValue("(iiii)", sr, sc, er, ec);
+}
+
+/*
  * extension.phc — Python C extension entry points
  *
  * Exposes the terminal emulator to Python as the _nbsterm module.
@@ -2780,6 +2827,82 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
     return spans;
 }
 
+/* --- extract_selected_text(start_row, start_col, end_row, end_col) -> str ---
+ * Extract text from the terminal screen buffer for the given selection range.
+ * Replaces the Python get_selected_text() per-cell loop with C. */
+static PyObject *Terminal_extract_selected_text(TerminalObject *self, PyObject *args) {
+    int sr, sc, er, ec;
+    if (!PyArg_ParseTuple(args, "iiii", &sr, &sc, &er, &ec))
+        return NULL;
+
+    ScreenBuffer *scr = self->term->active;
+
+    /* Swap if start > end */
+    if (sr > er || (sr == er && sc > ec)) {
+        int tmp;
+        tmp = sr; sr = er; er = tmp;
+        tmp = sc; sc = ec; ec = tmp;
+    }
+
+    /* Same point = empty selection */
+    if (sr == er && sc == ec)
+        return PyUnicode_FromString("");
+
+    /* Clamp to screen bounds */
+    if (sr < 0) sr = 0;
+    if (er >= scr->rows) er = scr->rows - 1;
+    if (sc < 0) sc = 0;
+    if (ec >= scr->cols) ec = scr->cols - 1;
+
+    /* Build result string: worst case 4 bytes per char (UTF-8) + newlines */
+    int num_rows = er - sr + 1;
+    int max_len = num_rows * (scr->cols * 4 + 1);  /* +1 for newline */
+    char *buf = malloc((size_t)max_len);
+    if (!buf) return PyErr_NoMemory();
+
+    int pos = 0;
+
+    for (int r = sr; r <= er; r++) {
+        int c0 = (r == sr) ? sc : 0;
+        int c1 = (r == er) ? ec : scr->cols - 1;
+
+        /* Track last non-space position for rstrip */
+        int last_nonspace = -1;
+        int row_start = pos;
+
+        for (int c = c0; c <= c1; c++) {
+            const Cell *cell = screen_cell_const(scr, r, c);
+            uint32_t cp = cell->codepoint;
+            if (cp > 0) {
+                int n = render_utf8_encode(cp, buf + pos, max_len - pos);
+                pos += n;
+                /* Preserve trailing spaces (cp=32) — strip only NUL cells (cp=0).
+                 * Matches iTerm2/GNOME Terminal convention. */
+                last_nonspace = pos;
+            } else {
+                buf[pos++] = ' ';
+            }
+        }
+
+        /* rstrip: truncate trailing spaces */
+        if (last_nonspace > row_start) {
+            pos = last_nonspace;
+        } else {
+            /* entire row was spaces — empty line */
+            pos = row_start;
+        }
+
+        /* Add newline between rows (not after last) */
+        if (r < er) {
+            buf[pos++] = '\n';
+        }
+    }
+
+    PyObject *result = PyUnicode_FromStringAndSize(buf, pos);
+    free(buf);
+    return result;
+}
+
 /* --- Method table --- */
 
 static PyMethodDef Terminal_methods[] = {
@@ -2809,6 +2932,8 @@ static PyMethodDef Terminal_methods[] = {
      "Get number of lines in scrollback buffer."},
     {"get_scrollback_line", (PyCFunction)Terminal_get_scrollback_line, METH_VARARGS,
      "Get scrollback line by index (0=oldest). Returns list of (text, fg, bg, attrs) spans."},
+    {"extract_selected_text", (PyCFunction)Terminal_extract_selected_text, METH_VARARGS,
+     "Extract text from selection range: (start_row, start_col, end_row, end_col) -> str."},
     {NULL, NULL, 0, NULL}
 };
 
@@ -2871,6 +2996,10 @@ static PyMethodDef module_methods[] = {
      "Get terminal config as a Python dict."},
     {"tk_probe",       phc_tk_probe,       METH_VARARGS,
      "Probe: draw a rectangle on a Tk canvas via Tcl_Eval from C."},
+    {"pixel_to_cell",  phc_pixel_to_cell,  METH_VARARGS,
+     "Convert pixel (x, y) to (row, col) given char_width, char_height, cols, rows."},
+    {"sel_range",      phc_sel_range,      METH_VARARGS,
+     "Order selection endpoints: (sr, sc, er, ec) -> ordered (sr, sc, er, ec)."},
     {NULL, NULL, 0, NULL}
 };
 

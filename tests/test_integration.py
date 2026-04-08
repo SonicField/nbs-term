@@ -131,6 +131,122 @@ class TestInputEncoding(unittest.TestCase):
         self.assertEqual(result, b'\x1b[200~hello\x1b[201~')
 
 
+class TestEncodeTkEvent(unittest.TestCase):
+    """Tests for encode_tk_event — the Tk keysym dispatch ported in Phase 4."""
+
+    def setUp(self):
+        self.t = _nbsterm.Terminal(24, 80)
+
+    # --- Special keys ---
+    def test_arrow_up(self):
+        self.assertEqual(self.t.encode_tk_event("Up", 0, 0, False), b'\x1b[A')
+
+    def test_arrow_down(self):
+        self.assertEqual(self.t.encode_tk_event("Down", 0, 0, False), b'\x1b[B')
+
+    def test_arrow_right(self):
+        self.assertEqual(self.t.encode_tk_event("Right", 0, 0, False), b'\x1b[C')
+
+    def test_arrow_left(self):
+        self.assertEqual(self.t.encode_tk_event("Left", 0, 0, False), b'\x1b[D')
+
+    def test_home(self):
+        self.assertEqual(self.t.encode_tk_event("Home", 0, 0, False), b'\x1b[H')
+
+    def test_end(self):
+        self.assertEqual(self.t.encode_tk_event("End", 0, 0, False), b'\x1b[F')
+
+    def test_insert(self):
+        self.assertEqual(self.t.encode_tk_event("Insert", 0, 0, False), b'\x1b[2~')
+
+    def test_delete(self):
+        self.assertEqual(self.t.encode_tk_event("Delete", 0, 0, False), b'\x1b[3~')
+
+    def test_page_up(self):
+        self.assertEqual(self.t.encode_tk_event("Prior", 0, 0, False), b'\x1b[5~')
+
+    def test_page_down(self):
+        self.assertEqual(self.t.encode_tk_event("Next", 0, 0, False), b'\x1b[6~')
+
+    def test_f1(self):
+        self.assertEqual(self.t.encode_tk_event("F1", 0, 0, False), b'\x1bOP')
+
+    def test_f5(self):
+        self.assertEqual(self.t.encode_tk_event("F5", 0, 0, False), b'\x1b[15~')
+
+    def test_f12(self):
+        self.assertEqual(self.t.encode_tk_event("F12", 0, 0, False), b'\x1b[24~')
+
+    # --- Special keys with modifiers ---
+    def test_shift_up(self):
+        result = self.t.encode_tk_event("Up", 0x1, 0, False)
+        self.assertEqual(result, b'\x1b[1;2A')
+
+    def test_ctrl_up(self):
+        result = self.t.encode_tk_event("Up", 0x4, 0, False)
+        self.assertEqual(result, b'\x1b[1;5A')
+
+    # --- Simple keys ---
+    def test_return(self):
+        self.assertEqual(self.t.encode_tk_event("Return", 0, 0, False), b'\r')
+
+    def test_backspace(self):
+        self.assertEqual(self.t.encode_tk_event("BackSpace", 0, 0, False), b'\x7f')
+
+    def test_tab(self):
+        self.assertEqual(self.t.encode_tk_event("Tab", 0, 0, False), b'\t')
+
+    def test_escape(self):
+        self.assertEqual(self.t.encode_tk_event("Escape", 0, 0, False), b'\x1b')
+
+    # --- Ctrl+letter ---
+    def test_ctrl_a(self):
+        result = self.t.encode_tk_event("a", 0x4, 0, False)
+        self.assertEqual(result, b'\x01')
+
+    def test_ctrl_c(self):
+        result = self.t.encode_tk_event("c", 0x4, 0, False)
+        self.assertEqual(result, b'\x03')
+
+    def test_ctrl_z(self):
+        result = self.t.encode_tk_event("z", 0x4, 0, False)
+        self.assertEqual(result, b'\x1a')
+
+    def test_ctrl_uppercase(self):
+        result = self.t.encode_tk_event("A", 0x4, 0, False)
+        self.assertEqual(result, b'\x01')
+
+    # --- Alt+key ---
+    def test_alt_x_linux(self):
+        result = self.t.encode_tk_event("x", 0x8, 0, False)
+        self.assertEqual(result, b'\x1bx')
+
+    def test_alt_x_mac(self):
+        result = self.t.encode_tk_event("x", 0x10, 0, True)
+        self.assertEqual(result, b'\x1bx')
+
+    def test_alt_wrong_mask_linux(self):
+        # Mac alt mask (0x10) on Linux should NOT trigger alt
+        result = self.t.encode_tk_event("x", 0x10, ord('x'), False)
+        # Falls through to regular character
+        self.assertIsNotNone(result)
+        self.assertNotEqual(result, b'\x1bx')
+
+    # --- Regular character ---
+    def test_regular_char(self):
+        result = self.t.encode_tk_event("a", 0, ord('a'), False)
+        self.assertEqual(result, b'a')
+
+    # --- Unhandled key ---
+    def test_unhandled_modifier_only(self):
+        result = self.t.encode_tk_event("Shift_L", 0x1, 0, False)
+        self.assertIsNone(result)
+
+    def test_unhandled_unknown_key(self):
+        result = self.t.encode_tk_event("Super_L", 0, 0, False)
+        self.assertIsNone(result)
+
+
 class TestResize(unittest.TestCase):
     def test_resize(self):
         t = _nbsterm.Terminal(24, 80)

@@ -69,10 +69,11 @@ The distribution path strips `#include` directives and prepends standard headers
 | sgr.phc | ~100 | SGR attribute parsing — `phc_flags CellAttr`, `phc_descr Color` |
 | screen.phc | ~500 | Screen buffer, cursor, scroll, dirty tracking |
 | vt_parser.phc | ~600 | VT escape sequence state machine |
-| input.phc | ~200 | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey` |
+| input.phc | ~250 | Key encoding — `phc_flags Modifier`, `phc_enum SpecialKey`, Tk event dispatch |
 | render.phc | ~150 | Screen state extraction for Python (canvas spans) |
 | color_utils.phc | ~120 | Ported Python colour functions: dim_color, gamma_correct, xterm_256_color |
-| extension.phc | ~270 | CPython module glue |
+| config_structs.phc | ~150 | Config data structures: FontConfig, CursorConfig, TerminalConfig + phc_enum CursorStyleConfig |
+| extension.phc | ~280 | CPython module glue |
 | color.phc | ~165 | CIELAB colour conversion (sRGB ↔ perceptual) |
 
 ### Makefile Targets

@@ -133,11 +133,12 @@ regenerate:
 		echo '#include <stdint.h>'; \
 		echo '#include <stdio.h>'; \
 		echo '#include <assert.h>'; \
+		echo '#include <tcl.h>'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
 			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/tk_render.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/tk_render.phc $(SRCDIR)/selection.phc $(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
@@ -167,11 +168,12 @@ verify-regenerate: $(PHC_BIN)
 		echo '#include <stdint.h>'; \
 		echo '#include <stdio.h>'; \
 		echo '#include <assert.h>'; \
+		echo '#include <tcl.h>'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
 			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/tk_render.phc $(SRCDIR)/extension.phc | \
+			$(SRCDIR)/tk_render.phc $(SRCDIR)/selection.phc $(SRCDIR)/extension.phc | \
 		grep -v '^\s*#include' | \
 		grep -v '^\s*#ifndef NBSTERM_' | \
 		grep -v '^\s*#define NBSTERM_' | \
