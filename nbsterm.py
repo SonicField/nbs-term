@@ -100,7 +100,7 @@ class TerminalWidget:
         height = self.rows * self.char_height
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
-            bg=self._bg, highlightthickness=0,
+            bg=self._bg, highlightthickness=0, borderwidth=0,
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
