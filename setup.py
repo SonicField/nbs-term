@@ -40,7 +40,10 @@ def _find_tcl_stubs():
             ).strip()
             inc = os.path.join(tcl_prefix, "include")
             lib_dir = os.path.join(tcl_prefix, "lib")
-            stubs = glob.glob(os.path.join(lib_dir, "libtclstub*.a"))
+            # Match any tclstub naming: libtclstub8.6.a, libtclstub.a, etc.
+            stubs = glob.glob(os.path.join(lib_dir, "libtcl*stub*.a"))
+            if not stubs:
+                stubs = glob.glob(os.path.join(lib_dir, "*tclstub*.a"))
             if stubs and os.path.isdir(inc):
                 return inc, stubs[0]
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -53,7 +56,7 @@ def _find_tcl_stubs():
             if os.path.isfile(os.path.join(inc_path, "tcl.h")):
                 for lib_path in ["/usr/lib/x86_64-linux-gnu", "/usr/lib64",
                                  "/usr/lib"]:
-                    stubs = glob.glob(os.path.join(lib_path, "libtclstub*.a"))
+                    stubs = glob.glob(os.path.join(lib_path, "libtcl*stub*.a"))
                     if stubs:
                         return inc_path, stubs[0]
                 return inc_path, None
@@ -75,12 +78,15 @@ def _find_tcl_stubs():
 # Find Tcl stubs library
 tcl_inc, tcl_stub = _find_tcl_stubs()
 
+print(f"Tcl stubs: inc={tcl_inc}, stub={tcl_stub}")
 if tcl_inc:
     include_dirs.append(tcl_inc)
 
 if tcl_stub:
     # Static stubs library — not affected by -undefined dynamic_lookup.
     extra_objects.append(tcl_stub)
+else:
+    print("WARNING: No Tcl stubs library found — Tcl calls may fail at runtime")
 
 sources = ["generated/extension.c"]
 if platform.system() == "Windows":
