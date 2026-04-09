@@ -36,18 +36,16 @@ def _find_tcl_lib(lib_dir):
 
 # Platform-specific Tcl linkage (required for render pipeline)
 if platform.system() == "Darwin":
-    # macOS: use Tcl framework. Try Homebrew first, then system framework.
+    # macOS: use framework linkage (works with both system Tcl and Homebrew).
+    # Add Homebrew include path if available for headers.
     try:
         tcl_prefix = subprocess.check_output(
             ["brew", "--prefix", "tcl-tk"], text=True
         ).strip()
         include_dirs.append(f"{tcl_prefix}/include")
-        lib_dir = f"{tcl_prefix}/lib"
-        tcl_lib = _find_tcl_lib(lib_dir) or "tcl8.6"
-        extra_link_args.extend([f"-L{lib_dir}", f"-l{tcl_lib}"])
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fall back to system Tcl framework
-        extra_link_args.extend(["-framework", "Tcl"])
+        pass
+    extra_link_args.extend(["-framework", "Tcl"])
 else:
     # Linux: auto-detect Tcl library version, fall back to tcl8.6
     tcl_lib = _find_tcl_lib("/usr/lib") or _find_tcl_lib("/usr/lib/x86_64-linux-gnu") or "tcl8.6"
