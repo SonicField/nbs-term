@@ -322,7 +322,7 @@ class TestCursorChars(unittest.TestCase):
         # Import check — can't import TerminalWidget directly (needs Tk)
         # but we can verify the constant is defined in the source
         import ast
-        with open('nbsterm.py') as f:
+        with open('nbsterm.py', encoding='utf-8') as f:
             tree = ast.parse(f.read())
         class_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
         self.assertIn('TerminalWidget', class_names)
@@ -330,7 +330,7 @@ class TestCursorChars(unittest.TestCase):
     def test_cursor_styles_complete(self):
         """All expected cursor styles must have unicode characters."""
         expected = {'Block', 'Underline', 'Bar'}
-        with open('nbsterm.py') as f:
+        with open('nbsterm.py', encoding='utf-8') as f:
             source = f.read()
         self.assertIn('_CURSOR_CHARS', source)
         for style in expected:
@@ -342,7 +342,7 @@ class TestCursorChars(unittest.TestCase):
 
     def test_no_wireframe(self):
         """Wireframe cursor style was removed per alexie's directive."""
-        with open('nbsterm.py') as f:
+        with open('nbsterm.py', encoding='utf-8') as f:
             source = f.read()
         self.assertNotIn('"Wireframe"', source)
         self.assertNotIn("'Wireframe'", source)

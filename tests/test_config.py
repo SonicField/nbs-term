@@ -75,7 +75,7 @@ class TestConfigPath(unittest.TestCase):
     def test_windows_path(self, mock_sys):
         mock_sys.platform = "win32"
         path = get_config_dir()
-        self.assertEqual(path, "/fake/appdata/nbs")
+        self.assertEqual(path, os.path.join("/fake/appdata", "nbs"))
 
     def test_config_file_name(self):
         path = get_config_path()
