@@ -49,8 +49,9 @@ if platform.system() == "Darwin":
         # Fall back to system Tcl framework
         extra_link_args.extend(["-framework", "Tcl"])
 else:
-    # Linux: link against system Tcl
-    libraries.append("tcl8.6")
+    # Linux: auto-detect Tcl library version, fall back to tcl8.6
+    tcl_lib = _find_tcl_lib("/usr/lib") or _find_tcl_lib("/usr/lib/x86_64-linux-gnu") or "tcl8.6"
+    libraries.append(tcl_lib)
 
 extension = Extension(
     "_nbsterm",
