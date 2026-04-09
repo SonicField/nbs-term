@@ -69,6 +69,13 @@ if (-not $hasCompiler) {
     Write-Host "C compiler (MSVC Build Tools) not found." -ForegroundColor Yellow
     $response = Read-Host "Install Visual Studio Build Tools? [Y]/n"
     if ($response -eq '' -or $response -eq 'Y' -or $response -eq 'y') {
+        # Check elevation — Build Tools install requires admin rights
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin) {
+            Write-Host "ERROR: Build Tools install requires admin rights." -ForegroundColor Red
+            Write-Host "Re-run this script from an elevated PowerShell (Run as Administrator)." -ForegroundColor Yellow
+            exit 1
+        }
         $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
         $vsInstaller = "$env:TEMP\vs_BuildTools.exe"
         Write-Host "Downloading Visual Studio Build Tools..." -ForegroundColor Yellow
