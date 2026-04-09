@@ -21,7 +21,7 @@ static int tcl_stubs_initialized = 0;
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
     if (tcl_stubs_initialized) return 1;
-    if (!Tcl_InitStubs(interp, "8.6", 0)) {
+    if (!Tcl_InitStubs(interp, TCL_VERSION, 0)) {
         PyErr_Format(PyExc_RuntimeError,
             "Tcl_InitStubs failed: %s", Tcl_GetStringResult(interp));
         return 0;
