@@ -35,14 +35,15 @@ $PYTHON -c "import tkinter; print(f'Tcl/Tk version: {tkinter.TclVersion}')" || {
     exit 1
 }
 
-# Verify Tcl headers exist
-TCL_INC=/opt/homebrew/opt/tcl-tk/include
-if [ ! -f "$TCL_INC/tcl.h" ]; then
-    echo "ERROR: Tcl headers not found at $TCL_INC"
-    echo "Run: brew install tcl-tk"
+# Find and embed Tcl headers into the repo for deterministic builds
+TCL_PREFIX=$(brew --prefix tcl-tk)
+TCL_HEADER=$(find "$TCL_PREFIX" -name tcl.h -print -quit 2>/dev/null)
+if [ -z "$TCL_HEADER" ]; then
+    echo "ERROR: tcl.h not found under $TCL_PREFIX"
     exit 1
 fi
-echo "Tcl headers found at $TCL_INC"
+TCL_INC_DIR=$(dirname "$TCL_HEADER")
+echo "Tcl headers found at $TCL_INC_DIR"
 
 # Step 3: Create venv
 VENV_DIR="$HOME/nbsterm-venv"
@@ -66,14 +67,20 @@ else
     cd "$REPO_DIR"
 fi
 
-# Step 5: Clean and install
+# Step 5: Embed Tcl headers from Homebrew into repo
+echo "Embedding Tcl headers from $TCL_INC_DIR..."
+mkdir -p deps/tcl-mac/include
+cp "$TCL_INC_DIR"/*.h deps/tcl-mac/include/
+echo "Embedded $(ls deps/tcl-mac/include/*.h | wc -l) headers."
+
+# Step 6: Clean and install
 echo "Installing nbs-term..."
 rm -rf build/ _nbsterm*.so
 pip install -e .
 
 # Step 6: Run tests
 echo "Running tests..."
-pip install pytest 2>/dev/null
+pip install pytest
 pytest
 
 echo ""

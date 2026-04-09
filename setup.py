@@ -33,9 +33,10 @@ def _find_tcl_stubs():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: Homebrew tcl-tk headers. Stubs bootstrap via dlsym
-        # (deps/tcl-mac/tclStubLib.c). No Tcl library needed.
-        inc = "/opt/homebrew/opt/tcl-tk/include"
+        # macOS: Tcl headers embedded by mac-setup.sh in deps/tcl-mac/include/.
+        # Stubs bootstrap via dlsym (deps/tcl-mac/tclStubLib.c). No Tcl library.
+        setup_dir = os.path.dirname(os.path.abspath(__file__))
+        inc = os.path.join(setup_dir, "deps", "tcl-mac", "include")
         if os.path.isfile(os.path.join(inc, "tcl.h")):
             return inc, None
 
