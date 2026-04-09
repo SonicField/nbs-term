@@ -187,7 +187,9 @@ verify-regenerate: $(PHC_BIN)
 clean:
 	rm -rf $(BUILDDIR) $(EXTENSION_SO)
 
-# Install: clean stale artifacts and install via pip
+# Install: clean stale artifacts, purge pip cache, and install via pip
 install: clean
 	rm -f _nbsterm*.so
-	pip install -e .
+	rm -rf build/
+	pip cache remove nbs_term 2>/dev/null || true
+	pip install -e . --no-build-isolation

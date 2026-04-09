@@ -98,6 +98,39 @@ class TestRenderer(unittest.TestCase):
         self.assertEqual(cp_n, ord('N'))
 
 
+class TestRenderFrameContract(unittest.TestCase):
+    """Verify render_frame C function accepts the args Python sends."""
+
+    def test_arg_count_matches_python_call(self):
+        """render_frame expects exactly 11 args (matching nbsterm.py _render)."""
+        t = _nbsterm.Terminal(24, 80)
+        with self.assertRaises(TypeError) as ctx:
+            t.render_frame()
+        self.assertIn("11", str(ctx.exception))
+
+    def test_rejects_wrong_arg_count(self):
+        """render_frame rejects 12 args (catches format string mismatch)."""
+        t = _nbsterm.Terminal(24, 80)
+        with self.assertRaises(TypeError) as ctx:
+            t.render_frame(0, "", True, 0, "", "", "", 1.0, 10, 20, 8, 999)
+        self.assertIn("11", str(ctx.exception))
+
+    def test_draw_selection_arg_count(self):
+        """draw_selection expects exactly 10 args."""
+        t = _nbsterm.Terminal(24, 80)
+        with self.assertRaises(TypeError) as ctx:
+            t.draw_selection()
+        # Verify it reports the expected arg count
+        self.assertIn("argument", str(ctx.exception).lower())
+
+    def test_clear_selection_arg_count(self):
+        """clear_selection expects exactly 2 args."""
+        t = _nbsterm.Terminal(24, 80)
+        with self.assertRaises(TypeError) as ctx:
+            t.clear_selection()
+        self.assertIn("argument", str(ctx.exception).lower())
+
+
 class TestInputEncoding(unittest.TestCase):
     def test_encode_key_ascii(self):
         t = _nbsterm.Terminal(24, 80)
