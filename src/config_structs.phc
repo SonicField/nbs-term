@@ -96,9 +96,15 @@ static PyObject *phc_config_set(PyObject *self, PyObject *args) {
             &gamma, &fg, &bg,
             &rows, &cols, &refresh_hz))
         return NULL;
+    phc_require(font_family != NULL, "NULL font family");
+    phc_require(font_size > 0 && font_size <= 200, "font size out of range");
+    phc_require(rows > 0 && cols > 0, "dimensions must be positive");
+    phc_require(gamma > 0.0 && gamma <= 5.0, "gamma out of range");
+    phc_require(refresh_hz > 0 && refresh_hz <= 240, "refresh rate out of range");
 
     strncpy(g_config.font.family, font_family, sizeof(g_config.font.family) - 1);
     g_config.font.family[sizeof(g_config.font.family) - 1] = '\0';
+    phc_check(strlen(g_config.font.family) > 0, "font family not empty after copy");
     g_config.font.size = font_size;
     g_config.cursor.style = cursor_style_from_string(cursor_style);
     g_config.cursor.blink = cursor_blink;

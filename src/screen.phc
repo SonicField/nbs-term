@@ -181,6 +181,7 @@ static void screen_clear_region(ScreenBuffer *scr, int top, int left, int bottom
 
 /* Scroll lines up within scroll region, pushing top line to scrollback */
 static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
+    phc_invariant(scr->scroll_top <= scr->scroll_bottom, "scroll region valid");
     int top = scr->scroll_top;
     int bottom = scr->scroll_bottom;
     if (count <= 0) return;
@@ -240,6 +241,7 @@ static void screen_scroll_down(ScreenBuffer *scr, int count) {
 
 static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoint) {
     Cursor *cur = &scr->cursor;
+    phc_check(cur->row >= 0 && cur->row < scr->rows, "cursor row in bounds before put");
 
     /* Handle wrap pending */
     if (cur->wrap_pending) {
@@ -495,6 +497,7 @@ static Terminal *terminal_new(int rows, int cols) {
 
     term->active = term->main_screen;
     term->using_alt = 0;
+    phc_invariant(term->active == term->main_screen, "active starts as main");
     phc_defer_cancel;  /* success — ownership transferred to caller */
     return term;
 }

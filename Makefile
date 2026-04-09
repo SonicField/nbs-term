@@ -136,6 +136,25 @@ regenerate:
 		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
 		echo ''; \
+		echo '/* phc_assert macros — trust-level assertions */'; \
+		echo '#define phc_require(expr, msg) do { if (!(expr)) { \'; \
+		echo '    fprintf(stderr, "REQUIRE FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
+		echo '    abort(); }} while(0)'; \
+		echo '#ifndef PHC_STRIP_CHECK'; \
+		echo '#define phc_check(expr, msg) do { if (!(expr)) { \'; \
+		echo '    fprintf(stderr, "CHECK FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
+		echo '    abort(); }} while(0)'; \
+		echo '#else'; \
+		echo '#define phc_check(expr, msg) ((void)0)'; \
+		echo '#endif'; \
+		echo '#ifndef PHC_STRIP_INVARIANT'; \
+		echo '#define phc_invariant(expr, msg) do { if (!(expr)) { \'; \
+		echo '    fprintf(stderr, "INVARIANT FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
+		echo '    abort(); }} while(0)'; \
+		echo '#else'; \
+		echo '#define phc_invariant(expr, msg) ((void)0)'; \
+		echo '#endif'; \
+		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
 			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \

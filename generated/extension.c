@@ -9,6 +9,25 @@
 #define USE_TCL_STUBS
 #include <tcl.h>
 
+/* phc_assert macros — trust-level assertions */
+#define phc_require(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "REQUIRE FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#ifndef PHC_STRIP_CHECK
+#define phc_check(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "CHECK FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#else
+#define phc_check(expr, msg) ((void)0)
+#endif
+#ifndef PHC_STRIP_INVARIANT
+#define phc_invariant(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "INVARIANT FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#else
+#define phc_invariant(expr, msg) ((void)0)
+#endif
+
 #ifndef abort
 extern void abort(void);
 #endif
@@ -448,6 +467,7 @@ static void screen_clear_region(ScreenBuffer *scr, int top, int left, int bottom
 
 /* Scroll lines up within scroll region, pushing top line to scrollback */
 static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
+    phc_invariant(scr->scroll_top <= scr->scroll_bottom, "scroll region valid");
     int top = scr->scroll_top;
     int bottom = scr->scroll_bottom;
     if (count <= 0) return;
@@ -507,6 +527,7 @@ static void screen_scroll_down(ScreenBuffer *scr, int count) {
 
 static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoint) {
     Cursor *cur = &scr->cursor;
+    phc_check(cur->row >= 0 && cur->row < scr->rows, "cursor row in bounds before put");
 
     /* Handle wrap pending */
     if (cur->wrap_pending) {
@@ -759,6 +780,7 @@ term->scrollback = scrollback_alloc(10000, cols);
 
     term->active = term->main_screen;
     term->using_alt = 0;
+    phc_invariant(term->active == term->main_screen, "active starts as main");
     _phc_dg_3 = 0; _phc_dg_2 = 0; _phc_dg_1 = 0; 
   /* success — ownership transferred to caller */
     { if (_phc_dg_3) {  screen_free(term->alt_screen); } if (_phc_dg_2) {  screen_free(term->main_screen); } if (_phc_dg_1) {  phc_free(&term); } return term; }
@@ -931,7 +953,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 679
+#line 682
 
 /* --- UTF-8 decoder state --- */
 
@@ -1520,7 +1542,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1272
+#line 1275
 
     return VTState_mk_Ground();
 }
@@ -1585,7 +1607,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1298
+#line 1301
 
 /* --- Input event types --- */
 
@@ -1678,7 +1700,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1307
+#line 1310
 
 /* --- UTF-8 encoding --- */
 
@@ -1831,7 +1853,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1394
+#line 1397
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1965,7 +1987,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1526
+#line 1529
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2118,6 +2140,7 @@ static PyObject *phc_gamma_correct(PyObject *self, PyObject *args) {
     double gamma;
     if (!PyArg_ParseTuple(args, "sd", &hex, &gamma))
         return NULL;
+    phc_require(gamma > 0.0, "gamma must be positive");
 
     /* Identity or invalid input — passthrough */
     if (gamma == 1.0 || strlen(hex) != 7 || hex[0] != '#') {
@@ -2215,7 +2238,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1758
+#line 1762
 
 /* Config structs — mirrors Python dataclasses */
 
@@ -2295,9 +2318,15 @@ static PyObject *phc_config_set(PyObject *self, PyObject *args) {
             &gamma, &fg, &bg,
             &rows, &cols, &refresh_hz))
         return NULL;
+    phc_require(font_family != NULL, "NULL font family");
+    phc_require(font_size > 0 && font_size <= 200, "font size out of range");
+    phc_require(rows > 0 && cols > 0, "dimensions must be positive");
+    phc_require(gamma > 0.0 && gamma <= 5.0, "gamma out of range");
+    phc_require(refresh_hz > 0 && refresh_hz <= 240, "refresh rate out of range");
 
     strncpy(g_config.font.family, font_family, sizeof(g_config.font.family) - 1);
     g_config.font.family[sizeof(g_config.font.family) - 1] = '\0';
+    phc_check(strlen(g_config.font.family) > 0, "font family not empty after copy");
     g_config.font.size = font_size;
     g_config.cursor.style = cursor_style_from_string(cursor_style);
     g_config.cursor.blink = cursor_blink;
@@ -2354,10 +2383,14 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
 /* With USE_TCL_STUBS defined before tcl.h, TclFreeObj is a macro that
  * goes through the stubs table. No manual dlsym needed. */
 
-/* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter */
+/* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter.
+ * ASSUMES GIL is held during stubs init (Python's threading model guarantees
+ * this for C extension calls, but the assumption should be explicit). */
 static int tcl_stubs_initialized = 0;
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
+    phc_invariant(tcl_stubs_initialized || interp != NULL,
+                  "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
     if (!Tcl_InitStubs(interp, TCL_VERSION, 0)) {
         PyErr_Format(PyExc_RuntimeError,
@@ -2383,11 +2416,9 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
-    if (!ensure_tcl_stubs(interp)) return NULL;
+    phc_require(interp != NULL, "NULL Tcl interpreter");
+    phc_require(canvas_path != NULL, "NULL canvas path");
+    phc_require(ensure_tcl_stubs(interp), "Tcl stubs init failed");
 
     Tcl_Obj *objv[11];
     objv[0] = Tcl_NewStringObj(canvas_path, -1);
@@ -2401,7 +2432,10 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
     objv[8] = Tcl_NewStringObj("red", -1);
     objv[9] = Tcl_NewStringObj("-outline", -1);
     objv[10] = Tcl_NewStringObj("", -1);
-    for (int i = 0; i < 11; i++) Tcl_IncrRefCount(objv[i]);
+    for (int i = 0; i < 11; i++) {
+        phc_check(objv[i] != NULL, "Tcl_NewStringObj/NewIntObj returned NULL");
+        Tcl_IncrRefCount(objv[i]);
+    }
 
     int rc = Tcl_EvalObjv(interp, 11, objv, 0);
 
@@ -2430,13 +2464,8 @@ static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
-
-    /* Initialize stubs on this interpreter */
-    if (!ensure_tcl_stubs(interp)) return NULL;
+    phc_require(interp != NULL, "NULL Tcl interpreter in smoke test");
+    phc_require(ensure_tcl_stubs(interp), "Tcl stubs init failed in smoke test");
 
     /* Run 'expr 1+1' via Tcl_EvalObjv */
     Tcl_Obj *objv[2];
@@ -2476,6 +2505,8 @@ static PyObject *phc_pixel_to_cell(PyObject *self, PyObject *args) {
     int x, y, char_width, char_height, cols, rows;
     if (!PyArg_ParseTuple(args, "iiiiii", &x, &y, &char_width, &char_height, &cols, &rows))
         return NULL;
+    phc_require(char_width > 0 && char_height > 0, "char dimensions must be positive");
+    phc_require(cols > 0 && rows > 0, "grid dimensions must be positive");
 
     int col = x / char_width;
     if (col < 0) col = 0;
@@ -2564,11 +2595,14 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
     int rows = 24, cols = 80;
     if (!PyArg_ParseTuple(args, "|ii", &rows, &cols))
         return NULL;
+    phc_require(rows > 0 && rows <= 500, "rows out of range");
+    phc_require(cols > 0 && cols <= 500, "cols out of range");
 
     TerminalObject *self = (TerminalObject *)type->tp_alloc(type, 0);
     if (!self) return NULL;
 
     self->term = terminal_new(rows, cols);
+    phc_check(self->term != NULL, "terminal_new succeeded");
     if (!self->term) {
         Py_DECREF(self);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate terminal");
@@ -2627,7 +2661,9 @@ static PyObject *Terminal_get_screen(TerminalObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "|ss", &fg, &bg))
         return NULL;
 
-    return render_screen(self->term->active, fg, bg);
+    PyObject *result = render_screen(self->term->active, fg, bg);
+    phc_check(result != NULL, "render_screen returned valid result");
+    return result;
 }
 
 /* --- get_cursor() -> (row, col) --- */
@@ -2698,6 +2734,7 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     int rows, cols;
     if (!PyArg_ParseTuple(args, "ii", &rows, &cols))
         return NULL;
+    phc_require(rows > 0 && cols > 0, "resize dimensions must be positive");
 
     terminal_resize(self->term, rows, cols);
     Py_RETURN_NONE;
@@ -3038,19 +3075,23 @@ static void render_dim(const char *hex, char *out, int outsize) {
 
 /* Store a canvas item ID returned by Tcl_EvalObjv into the render buffer. */
 static void render_store_item(Tcl_Interp *interp, RenderState *rs, int buf, int row) {
+    phc_require(buf == 0 || buf == 1, "buffer index out of range");
+    phc_require(row >= 0 && row < RENDER_MAX_ROWS, "row out of bounds");
     if (rs->item_count[buf][row] < RENDER_MAX_ITEMS_PER_ROW) {
         int item_id = 0;
         Tcl_Obj *result = Tcl_GetObjResult(interp);
         Tcl_GetIntFromObj(interp, result, &item_id);
         rs->items[buf][row][rs->item_count[buf][row]++] = item_id;
     }
+    phc_check(rs->item_count[buf][row] <= RENDER_MAX_ITEMS_PER_ROW, "item count within limit");
 }
 
-/* Call canvas create rectangle via Tcl_EvalObjv. Binary-safe (no brace quoting). */
+/* Call canvas create rectangle via Tcl_EvalObjv. Binary-safe. */
 static void render_create_rect(Tcl_Interp *interp, Tcl_Obj *canvas,
                                int x1, int y1, int x2, int y2,
                                const char *fill, const char *tag,
                                RenderState *rs, int buf, int row) {
+    phc_require(interp != NULL && canvas != NULL, "NULL interp/canvas in rect");
     Tcl_Obj *objv[14];
     objv[0] = canvas;
     objv[1] = Tcl_NewStringObj("create", -1);
@@ -3084,6 +3125,7 @@ static void render_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
                                const char *fill, const char *font,
                                const char *tag,
                                RenderState *rs, int buf, int row) {
+    phc_require(interp != NULL && canvas != NULL, "NULL interp/canvas in text");
     Tcl_Obj *objv[15];
     objv[0] = canvas;
     objv[1] = Tcl_NewStringObj("create", -1);
@@ -3116,6 +3158,7 @@ static void render_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
 /* Call 'font measure <font> <text>' via Tcl_EvalObjv. Binary-safe. */
 static int render_font_measure(Tcl_Interp *interp, const char *font,
                                const char *text, int text_len, int fallback) {
+    phc_require(interp != NULL, "NULL interpreter in font measure");
     Tcl_Obj *objv[4];
     objv[0] = Tcl_NewStringObj("font", -1);
     objv[1] = Tcl_NewStringObj("measure", -1);
@@ -3130,6 +3173,7 @@ static int render_font_measure(Tcl_Interp *interp, const char *font,
         fprintf(stderr, "nbsterm: font measure failed for '%s', using char_width fallback\n", font);
     }
     for (int i = 0; i < 4; i++) Tcl_DecrRefCount(objv[i]);
+    phc_check(width > 0, "font measure returned non-positive");
     return width;
 }
 
@@ -3242,10 +3286,8 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
+    phc_require(interp != NULL, "NULL interpreter in render_frame");
+    phc_require(char_width > 0 && char_height > 0, "char dimensions must be positive");
     if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
@@ -3493,10 +3535,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
+    phc_require(interp != NULL, "NULL interpreter in draw_selection");
     if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;

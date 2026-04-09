@@ -16,10 +16,14 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter */
+/* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter.
+ * ASSUMES GIL is held during stubs init (Python's threading model guarantees
+ * this for C extension calls, but the assumption should be explicit). */
 static int tcl_stubs_initialized = 0;
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
+    phc_invariant(tcl_stubs_initialized || interp != NULL,
+                  "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
     if (!Tcl_InitStubs(interp, TCL_VERSION, 0)) {
         PyErr_Format(PyExc_RuntimeError,
@@ -45,11 +49,9 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
-    if (!ensure_tcl_stubs(interp)) return NULL;
+    phc_require(interp != NULL, "NULL Tcl interpreter");
+    phc_require(canvas_path != NULL, "NULL canvas path");
+    phc_require(ensure_tcl_stubs(interp), "Tcl stubs init failed");
 
     Tcl_Obj *objv[11];
     objv[0] = Tcl_NewStringObj(canvas_path, -1);
@@ -63,7 +65,10 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
     objv[8] = Tcl_NewStringObj("red", -1);
     objv[9] = Tcl_NewStringObj("-outline", -1);
     objv[10] = Tcl_NewStringObj("", -1);
-    for (int i = 0; i < 11; i++) Tcl_IncrRefCount(objv[i]);
+    for (int i = 0; i < 11; i++) {
+        phc_check(objv[i] != NULL, "Tcl_NewStringObj/NewIntObj returned NULL");
+        Tcl_IncrRefCount(objv[i]);
+    }
 
     int rc = Tcl_EvalObjv(interp, 11, objv, 0);
 
@@ -92,13 +97,8 @@ static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
-
-    /* Initialize stubs on this interpreter */
-    if (!ensure_tcl_stubs(interp)) return NULL;
+    phc_require(interp != NULL, "NULL Tcl interpreter in smoke test");
+    phc_require(ensure_tcl_stubs(interp), "Tcl stubs init failed in smoke test");
 
     /* Run 'expr 1+1' via Tcl_EvalObjv */
     Tcl_Obj *objv[2];

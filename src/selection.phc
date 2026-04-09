@@ -18,6 +18,8 @@ static PyObject *phc_pixel_to_cell(PyObject *self, PyObject *args) {
     int x, y, char_width, char_height, cols, rows;
     if (!PyArg_ParseTuple(args, "iiiiii", &x, &y, &char_width, &char_height, &cols, &rows))
         return NULL;
+    phc_require(char_width > 0 && char_height > 0, "char dimensions must be positive");
+    phc_require(cols > 0 && rows > 0, "grid dimensions must be positive");
 
     int col = x / char_width;
     if (col < 0) col = 0;

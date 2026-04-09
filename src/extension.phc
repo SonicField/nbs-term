@@ -69,11 +69,14 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
     int rows = 24, cols = 80;
     if (!PyArg_ParseTuple(args, "|ii", &rows, &cols))
         return NULL;
+    phc_require(rows > 0 && rows <= 500, "rows out of range");
+    phc_require(cols > 0 && cols <= 500, "cols out of range");
 
     TerminalObject *self = (TerminalObject *)type->tp_alloc(type, 0);
     if (!self) return NULL;
 
     self->term = terminal_new(rows, cols);
+    phc_check(self->term != NULL, "terminal_new succeeded");
     if (!self->term) {
         Py_DECREF(self);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate terminal");
@@ -132,7 +135,9 @@ static PyObject *Terminal_get_screen(TerminalObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "|ss", &fg, &bg))
         return NULL;
 
-    return render_screen(self->term->active, fg, bg);
+    PyObject *result = render_screen(self->term->active, fg, bg);
+    phc_check(result != NULL, "render_screen returned valid result");
+    return result;
 }
 
 /* --- get_cursor() -> (row, col) --- */
@@ -203,6 +208,7 @@ static PyObject *Terminal_resize(TerminalObject *self, PyObject *args) {
     int rows, cols;
     if (!PyArg_ParseTuple(args, "ii", &rows, &cols))
         return NULL;
+    phc_require(rows > 0 && cols > 0, "resize dimensions must be positive");
 
     terminal_resize(self->term, rows, cols);
     Py_RETURN_NONE;
@@ -543,19 +549,23 @@ static void render_dim(const char *hex, char *out, int outsize) {
 
 /* Store a canvas item ID returned by Tcl_EvalObjv into the render buffer. */
 static void render_store_item(Tcl_Interp *interp, RenderState *rs, int buf, int row) {
+    phc_require(buf == 0 || buf == 1, "buffer index out of range");
+    phc_require(row >= 0 && row < RENDER_MAX_ROWS, "row out of bounds");
     if (rs->item_count[buf][row] < RENDER_MAX_ITEMS_PER_ROW) {
         int item_id = 0;
         Tcl_Obj *result = Tcl_GetObjResult(interp);
         Tcl_GetIntFromObj(interp, result, &item_id);
         rs->items[buf][row][rs->item_count[buf][row]++] = item_id;
     }
+    phc_check(rs->item_count[buf][row] <= RENDER_MAX_ITEMS_PER_ROW, "item count within limit");
 }
 
-/* Call canvas create rectangle via Tcl_EvalObjv. Binary-safe (no brace quoting). */
+/* Call canvas create rectangle via Tcl_EvalObjv. Binary-safe. */
 static void render_create_rect(Tcl_Interp *interp, Tcl_Obj *canvas,
                                int x1, int y1, int x2, int y2,
                                const char *fill, const char *tag,
                                RenderState *rs, int buf, int row) {
+    phc_require(interp != NULL && canvas != NULL, "NULL interp/canvas in rect");
     Tcl_Obj *objv[14];
     objv[0] = canvas;
     objv[1] = Tcl_NewStringObj("create", -1);
@@ -589,6 +599,7 @@ static void render_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
                                const char *fill, const char *font,
                                const char *tag,
                                RenderState *rs, int buf, int row) {
+    phc_require(interp != NULL && canvas != NULL, "NULL interp/canvas in text");
     Tcl_Obj *objv[15];
     objv[0] = canvas;
     objv[1] = Tcl_NewStringObj("create", -1);
@@ -621,6 +632,7 @@ static void render_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
 /* Call 'font measure <font> <text>' via Tcl_EvalObjv. Binary-safe. */
 static int render_font_measure(Tcl_Interp *interp, const char *font,
                                const char *text, int text_len, int fallback) {
+    phc_require(interp != NULL, "NULL interpreter in font measure");
     Tcl_Obj *objv[4];
     objv[0] = Tcl_NewStringObj("font", -1);
     objv[1] = Tcl_NewStringObj("measure", -1);
@@ -635,6 +647,7 @@ static int render_font_measure(Tcl_Interp *interp, const char *font,
         fprintf(stderr, "nbsterm: font measure failed for '%s', using char_width fallback\n", font);
     }
     for (int i = 0; i < 4; i++) Tcl_DecrRefCount(objv[i]);
+    phc_check(width > 0, "font measure returned non-positive");
     return width;
 }
 
@@ -747,10 +760,8 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
+    phc_require(interp != NULL, "NULL interpreter in render_frame");
+    phc_require(char_width > 0 && char_height > 0, "char dimensions must be positive");
     if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
@@ -998,10 +1009,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
-        return NULL;
-    }
+    phc_require(interp != NULL, "NULL interpreter in draw_selection");
     if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;

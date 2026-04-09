@@ -48,6 +48,7 @@ static PyObject *phc_gamma_correct(PyObject *self, PyObject *args) {
     double gamma;
     if (!PyArg_ParseTuple(args, "sd", &hex, &gamma))
         return NULL;
+    phc_require(gamma > 0.0, "gamma must be positive");
 
     /* Identity or invalid input — passthrough */
     if (gamma == 1.0 || strlen(hex) != 7 || hex[0] != '#') {
