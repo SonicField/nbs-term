@@ -12,11 +12,14 @@ import platform
 import subprocess
 from setuptools import setup, Extension
 
-extra_compile_args = [
-    "-std=c11", "-Wall", "-Wextra",
-    "-Wno-unused-function",
-    "-Wno-missing-field-initializers",
-]
+if platform.system() == "Windows":
+    extra_compile_args = ["/std:c11", "/W3"]
+else:
+    extra_compile_args = [
+        "-std=c11", "-Wall", "-Wextra",
+        "-Wno-unused-function",
+        "-Wno-missing-field-initializers",
+    ]
 include_dirs = []
 extra_link_args = []
 extra_objects = []
