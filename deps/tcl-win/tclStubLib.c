@@ -22,8 +22,8 @@
  */
 #include "include/tcl.h"
 
-/* The global stubs table pointer, used by all stub-enabled Tcl calls */
-const TclStubs *tclStubsPtr = NULL;
+/* The global stubs table pointer (non-const to match both Tcl 8 and 9 headers) */
+TclStubs *tclStubsPtr = NULL;
 
 /*
  * Tcl_InitStubs -- Initialize the stubs table from an interpreter.
@@ -42,7 +42,7 @@ Tcl_InitStubs(Tcl_Interp *interp, const char *version, int exact)
     HMODULE hTcl;
     const char *actualVersion;
     void *clientData = NULL;
-    const TclStubs *stubsPtr;
+    TclStubs *stubsPtr;
 
     /* tcl86t.dll is already loaded by _tkinter */
     hTcl = GetModuleHandleA("tcl86t.dll");
@@ -64,7 +64,7 @@ Tcl_InitStubs(Tcl_Interp *interp, const char *version, int exact)
         return NULL;
     }
 
-    stubsPtr = (const TclStubs *)clientData;
+    stubsPtr = (TclStubs *)clientData;
     if (stubsPtr->magic != TCL_STUB_MAGIC) {
         return NULL;
     }
