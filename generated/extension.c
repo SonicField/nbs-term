@@ -8,9 +8,6 @@
 #include <assert.h>
 #define USE_TCL_STUBS
 #include <tcl.h>
-#ifdef __APPLE__
-#include <dlfcn.h>
-#endif
 
 #ifndef abort
 extern void abort(void);
@@ -2354,21 +2351,8 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
 
 #define USE_TCL_STUBS
 
-/* TclFreeObj is an internal Tcl function called by the Tcl_DecrRefCount
- * macro when refcount hits 0. It's NOT in the stubs table (not public API).
- * On Linux, -ltcl8.6 provides it. On Mac, we resolve it at runtime via
- * dlsym from whatever Tcl library _tkinter loaded. */
-#ifdef __APPLE__
-static void (*_resolved_TclFreeObj)(Tcl_Obj *) = NULL;
-void TclFreeObj(Tcl_Obj *objPtr) {
-    if (!_resolved_TclFreeObj) {
-        _resolved_TclFreeObj = dlsym(RTLD_DEFAULT, "TclFreeObj");
-    }
-    if (_resolved_TclFreeObj) {
-        _resolved_TclFreeObj(objPtr);
-    }
-}
-#endif
+/* With USE_TCL_STUBS defined before tcl.h, TclFreeObj is a macro that
+ * goes through the stubs table. No manual dlsym needed. */
 
 /* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter */
 static int tcl_stubs_initialized = 0;

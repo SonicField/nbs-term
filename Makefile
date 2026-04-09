@@ -135,9 +135,6 @@ regenerate:
 		echo '#include <assert.h>'; \
 		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
-		echo '#ifdef __APPLE__'; \
-		echo '#include <dlfcn.h>'; \
-		echo '#endif'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
@@ -174,9 +171,6 @@ verify-regenerate: $(PHC_BIN)
 		echo '#include <assert.h>'; \
 		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
-		echo '#ifdef __APPLE__'; \
-		echo '#include <dlfcn.h>'; \
-		echo '#endif'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
