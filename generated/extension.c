@@ -8,6 +8,7 @@
 #include <assert.h>
 #define USE_TCL_STUBS
 #include <tcl.h>
+#undef Tcl_InitStubs
 
 /* phc_assert macros — trust-level assertions */
 #define phc_require(expr, msg) do { if (!(expr)) { \
