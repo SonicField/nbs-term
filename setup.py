@@ -50,7 +50,7 @@ def _find_tcl_from_tkinter():
                     return lib_dir, lib_name
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
-    else:
+    elif platform.system() == "Linux":
         # On Linux, use ldd
         try:
             output = subprocess.check_output(
@@ -66,6 +66,20 @@ def _find_tcl_from_tkinter():
                         lib_dir = os.path.dirname(path_m.group(1))
                         return lib_dir, lib_name
         except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    elif platform.system() == "Windows":
+        # On Windows, derive from _tkinter.TCL_VERSION
+        try:
+            ver = _tkinter.TCL_VERSION  # e.g. '8.6' or '9.0'
+            # Windows Tcl library: tcl86.dll, tcl90.dll (no dots in name)
+            lib_name = "tcl" + ver.replace(".", "")
+            # Tcl DLLs are typically in Python's DLLs directory
+            import sys
+            dll_dir = os.path.join(sys.prefix, "DLLs")
+            if os.path.isdir(dll_dir):
+                return dll_dir, lib_name
+            return None, lib_name
+        except AttributeError:
             pass
 
     return None, None
