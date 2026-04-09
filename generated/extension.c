@@ -2382,6 +2382,45 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
     return PyUnicode_FromString(res);
 }
 
+/* Headless Tcl ABI smoke test: creates an interpreter, runs 'expr 1+1'
+ * via Tcl_EvalObjv, returns the result string. Catches version mismatches
+ * and linkage errors without needing a display. */
+static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+
+    Tcl_Interp *interp = Tcl_CreateInterp();
+    if (!interp) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to create Tcl interpreter");
+        return NULL;
+    }
+
+    /* Run 'expr 1+1' via Tcl_EvalObjv */
+    Tcl_Obj *objv[2];
+    objv[0] = Tcl_NewStringObj("expr", -1);
+    objv[1] = Tcl_NewStringObj("1+1", -1);
+    Tcl_IncrRefCount(objv[0]);
+    Tcl_IncrRefCount(objv[1]);
+
+    int rc = Tcl_EvalObjv(interp, 2, objv, 0);
+
+    Tcl_DecrRefCount(objv[0]);
+    Tcl_DecrRefCount(objv[1]);
+
+    if (rc != TCL_OK) {
+        const char *err = Tcl_GetStringResult(interp);
+        PyErr_Format(PyExc_RuntimeError, "Tcl_EvalObjv failed: %s", err);
+        Tcl_DeleteInterp(interp);
+        return NULL;
+    }
+
+    const char *result = Tcl_GetStringResult(interp);
+    PyObject *py_result = PyUnicode_FromString(result);
+
+    Tcl_DeleteInterp(interp);
+    return py_result;
+}
+
 /*
  * selection.phc — Selection logic for terminal coordinate conversion
  *
@@ -3618,6 +3657,8 @@ static PyMethodDef module_methods[] = {
      "Convert pixel (x, y) to (row, col) given char_width, char_height, cols, rows."},
     {"sel_range",      phc_sel_range,      METH_VARARGS,
      "Order selection endpoints: (sr, sc, er, ec) -> ordered (sr, sc, er, ec)."},
+    {"tcl_smoke_test", (PyCFunction)phc_tcl_smoke_test, METH_NOARGS,
+     "Headless Tcl ABI smoke test: creates interpreter, runs expr 1+1."},
     {NULL, NULL, 0, NULL}
 };
 

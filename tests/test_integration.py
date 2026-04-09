@@ -141,6 +141,12 @@ class TestRenderFrameContract(unittest.TestCase):
             _nbsterm.tk_probe()
         self.assertIn("argument", str(ctx.exception).lower())
 
+    def test_tcl_smoke_test(self):
+        """Tcl ABI smoke test — creates interpreter, runs expr 1+1 via Tcl_EvalObjv.
+        Catches Tcl version mismatches that cause SIGSEGV in production."""
+        result = _nbsterm.tcl_smoke_test()
+        self.assertEqual(result, "2")
+
 
 class TestInputEncoding(unittest.TestCase):
     def test_encode_key_ascii(self):

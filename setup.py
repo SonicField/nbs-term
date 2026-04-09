@@ -1,7 +1,7 @@
 """Build configuration for the _nbsterm C extension."""
-import glob
 import os
 import platform
+import re
 import subprocess
 from setuptools import setup, Extension
 
@@ -15,62 +15,89 @@ extra_compile_args = [
     "-Wno-missing-field-initializers",
 ]
 include_dirs = []
+library_dirs = []
 libraries = []
 extra_link_args = []
 
 
-def _find_tcl_lib(lib_dir):
-    """Find the Tcl library name in a directory (handles 8.6, 9.0, etc)."""
-    for pattern in ["libtcl[0-9].[0-9]*", "libtcl[0-9][0-9]*"]:
-        matches = glob.glob(os.path.join(lib_dir, pattern + ".*"))
-        if matches:
-            # Extract library name: libtcl9.0.dylib -> tcl9.0
-            basename = os.path.basename(matches[0])
-            # Strip lib prefix and extension
-            name = basename.split(".dylib")[0].split(".so")[0].split(".a")[0]
-            if name.startswith("lib"):
-                name = name[3:]
-            return name
-    return None
+def _find_tcl_from_tkinter():
+    """Find Tcl library path and name from Python's own _tkinter module.
 
+    This is the most reliable method: we link the exact same Tcl that
+    Python's _tkinter uses, avoiding version mismatches.
 
-# Platform-specific Tcl linkage (required for render pipeline)
-# CRITICAL: must link the SAME Tcl library that Python's _tkinter uses.
-# Mixing Tcl versions (e.g. system framework Tcl 8.x with Homebrew Tcl 9.0)
-# causes segfaults because Tcl_Interp struct layout differs between versions.
-if platform.system() == "Darwin":
-    # macOS: find the Tcl library that _tkinter actually links against.
-    # Homebrew tcl-tk is strongly preferred (matches Python's _tkinter).
-    linked = False
+    Returns (lib_dir, lib_name) or (None, None).
+    """
     try:
-        tcl_prefix = subprocess.check_output(
-            ["brew", "--prefix", "tcl-tk"], text=True
-        ).strip()
-        include_dirs.append(f"{tcl_prefix}/include")
-        lib_dir = f"{tcl_prefix}/lib"
-        tcl_lib = _find_tcl_lib(lib_dir)
-        if tcl_lib:
-            extra_link_args.extend([
-                f"-L{lib_dir}",
-                f"-Wl,-rpath,{lib_dir}",
-                f"-l{tcl_lib}",
-            ])
-            linked = True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    if not linked:
-        # No Homebrew — fall back to system framework (may version-mismatch)
-        extra_link_args.extend(["-framework", "Tcl"])
+        import _tkinter
+        tkinter_path = _tkinter.__file__
+    except (ImportError, AttributeError):
+        return None, None
+
+    # On macOS, use otool -L to find linked Tcl library
+    if platform.system() == "Darwin":
+        try:
+            output = subprocess.check_output(
+                ["otool", "-L", tkinter_path], text=True
+            )
+            for line in output.splitlines():
+                # Match lines like: /opt/homebrew/.../libtcl9.0.dylib
+                m = re.search(r"(/\S+/lib(tcl[\d.]+)\.dylib)", line)
+                if m:
+                    full_path = m.group(1)
+                    lib_name = m.group(2)
+                    lib_dir = os.path.dirname(full_path)
+                    return lib_dir, lib_name
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        # On Linux, use ldd
+        try:
+            output = subprocess.check_output(
+                ["ldd", tkinter_path], text=True
+            )
+            for line in output.splitlines():
+                m = re.search(r"lib(tcl[\d.]+)\.so", line)
+                if m:
+                    lib_name = m.group(1)
+                    # Extract path
+                    path_m = re.search(r"=> (/\S+)", line)
+                    if path_m:
+                        lib_dir = os.path.dirname(path_m.group(1))
+                        return lib_dir, lib_name
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+    return None, None
+
+
+# Find Tcl from Python's _tkinter — the authoritative source.
+tcl_lib_dir, tcl_lib_name = _find_tcl_from_tkinter()
+
+if tcl_lib_dir and tcl_lib_name:
+    # Use the exact Tcl library that _tkinter links.
+    library_dirs.append(tcl_lib_dir)
+    libraries.append(tcl_lib_name)
+    # Add include dir (typically ../include relative to lib)
+    tcl_include = os.path.join(os.path.dirname(tcl_lib_dir), "include")
+    if os.path.isdir(tcl_include):
+        include_dirs.append(tcl_include)
+    # On macOS, add rpath for runtime resolution
+    if platform.system() == "Darwin":
+        extra_link_args.append(f"-Wl,-rpath,{tcl_lib_dir}")
+elif platform.system() == "Darwin":
+    # Fallback: system Tcl framework (may version-mismatch with _tkinter)
+    extra_link_args.extend(["-framework", "Tcl"])
 else:
-    # Linux: auto-detect Tcl library version, fall back to tcl8.6
-    tcl_lib = _find_tcl_lib("/usr/lib") or _find_tcl_lib("/usr/lib/x86_64-linux-gnu") or "tcl8.6"
-    libraries.append(tcl_lib)
+    # Fallback: system Tcl on Linux
+    libraries.append("tcl8.6")
 
 extension = Extension(
     "_nbsterm",
     sources=["generated/extension.c"],
     extra_compile_args=extra_compile_args,
     include_dirs=include_dirs,
+    library_dirs=library_dirs,
     libraries=libraries,
     extra_link_args=extra_link_args,
 )

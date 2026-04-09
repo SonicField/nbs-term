@@ -1201,6 +1201,8 @@ static PyMethodDef module_methods[] = {
      "Convert pixel (x, y) to (row, col) given char_width, char_height, cols, rows."},
     {"sel_range",      phc_sel_range,      METH_VARARGS,
      "Order selection endpoints: (sr, sc, er, ec) -> ordered (sr, sc, er, ec)."},
+    {"tcl_smoke_test", (PyCFunction)phc_tcl_smoke_test, METH_NOARGS,
+     "Headless Tcl ABI smoke test: creates interpreter, runs expr 1+1."},
     {NULL, NULL, 0, NULL}
 };
 
