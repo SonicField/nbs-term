@@ -130,6 +130,17 @@ class TestRenderFrameContract(unittest.TestCase):
             t.clear_selection()
         self.assertIn("argument", str(ctx.exception).lower())
 
+    def test_render_reset_callable(self):
+        """render_reset takes no args and doesn't crash."""
+        t = _nbsterm.Terminal(24, 80)
+        t.render_reset()  # should not raise
+
+    def test_tk_probe_arg_count(self):
+        """tk_probe expects exactly 2 args."""
+        with self.assertRaises(TypeError) as ctx:
+            _nbsterm.tk_probe()
+        self.assertIn("argument", str(ctx.exception).lower())
+
 
 class TestInputEncoding(unittest.TestCase):
     def test_encode_key_ascii(self):
