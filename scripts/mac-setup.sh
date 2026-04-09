@@ -18,12 +18,16 @@ echo "Homebrew found."
 
 # Step 2: Install Python with Tk + Tcl dev headers
 echo "Installing Python and Tcl/Tk..."
-brew install python@3.14 tcl-tk 2>/dev/null || brew upgrade python@3.14 tcl-tk 2>/dev/null || true
+brew install python@3.14 tcl-tk || {
+    echo "ERROR: brew install failed. Check Homebrew and try again."
+    exit 1
+}
 
-# Verify
+# Verify Python
 PYTHON=$(brew --prefix python@3.14)/bin/python3.14
 if [ ! -f "$PYTHON" ]; then
-    PYTHON=python3
+    echo "ERROR: Python 3.14 not found at $(brew --prefix python@3.14)/bin/python3.14"
+    exit 1
 fi
 
 $PYTHON -c "import tkinter; print(f'Tcl/Tk version: {tkinter.TclVersion}')" || {
