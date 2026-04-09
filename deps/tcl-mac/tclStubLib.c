@@ -18,8 +18,8 @@
  * via dlsym, not through the stubs table. */
 #include <tcl.h>
 
-/* The global stubs table pointer */
-const TclStubs *tclStubsPtr = NULL;
+/* The global stubs table pointer (non-const to match both Tcl 8 and 9 headers) */
+TclStubs *tclStubsPtr = NULL;
 
 #undef Tcl_InitStubs
 const char *
@@ -42,7 +42,7 @@ Tcl_InitStubs(Tcl_Interp *interp, const char *version, int exact)
         return NULL;
     }
 
-    const TclStubs *stubsPtr = (const TclStubs *)clientData;
+    TclStubs *stubsPtr = (TclStubs *)clientData;
     if (stubsPtr->magic != TCL_STUB_MAGIC) {
         return NULL;
     }
