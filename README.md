@@ -26,16 +26,14 @@ cd nbs-term
 make install
 ```
 
-**Windows:**
-
-Install [Python 3.12+](https://www.python.org/downloads/) from python.org (includes Tk by default).
-Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C compiler).
+**Windows (automated):**
 
 ```powershell
-git clone https://github.com/SonicField/nbs-term.git
-cd nbs-term
-pip install -e .
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/SonicField/nbs-term/master/scripts/windows-setup.ps1' -OutFile windows-setup.ps1
+.\windows-setup.ps1
 ```
+
+The script installs Python 3.12 (per-user, with Tk), Visual Studio Build Tools, creates a venv, clones the repo, builds, and runs tests. Run as Administrator if Build Tools need installing.
 
 No C preprocessor needed — the C extension builds from pre-generated C.
 
@@ -80,6 +78,24 @@ Two threads:
 
 The C extension is only called from the main thread. Raw bytes cross the thread boundary.
 
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Cmd+, (Mac) / Ctrl+, (Linux/Windows) | Open preferences |
+| Cmd+C / Ctrl+Shift+C | Copy selection |
+| Cmd+V / Ctrl+Shift+V | Paste |
+
+## Tcl Linkage (Cross-Platform)
+
+The C extension calls Tcl/Tk functions to render terminal content on the canvas. Each platform resolves these calls differently:
+
+- **Linux:** Links `libtclstub.a` (from `tcl-dev`). `Tcl_InitStubs()` populates a function-pointer table from the Tcl interpreter that `_tkinter` loaded.
+- **macOS:** Same stubs mechanism. `libtclstub.a` from Homebrew `tcl-tk`. Avoids `-undefined dynamic_lookup` version mismatches.
+- **Windows:** Tcl headers embedded in `deps/tcl-win/include/`. Custom stubs bootstrap via `GetProcAddress`. No external Tcl dev files needed.
+
+Key invariant: the extension never links a Tcl shared library directly. It resolves Tcl functions at runtime through the interpreter that `_tkinter` loaded, guaranteeing version consistency.
+
 ## Development
 
 Requires [phc](https://github.com/SonicField/phoenics) (Phoenics preprocessor) for modifying `.phc` source files. It's included as a git submodule.
@@ -91,7 +107,7 @@ cd nbs-term
 # Edit .phc sources, then:
 make              # build extension + run tests (requires phc)
 make regenerate   # update generated/extension.c from .phc sources
-make test         # run all test suites (209 tests)
+make test         # run all test suites (210 tests)
 make test-asan    # run with AddressSanitizer
 make test-ubsan   # run with UndefinedBehaviorSanitizer
 
