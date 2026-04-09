@@ -142,10 +142,21 @@ class TestRenderFrameContract(unittest.TestCase):
         self.assertIn("argument", str(ctx.exception).lower())
 
     def test_tcl_smoke_test(self):
-        """Tcl ABI smoke test — creates interpreter, runs expr 1+1 via Tcl_EvalObjv.
-        Catches Tcl version mismatches that cause SIGSEGV in production."""
-        result = _nbsterm.tcl_smoke_test()
-        self.assertEqual(result, "2")
+        """Tcl ABI smoke test — uses _tkinter's interpreter, runs expr 1+1.
+        Catches Tcl version mismatches that cause SIGSEGV in production.
+        Requires a display (creates Tk root to get interpaddr)."""
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+        except Exception:
+            self.skipTest("No display available for Tk")
+            return
+        try:
+            result = _nbsterm.tcl_smoke_test(root.tk.interpaddr())
+            self.assertEqual(result, "2")
+        finally:
+            root.destroy()
 
 
 class TestInputEncoding(unittest.TestCase):

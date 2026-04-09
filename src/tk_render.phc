@@ -48,7 +48,8 @@ static int ensure_tcl_stubs(Tcl_Interp *interp) {
  * Python's _tkinter module stores the Tcl_Interp as an integer address.
  * We get it via: root.tk.interpaddr() → integer → (Tcl_Interp *) */
 
-/* Probe: draw a single rectangle on a canvas to test Tcl_Eval from C */
+/* Probe: draw a single rectangle on a canvas via Tcl_EvalObjv.
+ * Uses stubs — safe on all platforms. */
 static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
     (void)self;
     unsigned long long interp_addr;
@@ -58,43 +59,60 @@ static PyObject *phc_tk_probe(PyObject *self, PyObject *args) {
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
+    if (!interp) {
+        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
+        return NULL;
+    }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
-    /* Try a simple canvas command */
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd),
-        "%s create rectangle 10 10 50 50 -fill red -outline \"\"",
-        canvas_path);
+    Tcl_Obj *objv[11];
+    objv[0] = Tcl_NewStringObj(canvas_path, -1);
+    objv[1] = Tcl_NewStringObj("create", -1);
+    objv[2] = Tcl_NewStringObj("rectangle", -1);
+    objv[3] = Tcl_NewIntObj(10);
+    objv[4] = Tcl_NewIntObj(10);
+    objv[5] = Tcl_NewIntObj(50);
+    objv[6] = Tcl_NewIntObj(50);
+    objv[7] = Tcl_NewStringObj("-fill", -1);
+    objv[8] = Tcl_NewStringObj("red", -1);
+    objv[9] = Tcl_NewStringObj("-outline", -1);
+    objv[10] = Tcl_NewStringObj("", -1);
+    for (int i = 0; i < 11; i++) Tcl_IncrRefCount(objv[i]);
 
-    int result = Tcl_Eval(interp, cmd);
-    if (result != TCL_OK) {
+    int rc = Tcl_EvalObjv(interp, 11, objv, 0);
+
+    for (int i = 0; i < 11; i++) Tcl_DecrRefCount(objv[i]);
+
+    if (rc != TCL_OK) {
         PyErr_Format(PyExc_RuntimeError,
-            "Tcl_Eval failed: %s", Tcl_GetStringResult(interp));
+            "Tcl_EvalObjv failed: %s", Tcl_GetStringResult(interp));
         return NULL;
     }
 
-    /* Return the canvas item ID */
     const char *res = Tcl_GetStringResult(interp);
     return PyUnicode_FromString(res);
 }
 
-/* Headless Tcl ABI smoke test: creates an interpreter, runs 'expr 1+1'
- * via Tcl_EvalObjv, returns the result string. Catches version mismatches
- * and linkage errors without needing a display. */
+/* Tcl ABI smoke test: uses _tkinter's interpreter to run 'expr 1+1'
+ * via Tcl_EvalObjv. Catches version mismatches, stubs init failures,
+ * and linkage errors. Accepts interpaddr from Python (no Tcl_CreateInterp
+ * needed — that function isn't in the stubs table).
+ *
+ * Usage: _nbsterm.tcl_smoke_test(root.tk.interpaddr()) */
 static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
     (void)self;
-    (void)args;
+    unsigned long long interp_addr;
+    if (!PyArg_ParseTuple(args, "K", &interp_addr))
+        return NULL;
 
-    Tcl_Interp *interp = Tcl_CreateInterp();
+    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
     if (!interp) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to create Tcl interpreter");
+        PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
         return NULL;
     }
 
     /* Initialize stubs on this interpreter */
-    if (!ensure_tcl_stubs(interp)) {
-        Tcl_DeleteInterp(interp);
-        return NULL;
-    }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
     /* Run 'expr 1+1' via Tcl_EvalObjv */
     Tcl_Obj *objv[2];
@@ -111,15 +129,11 @@ static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
     if (rc != TCL_OK) {
         const char *err = Tcl_GetStringResult(interp);
         PyErr_Format(PyExc_RuntimeError, "Tcl_EvalObjv failed: %s", err);
-        Tcl_DeleteInterp(interp);
         return NULL;
     }
 
     const char *result = Tcl_GetStringResult(interp);
-    PyObject *py_result = PyUnicode_FromString(result);
-
-    Tcl_DeleteInterp(interp);
-    return py_result;
+    return PyUnicode_FromString(result);
 }
 
 #endif /* NBSTERM_TK_RENDER_H */
