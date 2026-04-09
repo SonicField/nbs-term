@@ -33,28 +33,11 @@ def _find_tcl_stubs():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: Homebrew tcl-tk headers only (no stubs library needed).
-        # Stubs bootstrap provided by deps/tcl-mac/tclStubLib.c (dlsym).
-        # Try brew command first, then known Homebrew paths (pip build
-        # isolation may not have brew in PATH).
-        tcl_inc_candidates = []
-        try:
-            tcl_prefix = subprocess.check_output(
-                ["brew", "--prefix", "tcl-tk"], text=True
-            ).strip()
-            tcl_inc_candidates.append(os.path.join(tcl_prefix, "include"))
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-        # Known Homebrew paths (Apple Silicon + Intel)
-        tcl_inc_candidates.extend([
-            "/opt/homebrew/opt/tcl-tk/include",
-            "/usr/local/opt/tcl-tk/include",
-        ])
-        for inc in tcl_inc_candidates:
-            if os.path.isdir(inc) and os.path.isfile(os.path.join(inc, "tcl.h")):
-                return inc, None
-        # Fall back to system SDK headers (may be older Tcl version)
-        return None, None
+        # macOS: Homebrew tcl-tk headers. Stubs bootstrap via dlsym
+        # (deps/tcl-mac/tclStubLib.c). No Tcl library needed.
+        inc = "/opt/homebrew/opt/tcl-tk/include"
+        if os.path.isfile(os.path.join(inc, "tcl.h")):
+            return inc, None
 
     elif platform.system() == "Linux":
         # System Tcl dev packages — search common paths
