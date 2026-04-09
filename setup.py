@@ -58,13 +58,42 @@ def _find_tcl_stubs():
                 return inc_path, None
 
     elif platform.system() == "Windows":
-        # Windows: Tcl bundled with Python. Find stubs via sys.prefix.
         import sys
-        for ver in ["90", "86", "85"]:
-            stub = os.path.join(sys.prefix, "libs", f"tclstub{ver}.lib")
-            inc = os.path.join(sys.prefix, "include")
-            if os.path.isfile(stub) and os.path.isdir(inc):
-                return inc, stub
+        # Search real Python install (sys.base_prefix), not venv/build env
+        base = sys.base_prefix
+        # Candidate include dirs for tcl.h
+        inc_candidates = [
+            os.path.join(base, "include"),
+            os.path.join(base, "tcl", "include"),
+            os.path.join(base, "Library", "include"),
+        ]
+        # Find tcl.h
+        tcl_inc = None
+        for d in inc_candidates:
+            if os.path.isfile(os.path.join(d, "tcl.h")):
+                tcl_inc = d
+                break
+        if not tcl_inc:
+            print(f"WARNING: tcl.h not found in {inc_candidates}")
+            print(f"  base_prefix: {base}")
+            # List what IS in include/ for diagnostics
+            inc_dir = os.path.join(base, "include")
+            if os.path.isdir(inc_dir):
+                print(f"  files in {inc_dir}: {os.listdir(inc_dir)[:20]}")
+            return None, None
+        # Find stubs or Tcl lib
+        libs_dir = os.path.join(base, "libs")
+        if os.path.isdir(libs_dir):
+            tcl_files = [f for f in os.listdir(libs_dir) if "tcl" in f.lower()]
+            # Prefer stubs
+            for f in tcl_files:
+                if "tclstub" in f.lower() and f.endswith(".lib"):
+                    return tcl_inc, os.path.join(libs_dir, f)
+            # Fall back to tcl lib
+            for f in tcl_files:
+                if f.endswith(".lib"):
+                    return tcl_inc, os.path.join(libs_dir, f)
+        return tcl_inc, None
 
     return None, None
 
