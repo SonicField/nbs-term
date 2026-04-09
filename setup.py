@@ -58,15 +58,14 @@ def _find_tcl_stubs():
                 return inc_path, None
 
     elif platform.system() == "Windows":
-        # Windows: use embedded Tcl headers from deps/tcl-win/.
-        # The stubs library (tclstub86.lib) is built by windows-setup.ps1.
+        # Windows: use embedded Tcl headers and stubs source from deps/tcl-win/.
+        # No external Tcl SDK needed — headers are bundled, stubs bootstrap is
+        # compiled as an additional source file (see extension sources below).
         setup_dir = os.path.dirname(os.path.abspath(__file__))
         tcl_win = os.path.join(setup_dir, "deps", "tcl-win")
         inc = os.path.join(tcl_win, "include")
-        lib = os.path.join(tcl_win, "lib")
         if os.path.isfile(os.path.join(inc, "tcl.h")):
-            stubs = glob.glob(os.path.join(lib, "tclstub*.lib"))
-            return inc, stubs[0] if stubs else None
+            return inc, None  # No separate stubs lib — compiled inline
         return None, None
 
     return None, None
@@ -82,9 +81,15 @@ if tcl_stub:
     # Static stubs library — not affected by -undefined dynamic_lookup.
     extra_objects.append(tcl_stub)
 
+sources = ["generated/extension.c"]
+if platform.system() == "Windows":
+    # Compile our stubs bootstrap alongside the extension — provides
+    # Tcl_InitStubs via GetProcAddress, no Tcl import library needed.
+    sources.append(os.path.join("deps", "tcl-win", "tclStubLib.c"))
+
 extension = Extension(
     "_nbsterm",
-    sources=["generated/extension.c"],
+    sources=sources,
     extra_compile_args=extra_compile_args,
     include_dirs=include_dirs,
     extra_link_args=extra_link_args,
