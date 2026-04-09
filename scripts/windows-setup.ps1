@@ -55,7 +55,40 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Step 3: Create venv
+# Step 3: Check for C compiler (MSVC Build Tools)
+$hasCompiler = $false
+try {
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsWhere) {
+        $vsPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        if ($vsPath) { $hasCompiler = $true }
+    }
+} catch {}
+
+if (-not $hasCompiler) {
+    Write-Host "C compiler (MSVC Build Tools) not found." -ForegroundColor Yellow
+    $response = Read-Host "Install Visual Studio Build Tools? [Y]/n"
+    if ($response -eq '' -or $response -eq 'Y' -or $response -eq 'y') {
+        $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+        $vsInstaller = "$env:TEMP\vs_BuildTools.exe"
+        Write-Host "Downloading Visual Studio Build Tools..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri $vsUrl -OutFile $vsInstaller
+        Write-Host "Installing Build Tools (this may take several minutes)..." -ForegroundColor Yellow
+        Start-Process -Wait -FilePath $vsInstaller -ArgumentList @(
+            "--quiet", "--wait", "--norestart",
+            "--add", "Microsoft.VisualStudio.Workload.VCTools",
+            "--includeRecommended"
+        )
+        Remove-Item $vsInstaller -ErrorAction SilentlyContinue
+        Write-Host "Build Tools installed." -ForegroundColor Green
+    } else {
+        Write-Host "ERROR: C compiler required. Install from: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "C compiler available." -ForegroundColor Green
+
+# Step 4: Create venv
 if (Test-Path $VenvDir) {
     Write-Host "Venv exists at $VenvDir — reusing." -ForegroundColor Yellow
 } else {
@@ -67,7 +100,7 @@ if (Test-Path $VenvDir) {
 $VenvPython = "$VenvDir\Scripts\python.exe"
 $VenvPip = "$VenvDir\Scripts\pip.exe"
 
-# Step 4: Clone repo (if not already cloned)
+# Step 5: Clone repo (if not already cloned)
 if (Test-Path "$RepoDir\.git") {
     Write-Host "Repo exists at $RepoDir — pulling latest..." -ForegroundColor Yellow
     Push-Location $RepoDir
@@ -78,19 +111,17 @@ if (Test-Path "$RepoDir\.git") {
     git clone https://github.com/SonicField/nbs-term.git $RepoDir
 }
 
-# Step 5: Install nbs-term
+# Step 6: Install nbs-term
 Write-Host "Installing nbs-term (compiling C extension)..." -ForegroundColor Yellow
 Push-Location $RepoDir
 & $VenvPip install -e .
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: pip install failed. Do you have Visual Studio Build Tools installed?" -ForegroundColor Red
-    Write-Host "Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Yellow
-    Write-Host "Select 'Desktop development with C++' workload." -ForegroundColor Yellow
+    Write-Host "ERROR: pip install failed. Check the error output above." -ForegroundColor Red
     Pop-Location
     exit 1
 }
 
-# Step 6: Run tests
+# Step 7: Run tests
 Write-Host "Running tests..." -ForegroundColor Yellow
 & $VenvPip install pytest
 & "$VenvDir\Scripts\pytest.exe" --tb=short
