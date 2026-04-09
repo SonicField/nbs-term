@@ -751,6 +751,7 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
         PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
         return NULL;
     }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
     RenderState *rs = &self->render;
@@ -1001,6 +1002,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
         PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
         return NULL;
     }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
     RenderState *rs = &self->render;

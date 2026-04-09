@@ -2348,6 +2348,21 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
  * Calls Tk's canvas API directly via the Tcl interpreter.
  */
 
+#define USE_TCL_STUBS
+
+/* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter */
+static int tcl_stubs_initialized = 0;
+
+static int ensure_tcl_stubs(Tcl_Interp *interp) {
+    if (tcl_stubs_initialized) return 1;
+    if (!Tcl_InitStubs(interp, "8.6", 0)) {
+        PyErr_Format(PyExc_RuntimeError,
+            "Tcl_InitStubs failed: %s", Tcl_GetStringResult(interp));
+        return 0;
+    }
+    tcl_stubs_initialized = 1;
+    return 1;
+}
 
 /* --- Tcl interpreter access from Python's Tkinter ---
  * Python's _tkinter module stores the Tcl_Interp as an integer address.
@@ -2392,6 +2407,12 @@ static PyObject *phc_tcl_smoke_test(PyObject *self, PyObject *args) {
     Tcl_Interp *interp = Tcl_CreateInterp();
     if (!interp) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create Tcl interpreter");
+        return NULL;
+    }
+
+    /* Initialize stubs on this interpreter */
+    if (!ensure_tcl_stubs(interp)) {
+        Tcl_DeleteInterp(interp);
         return NULL;
     }
 
@@ -3207,6 +3228,7 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
         PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
         return NULL;
     }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
     RenderState *rs = &self->render;
@@ -3457,6 +3479,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
         PyErr_SetString(PyExc_RuntimeError, "NULL Tcl interpreter");
         return NULL;
     }
+    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
     RenderState *rs = &self->render;
