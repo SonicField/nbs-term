@@ -192,4 +192,4 @@ install: clean
 	rm -f _nbsterm*.so
 	rm -rf build/
 	pip cache remove nbs_term 2>/dev/null || true
-	pip install -e . --no-build-isolation
+	pip install -e .
