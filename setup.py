@@ -13,12 +13,13 @@ import subprocess
 from setuptools import setup, Extension
 
 if platform.system() == "Windows":
-    extra_compile_args = ["/std:c11", "/W3"]
+    extra_compile_args = ["/std:c11", "/W3", "/DPY_SSIZE_T_CLEAN"]
 else:
     extra_compile_args = [
         "-std=c11", "-Wall", "-Wextra",
         "-Wno-unused-function",
         "-Wno-missing-field-initializers",
+        "-DPY_SSIZE_T_CLEAN",
     ]
 include_dirs = []
 extra_link_args = []
