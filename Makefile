@@ -133,6 +133,7 @@ regenerate:
 		echo '#include <stdint.h>'; \
 		echo '#include <stdio.h>'; \
 		echo '#include <assert.h>'; \
+		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
 		echo '#ifdef __APPLE__'; \
 		echo '#include <dlfcn.h>'; \
@@ -171,6 +172,7 @@ verify-regenerate: $(PHC_BIN)
 		echo '#include <stdint.h>'; \
 		echo '#include <stdio.h>'; \
 		echo '#include <assert.h>'; \
+		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
 		echo '#ifdef __APPLE__'; \
 		echo '#include <dlfcn.h>'; \

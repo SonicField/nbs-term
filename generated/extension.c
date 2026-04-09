@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#define USE_TCL_STUBS
 #include <tcl.h>
 #ifdef __APPLE__
 #include <dlfcn.h>
