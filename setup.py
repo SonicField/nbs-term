@@ -83,8 +83,13 @@ if tcl_inc:
     include_dirs.append(tcl_inc)
 
 if tcl_stub:
-    # Static stubs library — not affected by -undefined dynamic_lookup.
-    extra_objects.append(tcl_stub)
+    if platform.system() == "Darwin":
+        # Force-load the stubs library on Mac. Without this, -undefined
+        # dynamic_lookup causes the linker to skip the stubs .a because
+        # all Tcl symbols appear already "resolved" (deferred).
+        extra_link_args.append(f"-Wl,-force_load,{tcl_stub}")
+    else:
+        extra_objects.append(tcl_stub)
 else:
     print("WARNING: No Tcl stubs library found — Tcl calls may fail at runtime")
 
