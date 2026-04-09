@@ -33,19 +33,15 @@ def _find_tcl_stubs():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: Homebrew tcl-tk
+        # macOS: Homebrew tcl-tk headers only (no stubs library needed).
+        # Stubs bootstrap provided by deps/tcl-mac/tclStubLib.c (dlsym).
         try:
             tcl_prefix = subprocess.check_output(
                 ["brew", "--prefix", "tcl-tk"], text=True
             ).strip()
             inc = os.path.join(tcl_prefix, "include")
-            lib_dir = os.path.join(tcl_prefix, "lib")
-            # Match any tclstub naming: libtclstub8.6.a, libtclstub.a, etc.
-            stubs = glob.glob(os.path.join(lib_dir, "libtcl*stub*.a"))
-            if not stubs:
-                stubs = glob.glob(os.path.join(lib_dir, "*tclstub*.a"))
-            if stubs and os.path.isdir(inc):
-                return inc, stubs[0]
+            if os.path.isdir(inc) and os.path.isfile(os.path.join(inc, "tcl.h")):
+                return inc, None  # No stubs lib — compiled inline
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
 
@@ -83,20 +79,14 @@ if tcl_inc:
     include_dirs.append(tcl_inc)
 
 if tcl_stub:
-    if platform.system() == "Darwin":
-        # Force-load the stubs library on Mac. Without this, -undefined
-        # dynamic_lookup causes the linker to skip the stubs .a because
-        # all Tcl symbols appear already "resolved" (deferred).
-        extra_link_args.append(f"-Wl,-force_load,{tcl_stub}")
-    else:
-        extra_objects.append(tcl_stub)
-else:
-    print("WARNING: No Tcl stubs library found — Tcl calls may fail at runtime")
+    extra_objects.append(tcl_stub)
 
 sources = ["generated/extension.c"]
-if platform.system() == "Windows":
-    # Compile our stubs bootstrap alongside the extension — provides
-    # Tcl_InitStubs via GetProcAddress, no Tcl import library needed.
+if platform.system() == "Darwin":
+    # Mac: compile our dlsym-based stubs bootstrap — no Tcl library needed.
+    sources.append(os.path.join("deps", "tcl-mac", "tclStubLib.c"))
+elif platform.system() == "Windows":
+    # Windows: compile our GetProcAddress-based stubs bootstrap.
     sources.append(os.path.join("deps", "tcl-win", "tclStubLib.c"))
 
 extension = Extension(
