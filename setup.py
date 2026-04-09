@@ -35,17 +35,32 @@ def _find_tcl_lib(lib_dir):
 
 
 # Platform-specific Tcl linkage (required for render pipeline)
+# CRITICAL: must link the SAME Tcl library that Python's _tkinter uses.
+# Mixing Tcl versions (e.g. system framework Tcl 8.x with Homebrew Tcl 9.0)
+# causes segfaults because Tcl_Interp struct layout differs between versions.
 if platform.system() == "Darwin":
-    # macOS: use framework linkage (works with both system Tcl and Homebrew).
-    # Add Homebrew include path if available for headers.
+    # macOS: find the Tcl library that _tkinter actually links against.
+    # Homebrew tcl-tk is strongly preferred (matches Python's _tkinter).
+    linked = False
     try:
         tcl_prefix = subprocess.check_output(
             ["brew", "--prefix", "tcl-tk"], text=True
         ).strip()
         include_dirs.append(f"{tcl_prefix}/include")
+        lib_dir = f"{tcl_prefix}/lib"
+        tcl_lib = _find_tcl_lib(lib_dir)
+        if tcl_lib:
+            extra_link_args.extend([
+                f"-L{lib_dir}",
+                f"-Wl,-rpath,{lib_dir}",
+                f"-l{tcl_lib}",
+            ])
+            linked = True
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
-    extra_link_args.extend(["-framework", "Tcl"])
+    if not linked:
+        # No Homebrew — fall back to system framework (may version-mismatch)
+        extra_link_args.extend(["-framework", "Tcl"])
 else:
     # Linux: auto-detect Tcl library version, fall back to tcl8.6
     tcl_lib = _find_tcl_lib("/usr/lib") or _find_tcl_lib("/usr/lib/x86_64-linux-gnu") or "tcl8.6"
