@@ -85,6 +85,7 @@ The C extension is only called from the main thread. Raw bytes cross the thread 
 | Cmd+, (Mac) / Ctrl+, (Linux/Windows) | Open preferences |
 | Cmd+C / Ctrl+Shift+C | Copy selection |
 | Cmd+V / Ctrl+Shift+V | Paste |
+| F11 | Toggle fullscreen |
 
 ## Tcl Linkage (Cross-Platform)
 
