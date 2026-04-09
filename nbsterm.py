@@ -12,10 +12,21 @@ Invariant: C extension only called from main thread.
 """
 import sys
 import os
+import platform
 import asyncio
 import logging
 import threading
 import concurrent.futures
+
+# Windows DPI awareness — must be set before Tk initialises.
+# Without this, Tk renders at 96 DPI and upscales, causing jagged text.
+if platform.system() == "Windows":
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        pass  # Pre-Win8.1 or missing shcore
+
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog
