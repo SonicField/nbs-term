@@ -603,13 +603,12 @@ class PreferencesDialog(tk.Toplevel):
 
         tk.Label(self, text="Family:").grid(row=1, column=0, sticky="e", padx=10)
         self._font_family = tk.StringVar(value=config.font.family)
-        # Show all system fonts sorted, current selection first
+        # Show all system fonts sorted — Combobox provides scrollable dropdown
         all_fonts = sorted(set(tkfont.families()))
-        if config.font.family in all_fonts:
-            all_fonts.remove(config.font.family)
-            all_fonts.insert(0, config.font.family)
-        family_menu = tk.OptionMenu(self, self._font_family, *all_fonts)
-        family_menu.grid(row=1, column=1, sticky="w", padx=10, pady=2)
+        from tkinter import ttk
+        family_combo = ttk.Combobox(self, textvariable=self._font_family,
+                                     values=all_fonts, width=30, state="readonly")
+        family_combo.grid(row=1, column=1, sticky="w", padx=10, pady=2)
 
         tk.Label(self, text="Size:").grid(row=2, column=0, sticky="e", padx=10)
         self._font_size = tk.IntVar(value=config.font.size)
