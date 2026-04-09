@@ -96,9 +96,21 @@ if tcl_lib_dir and tcl_lib_name:
     tcl_include = os.path.join(os.path.dirname(tcl_lib_dir), "include")
     if os.path.isdir(tcl_include):
         include_dirs.append(tcl_include)
-    # On macOS, add rpath for runtime resolution
+    # On macOS: link Tcl by FULL PATH to force the correct dylib.
+    # Setuptools uses -undefined dynamic_lookup which makes -l flags
+    # irrelevant — symbols resolve lazily from whatever is loaded first
+    # (often the system Tcl framework, not Homebrew). Linking by full
+    # path forces the dyld to load the correct library.
     if platform.system() == "Darwin":
-        extra_link_args.append(f"-Wl,-rpath,{tcl_lib_dir}")
+        import glob as _glob
+        tcl_dylib = _glob.glob(os.path.join(tcl_lib_dir, f"lib{tcl_lib_name}.dylib"))
+        if tcl_dylib:
+            extra_link_args.append(tcl_dylib[0])  # link by full path
+            extra_link_args.append(f"-Wl,-rpath,{tcl_lib_dir}")
+            # Remove from libraries since we're linking directly
+            libraries.remove(tcl_lib_name)
+        else:
+            extra_link_args.append(f"-Wl,-rpath,{tcl_lib_dir}")
 elif platform.system() == "Darwin":
     # Fallback: system Tcl framework (may version-mismatch with _tkinter)
     extra_link_args.extend(["-framework", "Tcl"])
