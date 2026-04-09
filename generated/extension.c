@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <assert.h>
 #include <tcl.h>
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
 
 #ifndef abort
 extern void abort(void);
