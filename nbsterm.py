@@ -822,6 +822,9 @@ class TerminalApp:
             self.root.bind("<Control-Shift-V>", self._on_paste)
             self.root.bind("<Control-comma>", self._on_preferences)
 
+        # F11 fullscreen toggle (all platforms)
+        self.root.bind("<F11>", self._toggle_fullscreen)
+
         # Bind resize
         self.widget.canvas.bind("<Configure>", self._on_configure)
 
@@ -910,6 +913,11 @@ class TerminalApp:
         if result:
             rows, cols = result
             self.ssh.resize(rows, cols)
+
+    def _toggle_fullscreen(self, event=None):
+        """Toggle fullscreen mode (F11)."""
+        current = self.root.attributes("-fullscreen")
+        self.root.attributes("-fullscreen", not current)
 
     def _on_close(self):
         """Handle window close."""
