@@ -6,15 +6,15 @@ All terminal semantics live in C. Python transports bytes.
 
 ## Install
 
-Requires Python 3.12+, a C compiler, Tk, and Tcl development headers (for the GUI and render pipeline).
+Requires Python 3.12+ with Tk, a C compiler, and Tcl development headers.
 
 **Mac (Homebrew):**
 
 ```bash
-brew install python-tk@3.14 tcl-tk   # match your Python version
+brew install python@3.14 tcl-tk   # Python with Tk + Tcl stubs library
 git clone https://github.com/SonicField/nbs-term.git
 cd nbs-term
-make install                 # clean build + pip install (recommended)
+pip install -e .
 ```
 
 **Linux (Debian/Ubuntu):**
