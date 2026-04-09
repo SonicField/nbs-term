@@ -85,7 +85,41 @@ def _find_tcl_from_tkinter():
     return None, None
 
 
-# Find Tcl from Python's _tkinter — the authoritative source.
+def _find_tcl_from_brew():
+    """Find Tcl from Homebrew tcl-tk (no _tkinter import needed).
+
+    Works in pip's build isolation where _tkinter is unavailable.
+    Returns (lib_dir, lib_name, dylib_path) or (None, None, None).
+    """
+    if platform.system() != "Darwin":
+        return None, None, None
+    try:
+        tcl_prefix = subprocess.check_output(
+            ["brew", "--prefix", "tcl-tk"], text=True
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None, None, None
+
+    lib_dir = os.path.join(tcl_prefix, "lib")
+    if not os.path.isdir(lib_dir):
+        return None, None, None
+
+    # Find the actual dylib (libtcl9.0.dylib, libtcl8.6.dylib, etc)
+    import glob as _glob
+    for dylib in sorted(_glob.glob(os.path.join(lib_dir, "libtcl[0-9]*.dylib"))):
+        basename = os.path.basename(dylib)
+        if "stub" in basename:
+            continue
+        # libtcl9.0.dylib -> tcl9.0
+        lib_name = basename.replace(".dylib", "")
+        if lib_name.startswith("lib"):
+            lib_name = lib_name[3:]
+        return lib_dir, lib_name, dylib
+
+    return None, None, None
+
+
+# Find Tcl: try _tkinter introspection first, then Homebrew, then system.
 tcl_lib_dir, tcl_lib_name = _find_tcl_from_tkinter()
 
 if tcl_lib_dir and tcl_lib_name:
@@ -112,8 +146,17 @@ if tcl_lib_dir and tcl_lib_name:
         else:
             extra_link_args.append(f"-Wl,-rpath,{tcl_lib_dir}")
 elif platform.system() == "Darwin":
-    # Fallback: system Tcl framework (may version-mismatch with _tkinter)
-    extra_link_args.extend(["-framework", "Tcl"])
+    # _tkinter not available (pip build isolation). Try Homebrew directly.
+    brew_lib_dir, brew_lib_name, brew_dylib = _find_tcl_from_brew()
+    if brew_dylib:
+        tcl_include = os.path.join(os.path.dirname(brew_lib_dir), "include")
+        if os.path.isdir(tcl_include):
+            include_dirs.append(tcl_include)
+        extra_link_args.append(brew_dylib)  # link by full path
+        extra_link_args.append(f"-Wl,-rpath,{brew_lib_dir}")
+    else:
+        # Last resort: system Tcl framework (may version-mismatch with _tkinter)
+        extra_link_args.extend(["-framework", "Tcl"])
 else:
     # Fallback: system Tcl on Linux
     libraries.append("tcl8.6")
