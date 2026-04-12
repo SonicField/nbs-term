@@ -2394,9 +2394,12 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
 /* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter.
  * ASSUMES GIL is held during stubs init (Python's threading model guarantees
  * this for C extension calls, but the assumption should be explicit). */
+#ifdef USE_TCL_STUBS
 static int tcl_stubs_initialized = 0;
+#endif
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
+#ifdef USE_TCL_STUBS
     phc_invariant(tcl_stubs_initialized || interp != NULL,
                   "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
@@ -2407,6 +2410,11 @@ static int ensure_tcl_stubs(Tcl_Interp *interp) {
     }
     tcl_stubs_initialized = 1;
     return 1;
+#else
+    /* No stubs on Mac — Tcl calls resolve directly from dylib */
+    (void)interp;
+    return 1;
+#endif
 }
 
 /* --- Tcl interpreter access from Python's Tkinter ---
