@@ -2404,8 +2404,7 @@ static int ensure_tcl_stubs(Tcl_Interp *interp) {
                   "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
     if (!Tcl_InitStubs(interp, TCL_VERSION, 0)) {
-        PyErr_Format(PyExc_RuntimeError,
-            "Tcl_InitStubs failed: %s", Tcl_GetStringResult(interp));
+        PyErr_SetString(PyExc_RuntimeError, "Tcl_InitStubs failed");
         return 0;
     }
     tcl_stubs_initialized = 1;
