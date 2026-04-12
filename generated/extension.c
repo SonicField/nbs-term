@@ -6,9 +6,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#if !defined(__APPLE__)
 #define USE_TCL_STUBS
+#endif
 #include <tcl.h>
+#if defined(USE_TCL_STUBS)
 #undef Tcl_InitStubs
+#endif
 
 /* phc_assert macros — trust-level assertions */
 #define phc_require(expr, msg) do { if (!(expr)) { \
@@ -2379,10 +2383,13 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
  * Calls Tk's canvas API directly via the Tcl interpreter.
  */
 
+#if !defined(__APPLE__)
 #define USE_TCL_STUBS
+#endif
 
-/* With USE_TCL_STUBS defined before tcl.h, TclFreeObj is a macro that
- * goes through the stubs table. No manual dlsym needed. */
+/* With USE_TCL_STUBS (Linux/Windows only), TclFreeObj is a macro that
+ * goes through the stubs table. On Mac, Tcl calls resolve directly from
+ * libtcl9.0.dylib via -undefined dynamic_lookup — no stubs needed. */
 
 /* Tcl stubs initialization flag — call Tcl_InitStubs once per interpreter.
  * ASSUMES GIL is held during stubs init (Python's threading model guarantees

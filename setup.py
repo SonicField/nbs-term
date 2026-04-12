@@ -25,6 +25,11 @@ include_dirs = []
 extra_link_args = []
 extra_objects = []
 
+if platform.system() == "Darwin":
+    # Mac: without USE_TCL_STUBS, Tcl function calls are direct symbol
+    # references resolved at runtime from the already-loaded libtcl9.0.dylib.
+    extra_link_args += ["-undefined", "dynamic_lookup"]
+
 
 def _find_tcl_stubs():
     """Find Tcl stubs library (libtclstub.a) and headers.

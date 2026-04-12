@@ -8,11 +8,14 @@
 #define NBSTERM_TK_RENDER_H
 
 #include <Python.h>
+#if !defined(__APPLE__)
 #define USE_TCL_STUBS
+#endif
 #include <tcl.h>
 
-/* With USE_TCL_STUBS defined before tcl.h, TclFreeObj is a macro that
- * goes through the stubs table. No manual dlsym needed. */
+/* With USE_TCL_STUBS (Linux/Windows only), TclFreeObj is a macro that
+ * goes through the stubs table. On Mac, Tcl calls resolve directly from
+ * libtcl9.0.dylib via -undefined dynamic_lookup — no stubs needed. */
 #include <string.h>
 #include <stdio.h>
 
