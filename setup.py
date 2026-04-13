@@ -40,9 +40,13 @@ def _find_tcl():
                 ["brew", "--prefix", "tcl-tk"],
                 stderr=subprocess.DEVNULL
             ).decode().strip()
-            inc = os.path.join(prefix, "include")
             lib_dir = os.path.join(prefix, "lib")
-            if not os.path.isfile(os.path.join(inc, "tcl.h")):
+            # Homebrew tcl-tk puts headers in include/tcl-tk/, not include/
+            for subdir in ["include/tcl-tk", "include"]:
+                inc = os.path.join(prefix, subdir)
+                if os.path.isfile(os.path.join(inc, "tcl.h")):
+                    break
+            else:
                 return None, None
             # Link against libtcl so Tcl_PkgRequireEx resolves
             for f in sorted(os.listdir(lib_dir), reverse=True):
