@@ -34,8 +34,9 @@ def _find_tcl():
         # macOS: Homebrew Tcl headers + link against libtcl.
         # Our tclStubLib.c provides tclStubsPtr and Tcl_InitStubs.
         # Tcl_PkgRequireEx resolves from linked libtcl (no dlsym).
+        # TCL_PREFIX env var set by mac-setup.sh (survives pip build isolation).
         try:
-            prefix = subprocess.check_output(
+            prefix = os.environ.get("TCL_PREFIX") or subprocess.check_output(
                 ["brew", "--prefix", "tcl-tk"],
                 stderr=subprocess.DEVNULL
             ).decode().strip()
