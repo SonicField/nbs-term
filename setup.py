@@ -7,6 +7,7 @@ On Mac, Homebrew's Tcl headers are detected via brew --prefix tcl-tk.
 import glob
 import os
 import platform
+import re
 import subprocess
 from setuptools import setup, Extension
 
@@ -30,16 +31,26 @@ def _find_tcl():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: use Homebrew's Tcl headers (matching the installed runtime).
-        # Stubs bootstrap via dlsym (deps/tcl-mac/tclStubLib.c).
+        # macOS: use Homebrew's Tcl headers + stubs lib (like _tkinter).
         try:
             prefix = subprocess.check_output(
                 ["brew", "--prefix", "tcl-tk"],
                 stderr=subprocess.DEVNULL
             ).decode().strip()
             inc = os.path.join(prefix, "include")
-            if os.path.isfile(os.path.join(inc, "tcl.h")):
-                return inc, None
+            lib_dir = os.path.join(prefix, "lib")
+            if not os.path.isfile(os.path.join(inc, "tcl.h")):
+                return None, None
+            # Find libtclstub*.a
+            stubs = glob.glob(os.path.join(lib_dir, "libtclstub*.a"))
+            stub = stubs[0] if stubs else None
+            # Link against libtcl so Tcl_PkgRequireEx resolves
+            for f in sorted(os.listdir(lib_dir), reverse=True):
+                m = re.match(r"libtcl(\d+\.\d+)\.dylib$", f)
+                if m:
+                    extra_link_args.extend([f"-L{lib_dir}", f"-ltcl{m.group(1)}"])
+                    break
+            return inc, stub
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
         return None, None
@@ -79,10 +90,7 @@ if tcl_stub:
     extra_objects.append(tcl_stub)
 
 sources = ["generated/extension.c"]
-if platform.system() == "Darwin":
-    # Mac: compile our dlsym-based stubs bootstrap.
-    sources.append(os.path.join("deps", "tcl-mac", "tclStubLib.c"))
-elif platform.system() == "Windows":
+if platform.system() == "Windows":
     # Windows: compile our GetProcAddress-based stubs bootstrap.
     sources.append(os.path.join("deps", "tcl-win", "tclStubLib.c"))
 
