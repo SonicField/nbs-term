@@ -31,7 +31,9 @@ def _find_tcl():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: use Homebrew's Tcl headers + stubs lib (like _tkinter).
+        # macOS: Homebrew Tcl headers + link against libtcl.
+        # Our tclStubLib.c provides tclStubsPtr and Tcl_InitStubs.
+        # Tcl_PkgRequireEx resolves from linked libtcl (no dlsym).
         try:
             prefix = subprocess.check_output(
                 ["brew", "--prefix", "tcl-tk"],
@@ -41,16 +43,13 @@ def _find_tcl():
             lib_dir = os.path.join(prefix, "lib")
             if not os.path.isfile(os.path.join(inc, "tcl.h")):
                 return None, None
-            # Find libtclstub*.a
-            stubs = glob.glob(os.path.join(lib_dir, "libtclstub*.a"))
-            stub = stubs[0] if stubs else None
             # Link against libtcl so Tcl_PkgRequireEx resolves
             for f in sorted(os.listdir(lib_dir), reverse=True):
                 m = re.match(r"libtcl(\d+\.\d+)\.dylib$", f)
                 if m:
                     extra_link_args.extend([f"-L{lib_dir}", f"-ltcl{m.group(1)}"])
                     break
-            return inc, stub
+            return inc, None
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
         return None, None
@@ -90,7 +89,11 @@ if tcl_stub:
     extra_objects.append(tcl_stub)
 
 sources = ["generated/extension.c"]
-if platform.system() == "Windows":
+if platform.system() == "Darwin":
+    # Mac: our tclStubLib.c defines tclStubsPtr and Tcl_InitStubs.
+    # Tcl_PkgRequireEx resolves from linked libtcl (no dlsym needed).
+    sources.append(os.path.join("deps", "tcl-mac", "tclStubLib.c"))
+elif platform.system() == "Windows":
     # Windows: compile our GetProcAddress-based stubs bootstrap.
     sources.append(os.path.join("deps", "tcl-win", "tclStubLib.c"))
 
