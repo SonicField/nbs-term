@@ -135,7 +135,9 @@ regenerate:
 		echo '#include <assert.h>'; \
 		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
+		echo '#if !defined(__APPLE__)'; \
 		echo '#undef Tcl_InitStubs'; \
+		echo '#endif'; \
 		echo ''; \
 		echo '/* phc_assert macros — trust-level assertions */'; \
 		echo '#define phc_require(expr, msg) do { if (!(expr)) { \'; \
@@ -191,7 +193,9 @@ verify-regenerate: $(PHC_BIN)
 		echo '#include <assert.h>'; \
 		echo '#define USE_TCL_STUBS'; \
 		echo '#include <tcl.h>'; \
+		echo '#if !defined(__APPLE__)'; \
 		echo '#undef Tcl_InitStubs'; \
+		echo '#endif'; \
 		echo ''; \
 		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
 			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \

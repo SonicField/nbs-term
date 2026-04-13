@@ -8,7 +8,11 @@
 #include <assert.h>
 #define USE_TCL_STUBS
 #include <tcl.h>
+#if !defined(__APPLE__)
+/* Linux/Windows: remove Tcl 8 inline that dereferences NULL tclStubsPtr.
+ * Mac: keep Tcl 9 macro that auto-supplies TCL_STUB_MAGIC arg. */
 #undef Tcl_InitStubs
+#endif
 
 /* phc_assert macros — trust-level assertions */
 #define phc_require(expr, msg) do { if (!(expr)) { \
