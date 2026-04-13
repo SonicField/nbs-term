@@ -1040,10 +1040,30 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
     for (int r = sr; r <= er && r < scr->rows; r++) {
         int c0 = (r == sr) ? sc : 0;
         int c1 = (r == er) ? ec : scr->cols - 1;
-        int x0 = padding + c0 * char_width;
         int y0 = padding + r * char_height;
-        int x1 = padding + (c1 + 1) * char_width;
         int y1 = y0 + char_height;
+
+        /* Accumulate measured widths from column 0 to match render_frame positioning */
+        int col_x[scr->cols + 1];
+        col_x[0] = padding;
+        for (int c = 0; c < scr->cols; c++) {
+            const Cell *cell = screen_cell_const(scr, r, c);
+            if (cell->codepoint > 0) {
+                char ch[8];
+                int clen = render_utf8_encode(cell->codepoint, ch, sizeof(ch) - 1);
+                ch[clen] = '\0';
+                const char *cf = "font_normal";
+                if ((cell->attrs & 0x05) == 0x05) cf = "font_bold_italic";
+                else if (cell->attrs & 0x01) cf = "font_bold";
+                else if (cell->attrs & 0x04) cf = "font_italic";
+                col_x[c + 1] = col_x[c] + render_font_measure(interp, cf, ch, clen, char_width);
+            } else {
+                col_x[c + 1] = col_x[c] + char_width;
+            }
+        }
+
+        int x0 = col_x[c0];
+        int x1 = col_x[c1 + 1];
 
         /* Selection background rectangle (fg color = inverted) */
         {
@@ -1075,7 +1095,13 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
                 char ch[8];
                 int clen = render_utf8_encode(cell->codepoint, ch, sizeof(ch) - 1);
                 ch[clen] = '\0';
-                int tx = padding + c * char_width;
+                int tx = col_x[c];
+
+                /* Match font to cell attributes (same logic as render_frame) */
+                const char *cell_font = "font_normal";
+                if ((cell->attrs & 0x05) == 0x05) cell_font = "font_bold_italic";
+                else if (cell->attrs & 0x01) cell_font = "font_bold";
+                else if (cell->attrs & 0x04) cell_font = "font_italic";
 
                 Tcl_Obj *tv[13];
                 tv[0] = canvas_obj;
@@ -1088,7 +1114,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
                 tv[7] = Tcl_NewStringObj("-fill", -1);
                 tv[8] = Tcl_NewStringObj(bg_str, -1);
                 tv[9] = Tcl_NewStringObj("-font", -1);
-                tv[10] = Tcl_NewStringObj("font_normal", -1);
+                tv[10] = Tcl_NewStringObj(cell_font, -1);
                 tv[11] = Tcl_NewStringObj("-anchor", -1);
                 tv[12] = Tcl_NewStringObj("nw", -1);
                 for (int i = 0; i < 13; i++) Tcl_IncrRefCount(tv[i]);
