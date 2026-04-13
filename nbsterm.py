@@ -174,7 +174,8 @@ class TerminalWidget:
             self.parent.tk.interpaddr(), str(self.canvas),
             start[0], start[1], end[0], end[1],
             self._fg, self._bg,
-            self.char_width, self.char_height, PADDING)
+            self.char_width, self.char_height, PADDING,
+            self._gamma)
 
     def get_selected_text(self):
         """Return the text in the current selection."""
