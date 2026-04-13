@@ -26,8 +26,8 @@ extra_link_args = []
 extra_objects = []
 
 if platform.system() == "Darwin":
-    # Mac: without USE_TCL_STUBS, Tcl function calls are direct symbol
-    # references resolved at runtime from the already-loaded libtcl9.0.dylib.
+    # Mac: our dlsym-based tclStubLib.c references Tcl_PkgRequireEx at runtime,
+    # but the linker needs to allow unresolved symbols at link time.
     extra_link_args += ["-undefined", "dynamic_lookup"]
 
 
@@ -38,9 +38,15 @@ def _find_tcl_stubs():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: system SDK provides Tcl headers (Xcode command line tools).
-        # Stubs bootstrap via dlsym (deps/tcl-mac/tclStubLib.c). No Tcl library.
-        # No include_dirs needed — system headers are in clang's default path.
+        # macOS: use embedded Tcl headers from deps/tcl-win/include/ (same
+        # headers used on Windows — they're platform-independent). These are
+        # Tcl 8.6 headers where TclFreeObj is in the public stubs table.
+        # System SDK Tcl 8.5 headers cause crashes (wrong stubs layout) and
+        # missing symbols (TclFreeObj not exported by Tcl 9 dylib).
+        setup_dir = os.path.dirname(os.path.abspath(__file__))
+        inc = os.path.join(setup_dir, "deps", "tcl-win", "include")
+        if os.path.isfile(os.path.join(inc, "tcl.h")):
+            return inc, None
         return None, None
 
     elif platform.system() == "Linux":
