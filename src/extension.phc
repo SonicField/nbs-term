@@ -862,10 +862,11 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             else if (attrs & 0x01) font_tag = "font_bold";
             else if (attrs & 0x04) font_tag = "font_italic";
 
-            /* Text width via Tcl font measure (binary-safe) */
-            int text_width = render_font_measure(interp, font_tag, text,
-                                                  (int)text_len,
-                                                  (int)text_len * char_width);
+            /* Grid-based text width: each character occupies exactly one cell.
+             * This matches standard terminal behaviour — all text aligns to the
+             * char_width grid regardless of font variant (bold/italic). */
+            int char_count = utf8_char_count(text, (int)text_len);
+            int text_width = char_count * char_width;
 
             /* Background rectangle */
             render_create_rect(interp, canvas_obj, x, y,
@@ -876,20 +877,12 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
                               span_fg, font_tag, back_tag, rs, back, r);
 
-            /* Cursor overlay — use codepoint count for column tracking,
-             * byte offset for text slicing. Matches Python's len(text). */
-            int char_count = utf8_char_count(text, (int)text_len);
+            /* Cursor overlay */
             int span_end = col_offset + char_count;
             if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
                 int cur_char_idx = ccol - col_offset;
                 int cur_byte_idx = utf8_byte_offset(text, (int)text_len, cur_char_idx);
-
-                /* Cursor x via font measure of prefix (byte slice) */
-                int cx = x;
-                if (cur_byte_idx > 0) {
-                    cx = x + render_font_measure(interp, font_tag, text,
-                                                  cur_byte_idx, cur_char_idx * char_width);
-                }
+                int cx = x + cur_char_idx * char_width;
                 int cw = char_width;
                 const char *cur_color = (cursor_color_str[0] != '\0') ? cursor_color_str : span_fg;
 
@@ -1043,27 +1036,9 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
         int y0 = padding + r * char_height;
         int y1 = y0 + char_height;
 
-        /* Accumulate measured widths from column 0 to match render_frame positioning */
-        int col_x[scr->cols + 1];
-        col_x[0] = padding;
-        for (int c = 0; c < scr->cols; c++) {
-            const Cell *cell = screen_cell_const(scr, r, c);
-            if (cell->codepoint > 0) {
-                char ch[8];
-                int clen = render_utf8_encode(cell->codepoint, ch, sizeof(ch) - 1);
-                ch[clen] = '\0';
-                const char *cf = "font_normal";
-                if ((cell->attrs & 0x05) == 0x05) cf = "font_bold_italic";
-                else if (cell->attrs & 0x01) cf = "font_bold";
-                else if (cell->attrs & 0x04) cf = "font_italic";
-                col_x[c + 1] = col_x[c] + render_font_measure(interp, cf, ch, clen, char_width);
-            } else {
-                col_x[c + 1] = col_x[c] + char_width;
-            }
-        }
-
-        int x0 = col_x[c0];
-        int x1 = col_x[c1 + 1];
+        /* Grid-based positioning — matches render_frame */
+        int x0 = padding + c0 * char_width;
+        int x1 = padding + (c1 + 1) * char_width;
 
         /* Selection background rectangle (fg color = inverted) */
         {
@@ -1095,7 +1070,7 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
                 char ch[8];
                 int clen = render_utf8_encode(cell->codepoint, ch, sizeof(ch) - 1);
                 ch[clen] = '\0';
-                int tx = col_x[c];
+                int tx = padding + c * char_width;
 
                 /* Match font to cell attributes (same logic as render_frame) */
                 const char *cell_font = "font_normal";
