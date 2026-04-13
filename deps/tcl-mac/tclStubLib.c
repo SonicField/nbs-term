@@ -5,17 +5,20 @@
  * Sets up tclStubsPtr so stubs macros (including TclFreeObj via
  * Tcl_DecrRefCount) work correctly.
  *
- * This is the same pattern as Tcl's own tclStubLib.c but simplified
- * for our use case.
+ * Must NOT define USE_TCL_STUBS — we call Tcl_PkgRequireEx as a
+ * direct function, not through tclStubsPtr.
  */
 
-/* Must NOT define USE_TCL_STUBS here — we call Tcl_PkgRequireEx as a
- * direct function (resolved from linked libtcl), not through tclStubsPtr. */
 #include <tcl.h>
 
-/* The global stubs table pointer (non-const for Tcl 8/9 compat) */
-TclStubs *tclStubsPtr = NULL;
+/* The global stubs table pointer — const to match Tcl 9 headers */
+const TclStubs *tclStubsPtr = NULL;
 
+/*
+ * Our Tcl_InitStubs: calls Tcl_PkgRequireEx (resolved from linked
+ * libtcl) to bootstrap the stubs table. The #undef removes the
+ * Tcl_PkgInitStubsCheck macro redirect from tcl.h.
+ */
 #undef Tcl_InitStubs
 const char *
 Tcl_InitStubs(Tcl_Interp *interp, const char *version, int exact)
@@ -27,7 +30,7 @@ Tcl_InitStubs(Tcl_Interp *interp, const char *version, int exact)
         return NULL;
     }
 
-    TclStubs *stubsPtr = (TclStubs *)clientData;
+    const TclStubs *stubsPtr = (const TclStubs *)clientData;
     if (stubsPtr->magic != TCL_STUB_MAGIC) {
         return NULL;
     }
