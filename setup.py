@@ -38,15 +38,18 @@ def _find_tcl_stubs():
     Returns (include_dir, stub_lib_path) or (None, None).
     """
     if platform.system() == "Darwin":
-        # macOS: use embedded Tcl headers from deps/tcl-win/include/ (same
-        # headers used on Windows — they're platform-independent). These are
-        # Tcl 8.6 headers where TclFreeObj is in the public stubs table.
-        # System SDK Tcl 8.5 headers cause crashes (wrong stubs layout) and
-        # missing symbols (TclFreeObj not exported by Tcl 9 dylib).
-        setup_dir = os.path.dirname(os.path.abspath(__file__))
-        inc = os.path.join(setup_dir, "deps", "tcl-win", "include")
-        if os.path.isfile(os.path.join(inc, "tcl.h")):
-            return inc, None
+        # macOS: use Homebrew's Tcl headers (matching the Tcl runtime).
+        # mac-setup.sh installs tcl-tk via Homebrew; we detect the path here.
+        try:
+            prefix = subprocess.check_output(
+                ["brew", "--prefix", "tcl-tk"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            inc = os.path.join(prefix, "include")
+            if os.path.isfile(os.path.join(inc, "tcl.h")):
+                return inc, None
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
         return None, None
 
     elif platform.system() == "Linux":
