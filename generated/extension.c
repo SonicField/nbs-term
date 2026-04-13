@@ -6,13 +6,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
-#if !defined(__APPLE__)
 #define USE_TCL_STUBS
-#endif
 #include <tcl.h>
-#if defined(USE_TCL_STUBS)
 #undef Tcl_InitStubs
-#endif
 
 /* phc_assert macros — trust-level assertions */
 #define phc_require(expr, msg) do { if (!(expr)) { \
@@ -2383,14 +2379,12 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
  * Calls Tk's canvas API directly via the Tcl interpreter.
  */
 
-/* Tcl stubs initialization — needed on Linux/Windows where we use stubs.
- * On Mac, we link directly against libtcl (like _tkinter). */
-#ifdef USE_TCL_STUBS
+/* Tcl stubs initialization — required on all platforms.
+ * TclFreeObj (used by Tcl_DecrRefCount) is internal to Tcl 9 and only
+ * accessible through the stubs table. This is how _tkinter works too. */
 static int tcl_stubs_initialized = 0;
-#endif
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
-#ifdef USE_TCL_STUBS
     phc_invariant(tcl_stubs_initialized || interp != NULL,
                   "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
@@ -2399,9 +2393,6 @@ static int ensure_tcl_stubs(Tcl_Interp *interp) {
         return 0;
     }
     tcl_stubs_initialized = 1;
-#else
-    (void)interp;
-#endif
     return 1;
 }
 

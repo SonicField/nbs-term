@@ -8,24 +8,19 @@
 #define NBSTERM_TK_RENDER_H
 
 #include <Python.h>
-#if !defined(__APPLE__)
 #define USE_TCL_STUBS
-#endif
 #include <tcl.h>
 
-/* On Mac, Tcl calls link directly against libtcl (like _tkinter).
- * On Linux/Windows, USE_TCL_STUBS routes calls through the stubs table. */
+/* USE_TCL_STUBS required on all platforms — TclFreeObj (used by
+ * Tcl_DecrRefCount) is internal to Tcl 9, only accessible through
+ * the stubs table. This is how _tkinter works too. */
 #include <string.h>
 #include <stdio.h>
 
-/* Tcl stubs initialization — needed on Linux/Windows where we use stubs.
- * On Mac, we link directly against libtcl (like _tkinter). */
-#ifdef USE_TCL_STUBS
+/* Tcl stubs initialization — call Tcl_InitStubs once per interpreter. */
 static int tcl_stubs_initialized = 0;
-#endif
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
-#ifdef USE_TCL_STUBS
     phc_invariant(tcl_stubs_initialized || interp != NULL,
                   "stubs state inconsistent");
     if (tcl_stubs_initialized) return 1;
@@ -34,9 +29,6 @@ static int ensure_tcl_stubs(Tcl_Interp *interp) {
         return 0;
     }
     tcl_stubs_initialized = 1;
-#else
-    (void)interp;
-#endif
     return 1;
 }
 

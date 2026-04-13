@@ -35,8 +35,9 @@ $PYTHON -c "import tkinter; print(f'Tcl/Tk version: {tkinter.TclVersion}')" || {
     exit 1
 }
 
-# Tcl headers: detected from Homebrew tcl-tk by setup.py at build time.
-echo "Tcl headers: detected from Homebrew tcl-tk by setup.py."
+# Tcl headers: provided by macOS system SDK (Xcode command line tools).
+# No detection needed — clang finds them automatically.
+echo "Tcl headers: using system SDK (Xcode command line tools)."
 
 # Step 3: Create venv
 VENV_DIR="$HOME/nbsterm-venv"
