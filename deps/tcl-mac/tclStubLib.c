@@ -9,10 +9,11 @@
  * for our use case.
  */
 
-#define USE_TCL_STUBS
+/* Must NOT define USE_TCL_STUBS here — we call Tcl_PkgRequireEx as a
+ * direct function (resolved from linked libtcl), not through tclStubsPtr. */
 #include <tcl.h>
 
-/* The global stubs table pointer */
+/* The global stubs table pointer (non-const for Tcl 8/9 compat) */
 TclStubs *tclStubsPtr = NULL;
 
 #undef Tcl_InitStubs

@@ -64,7 +64,7 @@ fi
 # Step 5: Clean and install
 echo "Installing nbs-term..."
 rm -rf build/ _nbsterm*.so
-pip install -e .
+pip install --no-build-isolation -e .
 
 # Step 6: Run tests
 echo "Running tests..."
