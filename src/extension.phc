@@ -43,11 +43,6 @@ typedef struct {
     int item_count[2][RENDER_MAX_ROWS];  /* count of items per buffer/row */
     int active_buf;  /* 0 or 1 — currently visible buffer */
     int initialized; /* whether render state has been set up */
-    int *sel_items;      /* selection highlight item IDs (dynamic) */
-    int sel_count;       /* number of selection items */
-    int sel_capacity;    /* allocated capacity of sel_items */
-    int sel_hidden_rows[RENDER_MAX_ROWS]; /* rows with items hidden by selection */
-    int sel_hidden_count;                 /* number of hidden rows */
 } RenderState;
 
 /* --- Python Terminal object --- */
@@ -57,10 +52,12 @@ typedef struct {
     Terminal *term;
     VTParser *parser;
     RenderState render;
+    /* Inline selection state — render_frame uses this to invert colors */
+    int sel_active;
+    int sel_sr, sel_sc, sel_er, sel_ec;  /* ordered selection range */
 } TerminalObject;
 
 static void Terminal_dealloc(TerminalObject *self) {
-    if (self->render.sel_items) free(self->render.sel_items);
     if (self->parser) vt_parser_free(self->parser);
     if (self->term) terminal_free(self->term);
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -96,6 +93,7 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
 
     /* Initialize render state */
     memset(&self->render, 0, sizeof(RenderState));
+    self->sel_active = 0;
 
     phc_defer_cancel;  /* success — ownership transferred to TerminalObject */
     return (PyObject *)self;
@@ -678,20 +676,6 @@ static void render_delete(Tcl_Interp *interp, Tcl_Obj *canvas, int item_id) {
     for (int i = 0; i < 3; i++) Tcl_DecrRefCount(objv[i]);
 }
 
-/* Call 'canvas itemconfigure <id> -state <state>' for a single item by ID. */
-static void render_item_set_state(Tcl_Interp *interp, Tcl_Obj *canvas,
-                                  int item_id, const char *state) {
-    Tcl_Obj *objv[5];
-    objv[0] = canvas;
-    objv[1] = Tcl_NewStringObj("itemconfigure", -1);
-    objv[2] = Tcl_NewIntObj(item_id);
-    objv[3] = Tcl_NewStringObj("-state", -1);
-    objv[4] = Tcl_NewStringObj(state, -1);
-    for (int i = 0; i < 5; i++) Tcl_IncrRefCount(objv[i]);
-    Tcl_EvalObjv(interp, 5, objv, 0);
-    for (int i = 0; i < 5; i++) Tcl_DecrRefCount(objv[i]);
-}
-
 /* Call 'canvas itemconfigure <tag> -state <state>' via Tcl_EvalObjv. */
 static void render_set_state(Tcl_Interp *interp, Tcl_Obj *canvas,
                              const char *tag, const char *state) {
@@ -884,17 +868,78 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                                                   (int)text_len,
                                                   char_count * char_width);
 
-            /* Background rectangle */
-            render_create_rect(interp, canvas_obj, x, y,
-                              x + text_width, y + char_height,
-                              span_bg, back_tag, rs, back, r);
-
-            /* Text item */
-            render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
-                              span_fg, font_tag, back_tag, rs, back, r);
-
-            /* Cursor overlay */
             int span_end = col_offset + char_count;
+
+            /* Selection-aware rendering: split span at selection boundaries */
+            int sel_c0 = -1, sel_c1 = -1;  /* selection range within this row */
+            if (self->sel_active &&
+                r >= self->sel_sr && r <= self->sel_er) {
+                sel_c0 = (r == self->sel_sr) ? self->sel_sc : 0;
+                sel_c1 = (r == self->sel_er) ? self->sel_ec : scr->cols;
+            }
+
+            /* Does selection overlap this span? */
+            int sel_start = -1, sel_end = -1;
+            if (sel_c0 >= 0 && sel_c0 < span_end && sel_c1 > col_offset) {
+                sel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
+                sel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : char_count;
+            }
+
+            if (sel_start < 0) {
+                /* No selection overlap — render normally */
+                render_create_rect(interp, canvas_obj, x, y,
+                                  x + text_width, y + char_height,
+                                  span_bg, back_tag, rs, back, r);
+                render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
+                                  span_fg, font_tag, back_tag, rs, back, r);
+            } else {
+                /* Split span into up to 3 parts: before, selected, after */
+                int bx = x;
+
+                /* Part 1: before selection */
+                if (sel_start > 0) {
+                    int b_bytes = utf8_byte_offset(text, (int)text_len, sel_start);
+                    int b_width = render_font_measure(interp, font_tag, text,
+                                                      b_bytes, sel_start * char_width);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + b_width, y + char_height,
+                                      span_bg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y, text, b_bytes,
+                                      span_fg, font_tag, back_tag, rs, back, r);
+                    bx += b_width;
+                }
+
+                /* Part 2: selected (inverted colors) */
+                {
+                    int s_byte_start = utf8_byte_offset(text, (int)text_len, sel_start);
+                    int s_byte_end = utf8_byte_offset(text, (int)text_len, sel_end);
+                    int s_bytes = s_byte_end - s_byte_start;
+                    int s_chars = sel_end - sel_start;
+                    int s_width = render_font_measure(interp, font_tag,
+                                                      text + s_byte_start, s_bytes,
+                                                      s_chars * char_width);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + s_width, y + char_height,
+                                      span_fg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y,
+                                      text + s_byte_start, s_bytes,
+                                      span_bg, font_tag, back_tag, rs, back, r);
+                    bx += s_width;
+                }
+
+                /* Part 3: after selection */
+                if (sel_end < char_count) {
+                    int a_byte_start = utf8_byte_offset(text, (int)text_len, sel_end);
+                    int a_bytes = (int)text_len - a_byte_start;
+                    int a_width = text_width - (bx - x);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + a_width, y + char_height,
+                                      span_bg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y,
+                                      text + a_byte_start, a_bytes,
+                                      span_fg, font_tag, back_tag, rs, back, r);
+                }
+            }
             if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
                 int cur_char_idx = ccol - col_offset;
                 int cur_byte_idx = utf8_byte_offset(text, (int)text_len, cur_char_idx);
@@ -966,154 +1011,39 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
 /* --- render_reset: clear render state (call on resize) --- */
 static PyObject *Terminal_render_reset(TerminalObject *self, PyObject *args) {
     (void)args;
-    if (self->render.sel_items) free(self->render.sel_items);
     memset(&self->render, 0, sizeof(RenderState));
+    self->sel_active = 0;
     Py_RETURN_NONE;
 }
 
-/* Push a selection item ID, growing the dynamic array as needed. */
-static void sel_push(RenderState *rs, int item_id) {
-    if (rs->sel_count >= rs->sel_capacity) {
-        int new_cap = rs->sel_capacity ? rs->sel_capacity * 2 : 256;
-        int *new_items = realloc(rs->sel_items, (size_t)new_cap * sizeof(int));
-        if (!new_items) return;  /* OOM — silently skip */
-        rs->sel_items = new_items;
-        rs->sel_capacity = new_cap;
-    }
-    rs->sel_items[rs->sel_count++] = item_id;
-}
-
-/* Create a canvas rectangle and push its ID into sel_items. */
-static void sel_create_rect(Tcl_Interp *interp, Tcl_Obj *canvas,
-                            int x1, int y1, int x2, int y2,
-                            const char *fill, RenderState *rs) {
-    Tcl_Obj *objv[11];
-    objv[0] = canvas;
-    objv[1] = Tcl_NewStringObj("create", -1);
-    objv[2] = Tcl_NewStringObj("rectangle", -1);
-    objv[3] = Tcl_NewIntObj(x1);
-    objv[4] = Tcl_NewIntObj(y1);
-    objv[5] = Tcl_NewIntObj(x2);
-    objv[6] = Tcl_NewIntObj(y2);
-    objv[7] = Tcl_NewStringObj("-fill", -1);
-    objv[8] = Tcl_NewStringObj(fill, -1);
-    objv[9] = Tcl_NewStringObj("-outline", -1);
-    objv[10] = Tcl_NewStringObj("", -1);
-    for (int i = 0; i < 11; i++) Tcl_IncrRefCount(objv[i]);
-    if (Tcl_EvalObjv(interp, 11, objv, 0) == TCL_OK) {
-        int item_id = 0;
-        Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &item_id);
-        sel_push(rs, item_id);
-    }
-    for (int i = 0; i < 11; i++) Tcl_DecrRefCount(objv[i]);
-}
-
-/* Create a canvas text item and push its ID into sel_items. */
-static void sel_create_text(Tcl_Interp *interp, Tcl_Obj *canvas,
-                            int px, int py, const char *text, int text_len,
-                            const char *fill, const char *font,
-                            RenderState *rs) {
-    Tcl_Obj *objv[13];
-    objv[0] = canvas;
-    objv[1] = Tcl_NewStringObj("create", -1);
-    objv[2] = Tcl_NewStringObj("text", -1);
-    objv[3] = Tcl_NewIntObj(px);
-    objv[4] = Tcl_NewIntObj(py);
-    objv[5] = Tcl_NewStringObj("-text", -1);
-    objv[6] = Tcl_NewStringObj(text, text_len);
-    objv[7] = Tcl_NewStringObj("-fill", -1);
-    objv[8] = Tcl_NewStringObj(fill, -1);
-    objv[9] = Tcl_NewStringObj("-font", -1);
-    objv[10] = Tcl_NewStringObj(font, -1);
-    objv[11] = Tcl_NewStringObj("-anchor", -1);
-    objv[12] = Tcl_NewStringObj("nw", -1);
-    for (int i = 0; i < 13; i++) Tcl_IncrRefCount(objv[i]);
-    if (Tcl_EvalObjv(interp, 13, objv, 0) == TCL_OK) {
-        int item_id = 0;
-        Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &item_id);
-        sel_push(rs, item_id);
-    }
-    for (int i = 0; i < 13; i++) Tcl_DecrRefCount(objv[i]);
-}
-
-/* --- clear_selection: delete selection highlight items, restore hidden rows --- */
+/* --- clear_selection: clear selection state, mark rows dirty for re-render --- */
 static PyObject *Terminal_clear_selection(TerminalObject *self, PyObject *args) {
-    unsigned long long interp_addr;
-    const char *canvas_path;
-    if (!PyArg_ParseTuple(args, "Ks", &interp_addr, &canvas_path))
-        return NULL;
-
-    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) Py_RETURN_NONE;
-
-    RenderState *rs = &self->render;
-    Tcl_Obj *canvas_obj = Tcl_NewStringObj(canvas_path, -1);
-    Tcl_IncrRefCount(canvas_obj);
-
-    /* Delete selection overlay items */
-    for (int i = 0; i < rs->sel_count; i++) {
-        render_delete(interp, canvas_obj, rs->sel_items[i]);
-    }
-    rs->sel_count = 0;
-
-    /* Restore hidden row items */
-    int buf = rs->active_buf;
-    for (int hi = 0; hi < rs->sel_hidden_count; hi++) {
-        int r = rs->sel_hidden_rows[hi];
-        for (int i = 0; i < rs->item_count[buf][r]; i++) {
-            render_item_set_state(interp, canvas_obj, rs->items[buf][r][i], "normal");
+    (void)args;
+    if (self->sel_active) {
+        ScreenBuffer *scr = self->term->active;
+        for (int r = self->sel_sr; r <= self->sel_er && r < scr->rows; r++) {
+            scr->dirty[r] = 1;
         }
+        self->sel_active = 0;
     }
-    rs->sel_hidden_count = 0;
-
-    Tcl_DecrRefCount(canvas_obj);
     Py_RETURN_NONE;
 }
 
-/* --- draw_selection: draw selection highlight (inverted colors) ---
- * Args: interp_addr (K), canvas_path (s),
- *       start_row (i), start_col (i), end_row (i), end_col (i),
- *       fg (s), bg (s), char_width (i), char_height (i), padding (i),
- *       gamma (d) */
+/* --- draw_selection: set selection range, mark rows dirty for re-render ---
+ * Args: start_row (i), start_col (i), end_row (i), end_col (i) */
 static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
-    unsigned long long interp_addr;
-    const char *canvas_path;
     int sr, sc, er, ec;
-    const char *fg_str, *bg_str;
-    int char_width, char_height, padding;
-    double gamma_val;
-
-    if (!PyArg_ParseTuple(args, "Ksiiiissiiid", &interp_addr, &canvas_path,
-                          &sr, &sc, &er, &ec,
-                          &fg_str, &bg_str,
-                          &char_width, &char_height, &padding,
-                          &gamma_val))
+    if (!PyArg_ParseTuple(args, "iiii", &sr, &sc, &er, &ec))
         return NULL;
-
-    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    phc_require(interp != NULL, "NULL interpreter in draw_selection");
-    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
-    RenderState *rs = &self->render;
 
-    /* Clear existing selection (deletes overlay, restores hidden rows) */
-    Tcl_Obj *canvas_obj = Tcl_NewStringObj(canvas_path, -1);
-    Tcl_IncrRefCount(canvas_obj);
-
-    for (int i = 0; i < rs->sel_count; i++) {
-        render_delete(interp, canvas_obj, rs->sel_items[i]);
-    }
-    rs->sel_count = 0;
-
-    int buf = rs->active_buf;
-    for (int hi = 0; hi < rs->sel_hidden_count; hi++) {
-        int r = rs->sel_hidden_rows[hi];
-        for (int i = 0; i < rs->item_count[buf][r]; i++) {
-            render_item_set_state(interp, canvas_obj, rs->items[buf][r][i], "normal");
+    /* Mark old selection rows dirty */
+    if (self->sel_active) {
+        for (int r = self->sel_sr; r <= self->sel_er && r < scr->rows; r++) {
+            scr->dirty[r] = 1;
         }
     }
-    rs->sel_hidden_count = 0;
 
     /* Order endpoints */
     if (sr > er || (sr == er && sc > ec)) {
@@ -1124,147 +1054,19 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
 
     /* Same point = no selection */
     if (sr == er && sc == ec) {
-        Tcl_DecrRefCount(canvas_obj);
+        self->sel_active = 0;
         Py_RETURN_NONE;
     }
 
-    /* Get span data — same structure render_frame uses */
-    PyObject *screen = render_screen(scr, fg_str, bg_str);
-    if (!screen) {
-        Tcl_DecrRefCount(canvas_obj);
-        Py_RETURN_NONE;
-    }
+    /* Store new selection and mark new rows dirty */
+    self->sel_active = 1;
+    self->sel_sr = sr; self->sel_sc = sc;
+    self->sel_er = er; self->sel_ec = ec;
 
     for (int r = sr; r <= er && r < scr->rows; r++) {
-        int c0 = (r == sr) ? sc : 0;
-        int c1 = (r == er) ? ec : scr->cols - 1;
-        int y = padding + r * char_height;
-
-        /* Hide original items for this row to prevent bleed-through */
-        if (r < RENDER_MAX_ROWS) {
-            for (int i = 0; i < rs->item_count[buf][r]; i++) {
-                render_item_set_state(interp, canvas_obj, rs->items[buf][r][i], "hidden");
-            }
-            rs->sel_hidden_rows[rs->sel_hidden_count++] = r;
-        }
-
-        /* Re-render row using same span structure as render_frame */
-        if (r >= PyList_GET_SIZE(screen)) continue;
-        PyObject *spans = PyList_GET_ITEM(screen, r);
-        int col_offset = 0;
-        int x = padding;
-
-        for (Py_ssize_t si = 0; si < PyList_GET_SIZE(spans); si++) {
-            PyObject *span = PyList_GET_ITEM(spans, si);
-            const char *text;
-            Py_ssize_t text_len;
-            const char *span_fg, *span_bg;
-            int attrs;
-
-            if (!PyArg_ParseTuple(span, "s#ssi", &text, &text_len,
-                                  &span_fg, &span_bg, &attrs))
-            {
-                Py_DECREF(screen);
-                Tcl_DecrRefCount(canvas_obj);
-                return NULL;
-            }
-
-            /* Apply gamma, dim, inverse — same as render_frame */
-            char fg_buf2[16], bg_buf2[16], dim_buf2[16];
-            if (gamma_val != 1.0) {
-                render_gamma(span_fg, gamma_val, fg_buf2, sizeof(fg_buf2));
-                render_gamma(span_bg, gamma_val, bg_buf2, sizeof(bg_buf2));
-                span_fg = fg_buf2;
-                span_bg = bg_buf2;
-            }
-            if (attrs & 0x02) {  /* DIM */
-                render_dim(span_fg, dim_buf2, sizeof(dim_buf2));
-                span_fg = dim_buf2;
-            }
-            if (attrs & 0x20) {  /* INVERSE */
-                const char *tmp = span_fg;
-                span_fg = span_bg;
-                span_bg = tmp;
-            }
-
-            const char *font_tag = "font_normal";
-            if ((attrs & 0x05) == 0x05) font_tag = "font_bold_italic";
-            else if (attrs & 0x01) font_tag = "font_bold";
-            else if (attrs & 0x04) font_tag = "font_italic";
-
-            int char_count = utf8_char_count(text, (int)text_len);
-            int text_width = render_font_measure(interp, font_tag, text,
-                                                  (int)text_len,
-                                                  char_count * char_width);
-            int span_end = col_offset + char_count;
-
-            /* Check if this span overlaps the selection at all */
-            int span_in_sel = (col_offset <= c1 && span_end > c0);
-            int span_fully_in_sel = (col_offset >= c0 && span_end - 1 <= c1);
-            int span_fully_out = !span_in_sel;
-
-            if (span_fully_out) {
-                /* Not selected — re-render with original colors */
-                sel_create_rect(interp, canvas_obj, x, y,
-                               x + text_width, y + char_height,
-                               span_bg, rs);
-                sel_create_text(interp, canvas_obj, x, y,
-                               text, (int)text_len,
-                               span_fg, font_tag, rs);
-            } else if (span_fully_in_sel) {
-                /* Fully selected — inverted colors */
-                sel_create_rect(interp, canvas_obj, x, y,
-                               x + text_width, y + char_height,
-                               span_fg, rs);
-                sel_create_text(interp, canvas_obj, x, y,
-                               text, (int)text_len,
-                               span_bg, font_tag, rs);
-            } else {
-                /* Partially selected — render per-character for this span */
-                for (int ci = 0; ci < char_count; ci++) {
-                    int col = col_offset + ci;
-                    int in_sel = (col >= c0 && col <= c1);
-                    int byte_off = utf8_byte_offset(text, (int)text_len, ci);
-                    int cx = x;
-                    if (byte_off > 0) {
-                        cx = x + render_font_measure(interp, font_tag, text,
-                                                      byte_off, ci * char_width);
-                    }
-                    int next_byte = utf8_byte_offset(text, (int)text_len, ci + 1);
-                    int cw_measured = render_font_measure(interp, font_tag,
-                                                          text + byte_off,
-                                                          next_byte - byte_off,
-                                                          char_width);
-
-                    const char *cfill = in_sel ? span_fg : span_bg;
-                    const char *tfill = in_sel ? span_bg : span_fg;
-
-                    sel_create_rect(interp, canvas_obj, cx, y,
-                                   cx + cw_measured, y + char_height,
-                                   cfill, rs);
-
-                    char ch[8];
-                    int clen = next_byte - byte_off;
-                    if (clen > 0 && clen < 8) {
-                        memcpy(ch, text + byte_off, (size_t)clen);
-                        ch[clen] = '\0';
-                        /* Skip spaces */
-                        if (ch[0] != ' ' || clen > 1) {
-                            sel_create_text(interp, canvas_obj, cx, y,
-                                           ch, clen, tfill, font_tag, rs);
-                        }
-                    }
-                }
-            }
-
-            x += text_width;
-            col_offset = span_end;
-        }
+        scr->dirty[r] = 1;
     }
 
-    Py_DECREF(screen);
-
-    Tcl_DecrRefCount(canvas_obj);
     Py_RETURN_NONE;
 }
 
@@ -1304,9 +1106,9 @@ static PyMethodDef Terminal_methods[] = {
     {"render_reset", (PyCFunction)Terminal_render_reset, METH_NOARGS,
      "Reset render state (call on resize)."},
     {"draw_selection", (PyCFunction)Terminal_draw_selection, METH_VARARGS,
-     "Draw selection highlight via Tcl_EvalObjv."},
-    {"clear_selection", (PyCFunction)Terminal_clear_selection, METH_VARARGS,
-     "Clear selection highlight items."},
+     "Set selection range and mark rows dirty for re-render."},
+    {"clear_selection", (PyCFunction)Terminal_clear_selection, METH_NOARGS,
+     "Clear selection and mark rows dirty for re-render."},
     {NULL, NULL, 0, NULL}
 };
 

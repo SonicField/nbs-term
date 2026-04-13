@@ -162,20 +162,16 @@ class TerminalWidget:
         return (sr, sc), (er, ec)
 
     def _clear_selection_highlight(self):
-        self.term.clear_selection(
-            self.parent.tk.interpaddr(), str(self.canvas))
+        self.term.clear_selection()
+        self._render()
 
     def _draw_selection_highlight(self):
         start, end = self._sel_range()
         if start is None or start == end:
             self._clear_selection_highlight()
             return
-        self.term.draw_selection(
-            self.parent.tk.interpaddr(), str(self.canvas),
-            start[0], start[1], end[0], end[1],
-            self._fg, self._bg,
-            self.char_width, self.char_height, PADDING,
-            self._gamma)
+        self.term.draw_selection(start[0], start[1], end[0], end[1])
+        self._render()
 
     def get_selected_text(self):
         """Return the text in the current selection."""
