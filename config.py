@@ -28,6 +28,7 @@ type
   CursorConfig = record
     style : CursorStyle;
     blink : Boolean;
+    color : String;
   end;
 
   TerminalConfig = record
@@ -43,7 +44,7 @@ type
 
 var config : TerminalConfig = (
   font   : (family : 'Menlo'; size : 14);
-  cursor : (style : Block; blink : True);
+  cursor : (style : Block; blink : True; color : '');
   gamma  : 1.20;
   fg     : '#d0d0d0';
   bg     : '#000000';
@@ -242,6 +243,10 @@ def load_config(cli_args=None):
         if val:
             config.cursor.blink = val.lower() in ("true", "yes", "1")
 
+        val = _honest_get(config_path, "config", "cursor", "color")
+        if val:
+            config.cursor.color = val.strip("'\"")
+
         val = _honest_get(config_path, "config", "gamma")
         if val:
             try:
@@ -307,6 +312,7 @@ def save_config(config):
             return False
 
     blink_str = "True" if config.cursor.blink else "False"
+    cursor_color = config.cursor.color or ""
     content = f"""\
 type
   CursorStyle = (Block, Underline, Bar);
@@ -319,6 +325,7 @@ type
   CursorConfig = record
     style : CursorStyle;
     blink : Boolean;
+    color : String;
   end;
 
   TerminalConfig = record
@@ -334,7 +341,7 @@ type
 
 var config : TerminalConfig = (
   font   : (family : '{config.font.family}'; size : {config.font.size});
-  cursor : (style : {config.cursor.style}; blink : {blink_str});
+  cursor : (style : {config.cursor.style}; blink : {blink_str}; color : '{cursor_color}');
   gamma  : {config.gamma:.2f};
   fg     : '{config.fg}';
   bg     : '{config.bg}';
