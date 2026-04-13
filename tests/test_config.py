@@ -153,6 +153,43 @@ class TestLoadConfigFromFile(unittest.TestCase):
         self.assertEqual(c.cursor.style, "Wireframe")
 
 
+class TestConfigPersistence(unittest.TestCase):
+    """Verify config round-trip: save then load preserves values."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._config_path = os.path.join(self._tmpdir, "nbs-term.honest")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir)
+
+    @patch("config.get_config_dir")
+    @patch("config.get_config_path")
+    def test_cursor_color_survives_restart(self, mock_path, mock_dir):
+        """Cursor color set, saved, and loaded back must persist."""
+        mock_path.return_value = self._config_path
+        mock_dir.return_value = self._tmpdir
+        from config import save_config
+        c = TerminalConfig()
+        c.cursor.color = "#ff8800"
+        save_config(c)
+        c2 = load_config()
+        self.assertEqual(c2.cursor.color, "#ff8800")
+
+    @patch("config.get_config_dir")
+    @patch("config.get_config_path")
+    def test_empty_cursor_color_round_trip(self, mock_path, mock_dir):
+        """Empty cursor color (default) survives save/load."""
+        mock_path.return_value = self._config_path
+        mock_dir.return_value = self._tmpdir
+        from config import save_config
+        c = TerminalConfig()
+        c.cursor.color = ""
+        save_config(c)
+        c2 = load_config()
+        self.assertEqual(c2.cursor.color, "")
+
+
 class TestCLIOverrides(unittest.TestCase):
     """Verify CLI arguments override config file values."""
 
