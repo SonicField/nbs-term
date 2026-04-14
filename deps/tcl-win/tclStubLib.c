@@ -22,8 +22,8 @@
  */
 #include "include/tcl.h"
 
-/* The global stubs table pointer (non-const to match both Tcl 8 and 9 headers) */
-TclStubs *tclStubsPtr = NULL;
+/* The global stubs table pointer (const to match tclDecls.h declaration) */
+const TclStubs *tclStubsPtr = NULL;
 
 /*
  * Tcl_InitStubs -- Initialize the stubs table from an interpreter.
