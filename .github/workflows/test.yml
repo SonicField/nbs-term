@@ -22,8 +22,8 @@ jobs:
       - name: Build C extension
         run: pip install -e .
 
-      - name: Run Python integration tests
-        run: python tests/test_integration.py
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
 
       - name: Build phc from submodule
         run: make phc
