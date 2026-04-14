@@ -30,3 +30,25 @@ jobs:
 
       - name: Verify generated/extension.c is current
         run: make verify-regenerate
+
+  test-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: brew install python@3.14 tcl-tk
+
+      - name: Create venv and build
+        run: |
+          PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
+          "$PYTHON" -m venv .venv
+          source .venv/bin/activate
+          pip install -e .
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short
