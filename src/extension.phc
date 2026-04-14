@@ -376,6 +376,9 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
 
     char text[4096];
     int text_len = 0;
+    int span_cols = 0;
+    uint8_t col_widths[4096];
+    int col_widths_len = 0;
     Color span_fg = Color_mk_Default();
     Color span_bg = Color_mk_Default();
     uint16_t span_attrs = 0;
@@ -401,14 +404,17 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
             char fg_buf[16], bg_buf[16];
             color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
             color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
-            PyObject *span = Py_BuildValue("(s#ssi)",
-                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
             if (!span) { Py_DECREF(spans); return NULL; }
             if (PyList_Append(spans, span) < 0) {
                 Py_DECREF(span); Py_DECREF(spans); return NULL;
             }
             Py_DECREF(span);
             text_len = 0;
+            span_cols = 0;
+            col_widths_len = 0;
             span_fg = cell->fg;
             span_bg = cell->bg;
             span_attrs = cell->attrs;
@@ -418,14 +424,18 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
         if (cp == 0) cp = ' ';
         int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
         text_len += n;
+        int cw = cell->wide ? 2 : 1;
+        span_cols += cw;
+        if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
     }
 
     if (text_len > 0) {
         char fg_buf[16], bg_buf[16];
         color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
         color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
-        PyObject *span = Py_BuildValue("(s#ssi)",
-            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+        PyObject *span = Py_BuildValue("(s#ssiy#)",
+            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+            col_widths, (Py_ssize_t)col_widths_len);
         if (!span) { Py_DECREF(spans); return NULL; }
         if (PyList_Append(spans, span) < 0) {
             Py_DECREF(span); Py_DECREF(spans); return NULL;
@@ -830,8 +840,11 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             const char *span_fg, *span_bg;
             int attrs;
 
-            if (!PyArg_ParseTuple(span, "s#ssi", &text, &text_len,
-                                  &span_fg, &span_bg, &attrs))
+            const uint8_t *col_widths_data = NULL;
+            Py_ssize_t col_widths_len = 0;
+            if (!PyArg_ParseTuple(span, "s#ssiy#", &text, &text_len,
+                                  &span_fg, &span_bg, &attrs,
+                                  &col_widths_data, &col_widths_len))
             {
                 Tcl_DecrRefCount(canvas_obj);
                 Py_DECREF(screen);
@@ -864,11 +877,16 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
 
             /* Text width via Tcl font measure (binary-safe) */
             int char_count = utf8_char_count(text, (int)text_len);
+            /* Compute column count from per-char widths */
+            int col_count = 0;
+            for (Py_ssize_t ci = 0; ci < col_widths_len; ci++)
+                col_count += col_widths_data[ci];
+            if (col_count == 0) col_count = char_count;  /* fallback */
             int text_width = render_font_measure(interp, font_tag, text,
                                                   (int)text_len,
-                                                  char_count * char_width);
+                                                  col_count * char_width);
 
-            int span_end = col_offset + char_count;
+            int span_end = col_offset + col_count;
 
             /* Selection-aware rendering: split span at selection boundaries */
             int sel_c0 = -1, sel_c1 = -1;  /* selection range within this row */
@@ -878,11 +896,28 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 sel_c1 = (r == self->sel_er) ? self->sel_ec : scr->cols;
             }
 
-            /* Does selection overlap this span? */
+            /* Does selection overlap this span?
+             * sel_start/sel_end are in column-relative space within the span.
+             * Convert to char indices using col_widths_data. */
             int sel_start = -1, sel_end = -1;
             if (sel_c0 >= 0 && sel_c0 < span_end && sel_c1 > col_offset) {
-                sel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
-                sel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : char_count;
+                int col_rel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
+                int col_rel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : col_count;
+                /* Convert column positions to char indices */
+                int col_acc = 0;
+                sel_start = char_count;  /* default: past end */
+                sel_end = char_count;
+                for (int ci = 0; ci < char_count && ci < (int)col_widths_len; ci++) {
+                    if (col_acc >= col_rel_start && sel_start == char_count)
+                        sel_start = ci;
+                    col_acc += col_widths_data[ci];
+                    if (col_acc >= col_rel_end && sel_end == char_count) {
+                        sel_end = ci + 1;
+                        break;
+                    }
+                }
+                if (col_acc < col_rel_start) sel_start = char_count;
+                if (sel_start >= sel_end) { sel_start = -1; sel_end = -1; }
             }
 
             phc_check(sel_start < 0 || sel_start < sel_end,
@@ -957,7 +992,15 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 }
             }
             if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
-                int cur_char_idx = ccol - col_offset;
+                /* Convert column position to char index */
+                int cur_col_rel = ccol - col_offset;
+                int cur_char_idx = 0;
+                int cacc = 0;
+                for (int ci = 0; ci < char_count && ci < (int)col_widths_len; ci++) {
+                    if (cacc >= cur_col_rel) { cur_char_idx = ci; break; }
+                    cacc += col_widths_data[ci];
+                    cur_char_idx = ci + 1;
+                }
                 int cur_byte_idx = utf8_byte_offset(text, (int)text_len, cur_char_idx);
 
                 /* Cursor x via font measure of prefix (byte slice) */

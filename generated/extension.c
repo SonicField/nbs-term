@@ -543,14 +543,50 @@ static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoin
         cur->wrap_pending = 0;
     }
 
+    /* Determine character width (wide = 2 columns, normal = 1) */
+    int is_wide = 0;
+    if (codepoint >= 0x1100 &&
+        ((codepoint <= 0x115F) ||                          /* Hangul Jamo */
+         (codepoint == 0x2329 || codepoint == 0x232A) ||   /* angle brackets */
+         (codepoint >= 0x2E80 && codepoint <= 0x303E) ||   /* CJK Radicals..Ideographic */
+         (codepoint >= 0x3040 && codepoint <= 0x33BF) ||   /* Hiragana..CJK Compat */
+         (codepoint >= 0x3400 && codepoint <= 0x4DBF) ||   /* CJK Extension A */
+         (codepoint >= 0x4E00 && codepoint <= 0xA4CF) ||   /* CJK Unified..Yi */
+         (codepoint >= 0xA960 && codepoint <= 0xA97C) ||   /* Hangul Jamo Extended-A */
+         (codepoint >= 0xAC00 && codepoint <= 0xD7A3) ||   /* Hangul Syllables */
+         (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||   /* CJK Compat Ideographs */
+         (codepoint >= 0xFE10 && codepoint <= 0xFE6F) ||   /* Vertical forms..CJK Compat */
+         (codepoint >= 0xFF01 && codepoint <= 0xFF60) ||   /* Fullwidth Latin */
+         (codepoint >= 0xFFE0 && codepoint <= 0xFFE6) ||   /* Fullwidth signs */
+         (codepoint >= 0x1F000 && codepoint <= 0x1FBFF) || /* Mahjong..Symbols */
+         (codepoint >= 0x20000 && codepoint <= 0x3FFFF)))  /* CJK Extension B+ */
+        is_wide = 1;
+
     /* Place character */
     Cell *c = screen_cell(scr, cur->row, cur->col);
     *c = cell_from_pen(codepoint, &cur->pen);
+    c->wide = is_wide;
     scr->dirty[cur->row] = 1;
 
+    if (is_wide && cur->col + 1 < scr->cols) {
+        /* Place continuation cell */
+        Cell *cont = screen_cell(scr, cur->row, cur->col + 1);
+        cont->codepoint = ' ';
+        cont->attrs = cur->pen.attrs;
+        cont->fg = cur->pen.fg;
+        cont->bg = cur->pen.bg;
+        cont->wide = 0;
+        cont->wide_cont = 1;
+    }
+
     /* Advance cursor */
-    if (cur->col < scr->cols - 1) {
-        cur->col++;
+    int advance = is_wide ? 2 : 1;
+    if (cur->col + advance <= scr->cols - 1) {
+        cur->col += advance;
+    } else if (cur->col < scr->cols - 1 && is_wide) {
+        /* Wide char doesn't fit — place at last column, advance to end */
+        cur->col = scr->cols - 1;
+        if (cur->autowrap) cur->wrap_pending = 1;
     } else if (cur->autowrap) {
         cur->wrap_pending = 1;
     }
@@ -956,7 +992,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 682
+#line 718
 
 /* --- UTF-8 decoder state --- */
 
@@ -1545,7 +1581,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1275
+#line 1311
 
     return VTState_mk_Ground();
 }
@@ -1610,7 +1646,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1301
+#line 1337
 
 /* --- Input event types --- */
 
@@ -1703,7 +1739,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1310
+#line 1346
 
 /* --- UTF-8 encoding --- */
 
@@ -1856,7 +1892,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1397
+#line 1433
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -1990,7 +2026,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1529
+#line 1565
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2032,6 +2068,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
         /* Walk cells, grouping into spans with uniform attributes */
         char text[4096];
         int text_len = 0;
+        int span_cols = 0;
+        uint8_t col_widths[4096];  /* per-codepoint column width (1 or 2) */
+        int col_widths_len = 0;
         Color span_fg = Color_mk_Default();
         Color span_bg = Color_mk_Default();
         uint16_t span_attrs = 0;
@@ -2059,14 +2098,17 @@ static PyObject *render_screen(const ScreenBuffer *scr,
                 char fg_buf[16], bg_buf[16];
                 color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
                 color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
-                PyObject *span = Py_BuildValue("(s#ssi)",
-                    text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+                PyObject *span = Py_BuildValue("(s#ssiy#)",
+                    text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                    col_widths, (Py_ssize_t)col_widths_len);
                 if (!span) { Py_DECREF(spans); Py_DECREF(rows); return NULL; }
                 if (PyList_Append(spans, span) < 0) {
                     Py_DECREF(span); Py_DECREF(spans); Py_DECREF(rows); return NULL;
                 }
                 Py_DECREF(span);
                 text_len = 0;
+                span_cols = 0;
+                col_widths_len = 0;
                 span_fg = cell->fg;
                 span_bg = cell->bg;
                 span_attrs = cell->attrs;
@@ -2077,6 +2119,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
             if (cp == 0) cp = ' ';
             int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
             text_len += n;
+            int cw = cell->wide ? 2 : 1;
+            span_cols += cw;
+            if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
         }
 
         /* Emit final span */
@@ -2084,8 +2129,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
             char fg_buf[16], bg_buf[16];
             color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
             color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
-            PyObject *span = Py_BuildValue("(s#ssi)",
-                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
             if (!span) { Py_DECREF(spans); Py_DECREF(rows); return NULL; }
             if (PyList_Append(spans, span) < 0) {
                 Py_DECREF(span); Py_DECREF(spans); Py_DECREF(rows); return NULL;
@@ -2241,7 +2287,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1762
+#line 1808
 
 /* Config structs — mirrors Python dataclasses */
 
@@ -2903,6 +2949,9 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
 
     char text[4096];
     int text_len = 0;
+    int span_cols = 0;
+    uint8_t col_widths[4096];
+    int col_widths_len = 0;
     Color span_fg = Color_mk_Default();
     Color span_bg = Color_mk_Default();
     uint16_t span_attrs = 0;
@@ -2928,14 +2977,17 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
             char fg_buf[16], bg_buf[16];
             color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
             color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
-            PyObject *span = Py_BuildValue("(s#ssi)",
-                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
             if (!span) { Py_DECREF(spans); return NULL; }
             if (PyList_Append(spans, span) < 0) {
                 Py_DECREF(span); Py_DECREF(spans); return NULL;
             }
             Py_DECREF(span);
             text_len = 0;
+            span_cols = 0;
+            col_widths_len = 0;
             span_fg = cell->fg;
             span_bg = cell->bg;
             span_attrs = cell->attrs;
@@ -2945,14 +2997,18 @@ static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *ar
         if (cp == 0) cp = ' ';
         int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
         text_len += n;
+        int cw = cell->wide ? 2 : 1;
+        span_cols += cw;
+        if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
     }
 
     if (text_len > 0) {
         char fg_buf[16], bg_buf[16];
         color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
         color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
-        PyObject *span = Py_BuildValue("(s#ssi)",
-            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+        PyObject *span = Py_BuildValue("(s#ssiy#)",
+            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+            col_widths, (Py_ssize_t)col_widths_len);
         if (!span) { Py_DECREF(spans); return NULL; }
         if (PyList_Append(spans, span) < 0) {
             Py_DECREF(span); Py_DECREF(spans); return NULL;
@@ -3357,8 +3413,11 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             const char *span_fg, *span_bg;
             int attrs;
 
-            if (!PyArg_ParseTuple(span, "s#ssi", &text, &text_len,
-                                  &span_fg, &span_bg, &attrs))
+            const uint8_t *col_widths_data = NULL;
+            Py_ssize_t col_widths_len = 0;
+            if (!PyArg_ParseTuple(span, "s#ssiy#", &text, &text_len,
+                                  &span_fg, &span_bg, &attrs,
+                                  &col_widths_data, &col_widths_len))
             {
                 Tcl_DecrRefCount(canvas_obj);
                 Py_DECREF(screen);
@@ -3391,11 +3450,16 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
 
             /* Text width via Tcl font measure (binary-safe) */
             int char_count = utf8_char_count(text, (int)text_len);
+            /* Compute column count from per-char widths */
+            int col_count = 0;
+            for (Py_ssize_t ci = 0; ci < col_widths_len; ci++)
+                col_count += col_widths_data[ci];
+            if (col_count == 0) col_count = char_count;  /* fallback */
             int text_width = render_font_measure(interp, font_tag, text,
                                                   (int)text_len,
-                                                  char_count * char_width);
+                                                  col_count * char_width);
 
-            int span_end = col_offset + char_count;
+            int span_end = col_offset + col_count;
 
             /* Selection-aware rendering: split span at selection boundaries */
             int sel_c0 = -1, sel_c1 = -1;  /* selection range within this row */
@@ -3405,11 +3469,28 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 sel_c1 = (r == self->sel_er) ? self->sel_ec : scr->cols;
             }
 
-            /* Does selection overlap this span? */
+            /* Does selection overlap this span?
+             * sel_start/sel_end are in column-relative space within the span.
+             * Convert to char indices using col_widths_data. */
             int sel_start = -1, sel_end = -1;
             if (sel_c0 >= 0 && sel_c0 < span_end && sel_c1 > col_offset) {
-                sel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
-                sel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : char_count;
+                int col_rel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
+                int col_rel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : col_count;
+                /* Convert column positions to char indices */
+                int col_acc = 0;
+                sel_start = char_count;  /* default: past end */
+                sel_end = char_count;
+                for (int ci = 0; ci < char_count && ci < (int)col_widths_len; ci++) {
+                    if (col_acc >= col_rel_start && sel_start == char_count)
+                        sel_start = ci;
+                    col_acc += col_widths_data[ci];
+                    if (col_acc >= col_rel_end && sel_end == char_count) {
+                        sel_end = ci + 1;
+                        break;
+                    }
+                }
+                if (col_acc < col_rel_start) sel_start = char_count;
+                if (sel_start >= sel_end) { sel_start = -1; sel_end = -1; }
             }
 
             phc_check(sel_start < 0 || sel_start < sel_end,
@@ -3484,7 +3565,15 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 }
             }
             if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
-                int cur_char_idx = ccol - col_offset;
+                /* Convert column position to char index */
+                int cur_col_rel = ccol - col_offset;
+                int cur_char_idx = 0;
+                int cacc = 0;
+                for (int ci = 0; ci < char_count && ci < (int)col_widths_len; ci++) {
+                    if (cacc >= cur_col_rel) { cur_char_idx = ci; break; }
+                    cacc += col_widths_data[ci];
+                    cur_char_idx = ci + 1;
+                }
                 int cur_byte_idx = utf8_byte_offset(text, (int)text_len, cur_char_idx);
 
                 /* Cursor x via font measure of prefix (byte slice) */

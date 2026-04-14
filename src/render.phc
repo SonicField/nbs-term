@@ -94,6 +94,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
         /* Walk cells, grouping into spans with uniform attributes */
         char text[4096];
         int text_len = 0;
+        int span_cols = 0;
+        uint8_t col_widths[4096];  /* per-codepoint column width (1 or 2) */
+        int col_widths_len = 0;
         Color span_fg = Color_mk_Default();
         Color span_bg = Color_mk_Default();
         uint16_t span_attrs = 0;
@@ -121,14 +124,17 @@ static PyObject *render_screen(const ScreenBuffer *scr,
                 char fg_buf[16], bg_buf[16];
                 color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
                 color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
-                PyObject *span = Py_BuildValue("(s#ssi)",
-                    text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+                PyObject *span = Py_BuildValue("(s#ssiy#)",
+                    text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                    col_widths, (Py_ssize_t)col_widths_len);
                 if (!span) { Py_DECREF(spans); Py_DECREF(rows); return NULL; }
                 if (PyList_Append(spans, span) < 0) {
                     Py_DECREF(span); Py_DECREF(spans); Py_DECREF(rows); return NULL;
                 }
                 Py_DECREF(span);
                 text_len = 0;
+                span_cols = 0;
+                col_widths_len = 0;
                 span_fg = cell->fg;
                 span_bg = cell->bg;
                 span_attrs = cell->attrs;
@@ -139,6 +145,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
             if (cp == 0) cp = ' ';
             int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
             text_len += n;
+            int cw = cell->wide ? 2 : 1;
+            span_cols += cw;
+            if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
         }
 
         /* Emit final span */
@@ -146,8 +155,9 @@ static PyObject *render_screen(const ScreenBuffer *scr,
             char fg_buf[16], bg_buf[16];
             color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
             color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
-            PyObject *span = Py_BuildValue("(s#ssi)",
-                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs);
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
             if (!span) { Py_DECREF(spans); Py_DECREF(rows); return NULL; }
             if (PyList_Append(spans, span) < 0) {
                 Py_DECREF(span); Py_DECREF(spans); Py_DECREF(rows); return NULL;

@@ -89,7 +89,7 @@ def test_terminal_feed_escapes():
     # Row 0 should have multiple spans
     assert len(screen[0]) >= 3, f"Expected >=3 spans, got {len(screen[0])}"
     # First span should be red
-    text, fg, bg, attrs = screen[0][0]
+    text, fg, bg, attrs = screen[0][0][:4]
     assert "Red" in text, f"Expected 'Red' in span, got {text!r}"
     assert fg == "#cd0000", f"Expected red fg, got {fg}"
 

@@ -254,14 +254,50 @@ static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoin
         cur->wrap_pending = 0;
     }
 
+    /* Determine character width (wide = 2 columns, normal = 1) */
+    int is_wide = 0;
+    if (codepoint >= 0x1100 &&
+        ((codepoint <= 0x115F) ||                          /* Hangul Jamo */
+         (codepoint == 0x2329 || codepoint == 0x232A) ||   /* angle brackets */
+         (codepoint >= 0x2E80 && codepoint <= 0x303E) ||   /* CJK Radicals..Ideographic */
+         (codepoint >= 0x3040 && codepoint <= 0x33BF) ||   /* Hiragana..CJK Compat */
+         (codepoint >= 0x3400 && codepoint <= 0x4DBF) ||   /* CJK Extension A */
+         (codepoint >= 0x4E00 && codepoint <= 0xA4CF) ||   /* CJK Unified..Yi */
+         (codepoint >= 0xA960 && codepoint <= 0xA97C) ||   /* Hangul Jamo Extended-A */
+         (codepoint >= 0xAC00 && codepoint <= 0xD7A3) ||   /* Hangul Syllables */
+         (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||   /* CJK Compat Ideographs */
+         (codepoint >= 0xFE10 && codepoint <= 0xFE6F) ||   /* Vertical forms..CJK Compat */
+         (codepoint >= 0xFF01 && codepoint <= 0xFF60) ||   /* Fullwidth Latin */
+         (codepoint >= 0xFFE0 && codepoint <= 0xFFE6) ||   /* Fullwidth signs */
+         (codepoint >= 0x1F000 && codepoint <= 0x1FBFF) || /* Mahjong..Symbols */
+         (codepoint >= 0x20000 && codepoint <= 0x3FFFF)))  /* CJK Extension B+ */
+        is_wide = 1;
+
     /* Place character */
     Cell *c = screen_cell(scr, cur->row, cur->col);
     *c = cell_from_pen(codepoint, &cur->pen);
+    c->wide = is_wide;
     scr->dirty[cur->row] = 1;
 
+    if (is_wide && cur->col + 1 < scr->cols) {
+        /* Place continuation cell */
+        Cell *cont = screen_cell(scr, cur->row, cur->col + 1);
+        cont->codepoint = ' ';
+        cont->attrs = cur->pen.attrs;
+        cont->fg = cur->pen.fg;
+        cont->bg = cur->pen.bg;
+        cont->wide = 0;
+        cont->wide_cont = 1;
+    }
+
     /* Advance cursor */
-    if (cur->col < scr->cols - 1) {
-        cur->col++;
+    int advance = is_wide ? 2 : 1;
+    if (cur->col + advance <= scr->cols - 1) {
+        cur->col += advance;
+    } else if (cur->col < scr->cols - 1 && is_wide) {
+        /* Wide char doesn't fit — place at last column, advance to end */
+        cur->col = scr->cols - 1;
+        if (cur->autowrap) cur->wrap_pending = 1;
     } else if (cur->autowrap) {
         cur->wrap_pending = 1;
     }

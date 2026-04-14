@@ -147,19 +147,11 @@ class TestRenderFrameContract(unittest.TestCase):
     def test_tcl_smoke_test(self):
         """Tcl ABI smoke test — uses _tkinter's interpreter, runs expr 1+1.
         Catches Tcl version mismatches that cause SIGSEGV in production.
-        Requires a display (creates Tk root to get interpaddr)."""
-        try:
-            import tkinter as tk
-            root = tk.Tk()
-            root.withdraw()
-        except Exception:
-            self.skipTest("No display available for Tk")
-            return
-        try:
-            result = _nbsterm.tcl_smoke_test(root.tk.interpaddr())
-            self.assertEqual(result, "2")
-        finally:
-            root.destroy()
+        Uses Tcl() instead of Tk() so no display server is needed."""
+        import tkinter
+        tcl = tkinter.Tcl()
+        result = _nbsterm.tcl_smoke_test(tcl.tk.interpaddr())
+        self.assertEqual(result, "2")
 
 
 class TestInputEncoding(unittest.TestCase):
@@ -217,13 +209,13 @@ class TestUTF8Spans(unittest.TestCase):
         self.assertEqual(texts[1][1], '#00cd00')
 
     def test_cjk_cell_codepoints(self):
-        """CJK codepoints appear in correct cell positions."""
+        """CJK codepoints appear in correct cell positions (wide chars span 2 cols)."""
         t = _nbsterm.Terminal(24, 80)
         t.feed('世界'.encode('utf-8'))
-        cp0 = t.get_cell(0, 0)[0]
-        cp1 = t.get_cell(0, 1)[0]
+        cp0 = t.get_cell(0, 0)[0]  # 世 at col 0
+        cp2 = t.get_cell(0, 2)[0]  # 界 at col 2 (col 1 is wide_cont)
         self.assertEqual(cp0, 0x4E16)  # 世
-        self.assertEqual(cp1, 0x754C)  # 界
+        self.assertEqual(cp2, 0x754C)  # 界
 
     def test_accented_char_span(self):
         """Multi-byte accented characters (2-byte UTF-8) in spans."""
@@ -238,8 +230,34 @@ class TestUTF8Spans(unittest.TestCase):
         t.feed('世界test'.encode('utf-8'))
         row, col = t.get_cursor()
         self.assertEqual(row, 0)
-        # 2 CJK chars + 4 ASCII chars = 6 columns
-        self.assertEqual(col, 6)
+        # 2 CJK chars (4 cols) + 4 ASCII chars (4 cols) = 8 columns
+        self.assertEqual(col, 8)
+
+    def test_cjk_span_col_widths(self):
+        """Span col_widths correctly marks wide chars as 2 columns."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed('A中B'.encode('utf-8'))
+        screen = t.get_screen()
+        span = screen[0][0]
+        # Span tuple: (text, fg, bg, attrs, col_widths)
+        self.assertEqual(len(span), 5)
+        col_widths = list(span[4])
+        # First 3 chars: A=1 col, 中=2 cols, B=1 col
+        self.assertEqual(col_widths[:3], [1, 2, 1])
+        # Total columns for the 3 content chars = 4
+        self.assertEqual(sum(col_widths[:3]), 4)
+
+    def test_cjk_selection_col_offset(self):
+        """Selection after wide chars uses column coords, not codepoint indices."""
+        t = _nbsterm.Terminal(24, 80)
+        # 中 occupies columns 0-1, B occupies column 2
+        t.feed('中B'.encode('utf-8'))
+        # Select column 2 (B), not codepoint index 2 (out of bounds)
+        t.draw_selection(0, 2, 0, 3)
+        # Should not crash — the column-to-char conversion must map
+        # column 2 to char index 1 (B), not char index 2 (past end)
+        screen = t.get_screen()
+        self.assertTrue(len(screen[0]) > 0)
 
 
 class TestEncodeTkEvent(unittest.TestCase):
