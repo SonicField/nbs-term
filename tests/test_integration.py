@@ -116,19 +116,22 @@ class TestRenderFrameContract(unittest.TestCase):
         self.assertIn("11", str(ctx.exception))
 
     def test_draw_selection_arg_count(self):
-        """draw_selection expects exactly 10 args."""
+        """draw_selection expects exactly 4 args (sr, sc, er, ec)."""
         t = _nbsterm.Terminal(24, 80)
-        with self.assertRaises(TypeError) as ctx:
+        # Calling with 0 args should fail
+        with self.assertRaises(TypeError):
             t.draw_selection()
-        # Verify it reports the expected arg count
-        self.assertIn("argument", str(ctx.exception).lower())
+        # Calling with correct 4 args should succeed
+        t.draw_selection(0, 0, 1, 1)
 
     def test_clear_selection_arg_count(self):
-        """clear_selection expects exactly 2 args."""
+        """clear_selection takes no args (METH_NOARGS)."""
         t = _nbsterm.Terminal(24, 80)
-        with self.assertRaises(TypeError) as ctx:
-            t.clear_selection()
-        self.assertIn("argument", str(ctx.exception).lower())
+        # Should succeed with no args
+        t.clear_selection()
+        # Should fail with args
+        with self.assertRaises(TypeError):
+            t.clear_selection(42)
 
     def test_render_reset_callable(self):
         """render_reset takes no args and doesn't crash."""

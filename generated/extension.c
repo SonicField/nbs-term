@@ -9,8 +9,6 @@
 #define USE_TCL_STUBS
 #include <tcl.h>
 #if !defined(__APPLE__)
-/* Linux/Windows: remove Tcl 8 inline that dereferences NULL tclStubsPtr.
- * Mac: keep Tcl 9 macro that auto-supplies TCL_STUB_MAGIC arg. */
 #undef Tcl_InitStubs
 #endif
 
@@ -2383,9 +2381,13 @@ static PyObject *phc_config_get(PyObject *self, PyObject *args) {
  * Calls Tk's canvas API directly via the Tcl interpreter.
  */
 
-/* Tcl stubs initialization — required on all platforms.
- * TclFreeObj (used by Tcl_DecrRefCount) is internal to Tcl 9 and only
- * accessible through the stubs table. This is how _tkinter works too. */
+#define USE_TCL_STUBS
+
+/* USE_TCL_STUBS required on all platforms — TclFreeObj (used by
+ * Tcl_DecrRefCount) is internal to Tcl 9, only accessible through
+ * the stubs table. This is how _tkinter works too. */
+
+/* Tcl stubs initialization — call Tcl_InitStubs once per interpreter. */
 static int tcl_stubs_initialized = 0;
 
 static int ensure_tcl_stubs(Tcl_Interp *interp) {
@@ -2568,9 +2570,6 @@ typedef struct {
     int item_count[2][RENDER_MAX_ROWS];  /* count of items per buffer/row */
     int active_buf;  /* 0 or 1 — currently visible buffer */
     int initialized; /* whether render state has been set up */
-    int *sel_items;      /* selection highlight item IDs (dynamic) */
-    int sel_count;       /* number of selection items */
-    int sel_capacity;    /* allocated capacity of sel_items */
 } RenderState;
 
 /* --- Python Terminal object --- */
@@ -2580,10 +2579,12 @@ typedef struct {
     Terminal *term;
     VTParser *parser;
     RenderState render;
+    /* Inline selection state — render_frame uses this to invert colors */
+    int sel_active;
+    int sel_sr, sel_sc, sel_er, sel_ec;  /* ordered selection range */
 } TerminalObject;
 
 static void Terminal_dealloc(TerminalObject *self) {
-    if (self->render.sel_items) free(self->render.sel_items);
     if (self->parser) vt_parser_free(self->parser);
     if (self->term) terminal_free(self->term);
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -2618,6 +2619,7 @@ static PyObject *Terminal_new(PyTypeObject *type, PyObject *args, PyObject *kwds
 
     /* Initialize render state */
     memset(&self->render, 0, sizeof(RenderState));
+    self->sel_active = 0;
 
     
   /* success — ownership transferred to TerminalObject */
@@ -3388,23 +3390,83 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             else if (attrs & 0x04) font_tag = "font_italic";
 
             /* Text width via Tcl font measure (binary-safe) */
+            int char_count = utf8_char_count(text, (int)text_len);
             int text_width = render_font_measure(interp, font_tag, text,
                                                   (int)text_len,
-                                                  (int)text_len * char_width);
+                                                  char_count * char_width);
 
-            /* Background rectangle */
-            render_create_rect(interp, canvas_obj, x, y,
-                              x + text_width, y + char_height,
-                              span_bg, back_tag, rs, back, r);
-
-            /* Text item */
-            render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
-                              span_fg, font_tag, back_tag, rs, back, r);
-
-            /* Cursor overlay — use codepoint count for column tracking,
-             * byte offset for text slicing. Matches Python's len(text). */
-            int char_count = utf8_char_count(text, (int)text_len);
             int span_end = col_offset + char_count;
+
+            /* Selection-aware rendering: split span at selection boundaries */
+            int sel_c0 = -1, sel_c1 = -1;  /* selection range within this row */
+            if (self->sel_active &&
+                r >= self->sel_sr && r <= self->sel_er) {
+                sel_c0 = (r == self->sel_sr) ? self->sel_sc : 0;
+                sel_c1 = (r == self->sel_er) ? self->sel_ec : scr->cols;
+            }
+
+            /* Does selection overlap this span? */
+            int sel_start = -1, sel_end = -1;
+            if (sel_c0 >= 0 && sel_c0 < span_end && sel_c1 > col_offset) {
+                sel_start = (sel_c0 > col_offset) ? sel_c0 - col_offset : 0;
+                sel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : char_count;
+            }
+
+            if (sel_start < 0) {
+                /* No selection overlap — render normally */
+                render_create_rect(interp, canvas_obj, x, y,
+                                  x + text_width, y + char_height,
+                                  span_bg, back_tag, rs, back, r);
+                render_create_text(interp, canvas_obj, x, y, text, (int)text_len,
+                                  span_fg, font_tag, back_tag, rs, back, r);
+            } else {
+                /* Split span into up to 3 parts: before, selected, after */
+                int bx = x;
+
+                /* Part 1: before selection */
+                if (sel_start > 0) {
+                    int b_bytes = utf8_byte_offset(text, (int)text_len, sel_start);
+                    int b_width = render_font_measure(interp, font_tag, text,
+                                                      b_bytes, sel_start * char_width);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + b_width, y + char_height,
+                                      span_bg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y, text, b_bytes,
+                                      span_fg, font_tag, back_tag, rs, back, r);
+                    bx += b_width;
+                }
+
+                /* Part 2: selected (inverted colors) */
+                {
+                    int s_byte_start = utf8_byte_offset(text, (int)text_len, sel_start);
+                    int s_byte_end = utf8_byte_offset(text, (int)text_len, sel_end);
+                    int s_bytes = s_byte_end - s_byte_start;
+                    int s_chars = sel_end - sel_start;
+                    int s_width = render_font_measure(interp, font_tag,
+                                                      text + s_byte_start, s_bytes,
+                                                      s_chars * char_width);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + s_width, y + char_height,
+                                      span_fg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y,
+                                      text + s_byte_start, s_bytes,
+                                      span_bg, font_tag, back_tag, rs, back, r);
+                    bx += s_width;
+                }
+
+                /* Part 3: after selection */
+                if (sel_end < char_count) {
+                    int a_byte_start = utf8_byte_offset(text, (int)text_len, sel_end);
+                    int a_bytes = (int)text_len - a_byte_start;
+                    int a_width = text_width - (bx - x);
+                    render_create_rect(interp, canvas_obj, bx, y,
+                                      bx + a_width, y + char_height,
+                                      span_bg, back_tag, rs, back, r);
+                    render_create_text(interp, canvas_obj, bx, y,
+                                      text + a_byte_start, a_bytes,
+                                      span_fg, font_tag, back_tag, rs, back, r);
+                }
+            }
             if (cursor_visible && r == crow && col_offset <= ccol && ccol < span_end) {
                 int cur_char_idx = ccol - col_offset;
                 int cur_byte_idx = utf8_byte_offset(text, (int)text_len, cur_char_idx);
@@ -3476,78 +3538,39 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
 /* --- render_reset: clear render state (call on resize) --- */
 static PyObject *Terminal_render_reset(TerminalObject *self, PyObject *args) {
     (void)args;
-    if (self->render.sel_items) free(self->render.sel_items);
     memset(&self->render, 0, sizeof(RenderState));
+    self->sel_active = 0;
     Py_RETURN_NONE;
 }
 
-/* Push a selection item ID, growing the dynamic array as needed. */
-static void sel_push(RenderState *rs, int item_id) {
-    if (rs->sel_count >= rs->sel_capacity) {
-        int new_cap = rs->sel_capacity ? rs->sel_capacity * 2 : 256;
-        int *new_items = realloc(rs->sel_items, (size_t)new_cap * sizeof(int));
-        if (!new_items) return;  /* OOM — silently skip */
-        rs->sel_items = new_items;
-        rs->sel_capacity = new_cap;
-    }
-    rs->sel_items[rs->sel_count++] = item_id;
-}
-
-/* --- clear_selection: delete selection highlight items --- */
+/* --- clear_selection: clear selection state, mark rows dirty for re-render --- */
 static PyObject *Terminal_clear_selection(TerminalObject *self, PyObject *args) {
-    unsigned long long interp_addr;
-    const char *canvas_path;
-    if (!PyArg_ParseTuple(args, "Ks", &interp_addr, &canvas_path))
-        return NULL;
-
-    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    if (!interp) Py_RETURN_NONE;
-
-    RenderState *rs = &self->render;
-    Tcl_Obj *canvas_obj = Tcl_NewStringObj(canvas_path, -1);
-    Tcl_IncrRefCount(canvas_obj);
-
-    for (int i = 0; i < rs->sel_count; i++) {
-        render_delete(interp, canvas_obj, rs->sel_items[i]);
+    (void)args;
+    if (self->sel_active) {
+        ScreenBuffer *scr = self->term->active;
+        for (int r = self->sel_sr; r <= self->sel_er && r < scr->rows; r++) {
+            scr->dirty[r] = 1;
+        }
+        self->sel_active = 0;
     }
-    rs->sel_count = 0;
-
-    Tcl_DecrRefCount(canvas_obj);
     Py_RETURN_NONE;
 }
 
-/* --- draw_selection: draw selection highlight (inverted colors) ---
- * Args: interp_addr (K), canvas_path (s),
- *       start_row (i), start_col (i), end_row (i), end_col (i),
- *       fg (s), bg (s), char_width (i), char_height (i), padding (i) */
+/* --- draw_selection: set selection range, mark rows dirty for re-render ---
+ * Args: start_row (i), start_col (i), end_row (i), end_col (i) */
 static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
-    unsigned long long interp_addr;
-    const char *canvas_path;
     int sr, sc, er, ec;
-    const char *fg_str, *bg_str;
-    int char_width, char_height, padding;
-
-    if (!PyArg_ParseTuple(args, "Ksiiiissiii", &interp_addr, &canvas_path,
-                          &sr, &sc, &er, &ec,
-                          &fg_str, &bg_str,
-                          &char_width, &char_height, &padding))
+    if (!PyArg_ParseTuple(args, "iiii", &sr, &sc, &er, &ec))
         return NULL;
-
-    Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
-    phc_require(interp != NULL, "NULL interpreter in draw_selection");
-    if (!ensure_tcl_stubs(interp)) return NULL;
 
     ScreenBuffer *scr = self->term->active;
-    RenderState *rs = &self->render;
 
-    /* Clear existing selection */
-    Tcl_Obj *canvas_obj = Tcl_NewStringObj(canvas_path, -1);
-    Tcl_IncrRefCount(canvas_obj);
-
-    for (int i = 0; i < rs->sel_count; i++) {
-        render_delete(interp, canvas_obj, rs->sel_items[i]);
+    /* Mark old selection rows dirty */
+    if (self->sel_active) {
+        for (int r = self->sel_sr; r <= self->sel_er && r < scr->rows; r++) {
+            scr->dirty[r] = 1;
+        }
     }
-    rs->sel_count = 0;
 
     /* Order endpoints */
     if (sr > er || (sr == er && sc > ec)) {
@@ -3558,76 +3581,19 @@ static PyObject *Terminal_draw_selection(TerminalObject *self, PyObject *args) {
 
     /* Same point = no selection */
     if (sr == er && sc == ec) {
-        Tcl_DecrRefCount(canvas_obj);
+        self->sel_active = 0;
         Py_RETURN_NONE;
     }
 
+    /* Store new selection and mark new rows dirty */
+    self->sel_active = 1;
+    self->sel_sr = sr; self->sel_sc = sc;
+    self->sel_er = er; self->sel_ec = ec;
+
     for (int r = sr; r <= er && r < scr->rows; r++) {
-        int c0 = (r == sr) ? sc : 0;
-        int c1 = (r == er) ? ec : scr->cols - 1;
-        int x0 = padding + c0 * char_width;
-        int y0 = padding + r * char_height;
-        int x1 = padding + (c1 + 1) * char_width;
-        int y1 = y0 + char_height;
-
-        /* Selection background rectangle (fg color = inverted) */
-        {
-            Tcl_Obj *objv[11];
-            objv[0] = canvas_obj;
-            objv[1] = Tcl_NewStringObj("create", -1);
-            objv[2] = Tcl_NewStringObj("rectangle", -1);
-            objv[3] = Tcl_NewIntObj(x0);
-            objv[4] = Tcl_NewIntObj(y0);
-            objv[5] = Tcl_NewIntObj(x1);
-            objv[6] = Tcl_NewIntObj(y1);
-            objv[7] = Tcl_NewStringObj("-fill", -1);
-            objv[8] = Tcl_NewStringObj(fg_str, -1);
-            objv[9] = Tcl_NewStringObj("-outline", -1);
-            objv[10] = Tcl_NewStringObj("", -1);
-            for (int i = 0; i < 11; i++) Tcl_IncrRefCount(objv[i]);
-            if (Tcl_EvalObjv(interp, 11, objv, 0) == TCL_OK) {
-                int item_id = 0;
-                Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &item_id);
-                sel_push(rs, item_id);
-            }
-            for (int i = 0; i < 11; i++) Tcl_DecrRefCount(objv[i]);
-        }
-
-        /* Per-cell text in inverted colors (bg color as text fill) */
-        for (int c = c0; c <= c1 && c < scr->cols; c++) {
-            const Cell *cell = screen_cell_const(scr, r, c);
-            if (cell->codepoint > 0) {
-                char ch[8];
-                int clen = render_utf8_encode(cell->codepoint, ch, sizeof(ch) - 1);
-                ch[clen] = '\0';
-                int tx = padding + c * char_width;
-
-                Tcl_Obj *tv[13];
-                tv[0] = canvas_obj;
-                tv[1] = Tcl_NewStringObj("create", -1);
-                tv[2] = Tcl_NewStringObj("text", -1);
-                tv[3] = Tcl_NewIntObj(tx);
-                tv[4] = Tcl_NewIntObj(y0);
-                tv[5] = Tcl_NewStringObj("-text", -1);
-                tv[6] = Tcl_NewStringObj(ch, clen);
-                tv[7] = Tcl_NewStringObj("-fill", -1);
-                tv[8] = Tcl_NewStringObj(bg_str, -1);
-                tv[9] = Tcl_NewStringObj("-font", -1);
-                tv[10] = Tcl_NewStringObj("font_normal", -1);
-                tv[11] = Tcl_NewStringObj("-anchor", -1);
-                tv[12] = Tcl_NewStringObj("nw", -1);
-                for (int i = 0; i < 13; i++) Tcl_IncrRefCount(tv[i]);
-                if (Tcl_EvalObjv(interp, 13, tv, 0) == TCL_OK) {
-                    int item_id = 0;
-                    Tcl_GetIntFromObj(interp, Tcl_GetObjResult(interp), &item_id);
-                    sel_push(rs, item_id);
-                }
-                for (int i = 0; i < 13; i++) Tcl_DecrRefCount(tv[i]);
-            }
-        }
+        scr->dirty[r] = 1;
     }
 
-    Tcl_DecrRefCount(canvas_obj);
     Py_RETURN_NONE;
 }
 
@@ -3667,9 +3633,9 @@ static PyMethodDef Terminal_methods[] = {
     {"render_reset", (PyCFunction)Terminal_render_reset, METH_NOARGS,
      "Reset render state (call on resize)."},
     {"draw_selection", (PyCFunction)Terminal_draw_selection, METH_VARARGS,
-     "Draw selection highlight via Tcl_EvalObjv."},
-    {"clear_selection", (PyCFunction)Terminal_clear_selection, METH_VARARGS,
-     "Clear selection highlight items."},
+     "Set selection range and mark rows dirty for re-render."},
+    {"clear_selection", (PyCFunction)Terminal_clear_selection, METH_NOARGS,
+     "Clear selection and mark rows dirty for re-render."},
     {NULL, NULL, 0, NULL}
 };
 
