@@ -885,6 +885,9 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 sel_end = (sel_c1 < span_end) ? sel_c1 - col_offset : char_count;
             }
 
+            phc_check(sel_start < 0 || sel_start < sel_end,
+                      "selection start must be before end");
+
             if (sel_start < 0) {
                 /* No selection overlap — render normally */
                 render_create_rect(interp, canvas_obj, x, y,
@@ -899,8 +902,11 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 /* Part 1: before selection */
                 if (sel_start > 0) {
                     int b_bytes = utf8_byte_offset(text, (int)text_len, sel_start);
+                    phc_check(b_bytes >= 0 && b_bytes <= (int)text_len,
+                              "before-selection byte offset out of bounds");
                     int b_width = render_font_measure(interp, font_tag, text,
                                                       b_bytes, sel_start * char_width);
+                    phc_check(b_width >= 0, "before-selection width must be non-negative");
                     render_create_rect(interp, canvas_obj, bx, y,
                                       bx + b_width, y + char_height,
                                       span_bg, back_tag, rs, back, r);
@@ -913,11 +919,17 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 {
                     int s_byte_start = utf8_byte_offset(text, (int)text_len, sel_start);
                     int s_byte_end = utf8_byte_offset(text, (int)text_len, sel_end);
+                    phc_check(s_byte_start >= 0 && s_byte_start <= (int)text_len,
+                              "selection byte start out of bounds");
+                    phc_check(s_byte_end >= 0 && s_byte_end <= (int)text_len,
+                              "selection byte end out of bounds");
                     int s_bytes = s_byte_end - s_byte_start;
+                    phc_check(s_bytes >= 0, "selection byte length must be non-negative");
                     int s_chars = sel_end - sel_start;
                     int s_width = render_font_measure(interp, font_tag,
                                                       text + s_byte_start, s_bytes,
                                                       s_chars * char_width);
+                    phc_check(s_width >= 0, "selection width must be non-negative");
                     render_create_rect(interp, canvas_obj, bx, y,
                                       bx + s_width, y + char_height,
                                       span_fg, back_tag, rs, back, r);
@@ -930,8 +942,12 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
                 /* Part 3: after selection */
                 if (sel_end < char_count) {
                     int a_byte_start = utf8_byte_offset(text, (int)text_len, sel_end);
+                    phc_check(a_byte_start >= 0 && a_byte_start <= (int)text_len,
+                              "after-selection byte offset out of bounds");
                     int a_bytes = (int)text_len - a_byte_start;
+                    phc_check(a_bytes >= 0, "after-selection byte length must be non-negative");
                     int a_width = text_width - (bx - x);
+                    phc_check(a_width >= 0, "after-selection width must be non-negative");
                     render_create_rect(interp, canvas_obj, bx, y,
                                       bx + a_width, y + char_height,
                                       span_bg, back_tag, rs, back, r);
