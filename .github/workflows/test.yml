@@ -39,19 +39,24 @@ jobs:
           submodules: true
 
       - name: Install dependencies
-        run: brew install python@3.14 tcl-tk
+        run: brew install tcl-tk
 
-      - name: Create venv and build
-        run: |
-          PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
-          "$PYTHON" -m venv .venv
-          source .venv/bin/activate
-          pip install -e .
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build C extension
+        run: pip install -e .
 
       - name: Run tests
-        run: |
-          source .venv/bin/activate
-          python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Build phc from submodule
+        run: make phc
+
+      - name: Verify generated/extension.c is current
+        run: make verify-regenerate
 
   test-windows:
     runs-on: windows-latest
