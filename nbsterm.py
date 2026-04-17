@@ -245,6 +245,10 @@ class TerminalWidget:
         self._render_scheduled = False
         if self._pending_data:
             self._cursor_visible = True
+            # Reset blink timer so cursor stays visible during active output
+            if self._blink_id is not None:
+                self.parent.after_cancel(self._blink_id)
+                self._blink_id = None
             self._auto_scroll_to_bottom()
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
