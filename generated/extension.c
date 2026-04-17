@@ -802,6 +802,7 @@ typedef struct {
     int charset_g0;             /* 0 = ASCII (B), 1 = DEC special graphics (0) */
     int charset_g1;             /* same */
     int charset_active;         /* 0 = G0, 1 = G1 (selected via SO/SI) */
+    int scroll_offset;          /* 0 = live (bottom), >0 = lines scrolled back */
 } Terminal;
 
 static Terminal *terminal_new(int rows, int cols) {
@@ -992,7 +993,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 718
+#line 719
 
 /* --- UTF-8 decoder state --- */
 
@@ -1581,7 +1582,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1311
+#line 1312
 
     return VTState_mk_Ground();
 }
@@ -1646,7 +1647,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1337
+#line 1338
 
 /* --- Input event types --- */
 
@@ -1739,7 +1740,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1346
+#line 1347
 
 /* --- UTF-8 encoding --- */
 
@@ -1892,7 +1893,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1433
+#line 1434
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -2026,7 +2027,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1565
+#line 1566
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2051,6 +2052,84 @@ static int render_utf8_encode(uint32_t cp, char *buf, int bufsize) {
         return 4;
     }
     return 0;
+}
+
+/* Build a Python list of spans for a single screen row. */
+static PyObject *render_screen_row(const ScreenBuffer *scr, int r,
+                                   const char *default_fg, const char *default_bg) {
+    PyObject *spans = PyList_New(0);
+    if (!spans) return NULL;
+
+    char text[4096];
+    int text_len = 0;
+    int span_cols = 0;
+    uint8_t col_widths[4096];
+    int col_widths_len = 0;
+    Color span_fg = Color_mk_Default();
+    Color span_bg = Color_mk_Default();
+    uint16_t span_attrs = 0;
+    int span_started = 0;
+
+    for (int c = 0; c < scr->cols; c++) {
+        const Cell *cell = screen_cell_const(scr, r, c);
+        if (cell->wide_cont) continue;
+
+        int new_span = 0;
+        if (!span_started) {
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+            span_started = 1;
+        } else if (cell->attrs != span_attrs ||
+                   !color_equal(cell->fg, span_fg) ||
+                   !color_equal(cell->bg, span_bg)) {
+            new_span = 1;
+        }
+
+        if (new_span && text_len > 0) {
+            char fg_buf[16], bg_buf[16];
+            color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
+            color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
+            if (!span) { Py_DECREF(spans); return NULL; }
+            if (PyList_Append(spans, span) < 0) {
+                Py_DECREF(span); Py_DECREF(spans); return NULL;
+            }
+            Py_DECREF(span);
+            text_len = 0;
+            span_cols = 0;
+            col_widths_len = 0;
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+        }
+
+        uint32_t cp = cell->codepoint;
+        if (cp == 0) cp = ' ';
+        int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
+        text_len += n;
+        int cw = cell->wide ? 2 : 1;
+        span_cols += cw;
+        if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
+    }
+
+    if (text_len > 0) {
+        char fg_buf[16], bg_buf[16];
+        color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
+        color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
+        PyObject *span = Py_BuildValue("(s#ssiy#)",
+            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+            col_widths, (Py_ssize_t)col_widths_len);
+        if (!span) { Py_DECREF(spans); return NULL; }
+        if (PyList_Append(spans, span) < 0) {
+            Py_DECREF(span); Py_DECREF(spans); return NULL;
+        }
+        Py_DECREF(span);
+    }
+
+    return spans;
 }
 
 /* Build a Python list of render commands for the given screen.
@@ -2287,7 +2366,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1808
+#line 1887
 
 /* Config structs — mirrors Python dataclasses */
 
@@ -2930,6 +3009,85 @@ static PyObject *Terminal_get_scrollback_count(TerminalObject *self, PyObject *a
     return PyLong_FromLong(sb ? sb->count : 0);
 }
 
+/* --- Internal: get scrollback line as span list (for render_frame scrollback) --- */
+static PyObject *Terminal_get_scrollback_line_internal(TerminalObject *self, int index) {
+    Scrollback *sb = self->term->scrollback;
+    if (!sb) return PyList_New(0);
+    const Cell *line = scrollback_get(sb, index);
+    if (!line) return PyList_New(0);
+
+    PyObject *spans = PyList_New(0);
+    if (!spans) return NULL;
+
+    char text[4096];
+    int text_len = 0;
+    uint8_t col_widths[4096];
+    int col_widths_len = 0;
+    Color span_fg = Color_mk_Default();
+    Color span_bg = Color_mk_Default();
+    uint16_t span_attrs = 0;
+    int span_started = 0;
+
+    for (int c = 0; c < sb->cols; c++) {
+        const Cell *cell = &line[c];
+        if (cell->wide_cont) continue;
+
+        int new_span = 0;
+        if (!span_started) {
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+            span_started = 1;
+        } else if (cell->attrs != span_attrs ||
+                   !color_equal(cell->fg, span_fg) ||
+                   !color_equal(cell->bg, span_bg)) {
+            new_span = 1;
+        }
+
+        if (new_span && text_len > 0) {
+            char fg_buf[16], bg_buf[16];
+            color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
+            color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
+            if (!span) { Py_DECREF(spans); return NULL; }
+            if (PyList_Append(spans, span) < 0) {
+                Py_DECREF(span); Py_DECREF(spans); return NULL;
+            }
+            Py_DECREF(span);
+            text_len = 0;
+            col_widths_len = 0;
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+        }
+
+        uint32_t cp = cell->codepoint;
+        if (cp == 0) cp = ' ';
+        int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
+        text_len += n;
+        int cw = cell->wide ? 2 : 1;
+        if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
+    }
+
+    if (text_len > 0) {
+        char fg_buf[16], bg_buf[16];
+        color_to_tk(span_fg, "#ffffff", fg_buf, sizeof(fg_buf));
+        color_to_tk(span_bg, "#000000", bg_buf, sizeof(bg_buf));
+        PyObject *span = Py_BuildValue("(s#ssiy#)",
+            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+            col_widths, (Py_ssize_t)col_widths_len);
+        if (!span) { Py_DECREF(spans); return NULL; }
+        if (PyList_Append(spans, span) < 0) {
+            Py_DECREF(span); Py_DECREF(spans); return NULL;
+        }
+        Py_DECREF(span);
+    }
+
+    return spans;
+}
+
 /* --- get_scrollback_line(index) -> list of (codepoint, fg, bg, attrs) or None --- */
 
 static PyObject *Terminal_get_scrollback_line(TerminalObject *self, PyObject *args) {
@@ -3367,7 +3525,41 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
     }
     if (!any_dirty) Py_RETURN_NONE;
 
-    PyObject *screen = render_screen(scr, fg_str, bg_str);
+    /* Build screen content: if scrolled back, mix scrollback + screen rows */
+    int scroll_off = self->term->scroll_offset;
+    PyObject *screen;
+    if (scroll_off > 0 && !self->term->using_alt) {
+        /* Scrolled back: build composite view */
+        Scrollback *sb = self->term->scrollback;
+        int sb_count = sb->count;
+        screen = PyList_New(rows);
+        if (!screen) return NULL;
+        for (int r = 0; r < rows; r++) {
+            int sb_line_idx = sb_count - scroll_off + r;
+            if (sb_line_idx >= 0 && sb_line_idx < sb_count) {
+                /* This row comes from scrollback */
+                PyObject *sb_spans = Terminal_get_scrollback_line_internal(
+                    self, sb_line_idx);
+                if (!sb_spans) { Py_DECREF(screen); return NULL; }
+                PyList_SET_ITEM(screen, r, sb_spans);
+            } else if (sb_line_idx >= sb_count) {
+                /* This row comes from the screen buffer */
+                int screen_row = sb_line_idx - sb_count;
+                if (screen_row >= 0 && screen_row < scr->rows) {
+                    PyObject *row_spans = render_screen_row(
+                        scr, screen_row, fg_str, bg_str);
+                    if (!row_spans) { Py_DECREF(screen); return NULL; }
+                    PyList_SET_ITEM(screen, r, row_spans);
+                } else {
+                    PyList_SET_ITEM(screen, r, PyList_New(0));
+                }
+            } else {
+                PyList_SET_ITEM(screen, r, PyList_New(0));
+            }
+        }
+    } else {
+        screen = render_screen(scr, fg_str, bg_str);
+    }
     if (!screen) return NULL;
 
     int front = rs->active_buf;
@@ -3656,6 +3848,44 @@ static PyObject *Terminal_render_reset(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- scroll_offset API: get/set how many lines the view is scrolled back --- */
+static PyObject *Terminal_get_scroll_offset(TerminalObject *self, PyObject *args) {
+    (void)args;
+    return PyLong_FromLong(self->term->scroll_offset);
+}
+
+static PyObject *Terminal_set_scroll_offset(TerminalObject *self, PyObject *args) {
+    int offset;
+    if (!PyArg_ParseTuple(args, "i", &offset))
+        return NULL;
+    int max_offset = self->term->scrollback->count;
+    if (offset < 0) offset = 0;
+    if (offset > max_offset) offset = max_offset;
+    if (offset != self->term->scroll_offset) {
+        self->term->scroll_offset = offset;
+        /* Mark all rows dirty to force full re-render */
+        memset(self->term->active->dirty, 1,
+               (size_t)self->term->active->rows);
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *Terminal_scroll_lines(TerminalObject *self, PyObject *args) {
+    int delta;  /* positive = scroll up (into history), negative = scroll down */
+    if (!PyArg_ParseTuple(args, "i", &delta))
+        return NULL;
+    int new_offset = self->term->scroll_offset + delta;
+    int max_offset = self->term->scrollback->count;
+    if (new_offset < 0) new_offset = 0;
+    if (new_offset > max_offset) new_offset = max_offset;
+    if (new_offset != self->term->scroll_offset) {
+        self->term->scroll_offset = new_offset;
+        memset(self->term->active->dirty, 1,
+               (size_t)self->term->active->rows);
+    }
+    return PyLong_FromLong(self->term->scroll_offset);
+}
+
 /* --- clear_selection: clear selection state, mark rows dirty for re-render --- */
 static PyObject *Terminal_clear_selection(TerminalObject *self, PyObject *args) {
     (void)args;
@@ -3749,6 +3979,12 @@ static PyMethodDef Terminal_methods[] = {
      "Set selection range and mark rows dirty for re-render."},
     {"clear_selection", (PyCFunction)Terminal_clear_selection, METH_NOARGS,
      "Clear selection and mark rows dirty for re-render."},
+    {"get_scroll_offset", (PyCFunction)Terminal_get_scroll_offset, METH_NOARGS,
+     "Get current scroll offset (0 = live, >0 = lines scrolled back)."},
+    {"set_scroll_offset", (PyCFunction)Terminal_set_scroll_offset, METH_VARARGS,
+     "Set scroll offset (clamped to scrollback count)."},
+    {"scroll_lines", (PyCFunction)Terminal_scroll_lines, METH_VARARGS,
+     "Scroll by delta lines (positive=up/history, negative=down/live). Returns new offset."},
     {NULL, NULL, 0, NULL}
 };
 

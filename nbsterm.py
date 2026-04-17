@@ -125,6 +125,13 @@ class TerminalWidget:
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
 
+        # Scrollback bindings
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)  # Windows/macOS
+        self.canvas.bind("<Button-4>", self._on_scroll_up)      # Linux scroll up
+        self.canvas.bind("<Button-5>", self._on_scroll_down)    # Linux scroll down
+        parent.bind("<Control-Shift-Up>", self._on_key_scroll_up)
+        parent.bind("<Control-Shift-Down>", self._on_key_scroll_down)
+
         # Callbacks
         self._write_callback = None  # called with bytes to send to SSH
 
@@ -173,6 +180,41 @@ class TerminalWidget:
         self.term.draw_selection(start[0], start[1], end[0], end[1])
         self._render()
 
+    # --- Scrollback ---
+
+    def _on_mouse_wheel(self, event):
+        """Handle mouse wheel (Windows/macOS: event.delta)."""
+        if event.delta > 0:
+            self.term.scroll_lines(3)  # scroll up into history
+        elif event.delta < 0:
+            self.term.scroll_lines(-3)  # scroll down toward live
+        self._render()
+
+    def _on_scroll_up(self, event):
+        """Handle Linux scroll up (Button-4)."""
+        self.term.scroll_lines(3)
+        self._render()
+
+    def _on_scroll_down(self, event):
+        """Handle Linux scroll down (Button-5)."""
+        self.term.scroll_lines(-3)
+        self._render()
+
+    def _on_key_scroll_up(self, event):
+        """Ctrl+Shift+Up: scroll up one line."""
+        self.term.scroll_lines(1)
+        self._render()
+
+    def _on_key_scroll_down(self, event):
+        """Ctrl+Shift+Down: scroll down one line."""
+        self.term.scroll_lines(-1)
+        self._render()
+
+    def _auto_scroll_to_bottom(self):
+        """Reset scroll offset to live output."""
+        if self.term.get_scroll_offset() > 0:
+            self.term.set_scroll_offset(0)
+
     def get_selected_text(self):
         """Return the text in the current selection."""
         start, end = self._sel_range()
@@ -203,6 +245,7 @@ class TerminalWidget:
         self._render_scheduled = False
         if self._pending_data:
             self._cursor_visible = True
+            self._auto_scroll_to_bottom()
             self.term.feed(bytes(self._pending_data))
             self._pending_data.clear()
             self._render()
@@ -251,6 +294,7 @@ class TerminalWidget:
             event.keysym, event.state, char_code, is_mac)
 
         if data:
+            self._auto_scroll_to_bottom()
             self._write_callback(data)
 
     def handle_resize(self, event):

@@ -154,6 +154,48 @@ class TestRenderFrameContract(unittest.TestCase):
         self.assertEqual(result, "2")
 
 
+class TestScrollOffset(unittest.TestCase):
+    def test_scroll_offset_default(self):
+        """Scroll offset starts at 0 (live)."""
+        t = _nbsterm.Terminal(24, 80)
+        self.assertEqual(t.get_scroll_offset(), 0)
+
+    def test_scroll_lines_empty(self):
+        """Scrolling with no scrollback stays at 0."""
+        t = _nbsterm.Terminal(24, 80)
+        result = t.scroll_lines(5)
+        self.assertEqual(result, 0)
+
+    def test_scroll_lines_with_history(self):
+        """Scrolling works after generating scrollback."""
+        t = _nbsterm.Terminal(5, 80)
+        # Generate scrollback by feeding enough lines
+        for i in range(20):
+            t.feed(f"line {i}\r\n".encode())
+        count = t.get_scrollback_count()
+        self.assertGreater(count, 0)
+        # Scroll up
+        offset = t.scroll_lines(3)
+        self.assertEqual(offset, 3)
+        self.assertEqual(t.get_scroll_offset(), 3)
+        # Scroll back down
+        offset = t.scroll_lines(-3)
+        self.assertEqual(offset, 0)
+
+    def test_scroll_offset_clamped(self):
+        """Scroll offset can't go below 0 or above scrollback count."""
+        t = _nbsterm.Terminal(5, 80)
+        for i in range(10):
+            t.feed(f"line {i}\r\n".encode())
+        count = t.get_scrollback_count()
+        # Can't scroll past history
+        t.set_scroll_offset(count + 100)
+        self.assertEqual(t.get_scroll_offset(), count)
+        # Can't scroll below 0
+        t.set_scroll_offset(-5)
+        self.assertEqual(t.get_scroll_offset(), 0)
+
+
 class TestInputEncoding(unittest.TestCase):
     def test_encode_key_ascii(self):
         t = _nbsterm.Terminal(24, 80)

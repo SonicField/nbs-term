@@ -79,6 +79,84 @@ static int render_utf8_encode(uint32_t cp, char *buf, int bufsize) {
     return 0;
 }
 
+/* Build a Python list of spans for a single screen row. */
+static PyObject *render_screen_row(const ScreenBuffer *scr, int r,
+                                   const char *default_fg, const char *default_bg) {
+    PyObject *spans = PyList_New(0);
+    if (!spans) return NULL;
+
+    char text[4096];
+    int text_len = 0;
+    int span_cols = 0;
+    uint8_t col_widths[4096];
+    int col_widths_len = 0;
+    Color span_fg = Color_mk_Default();
+    Color span_bg = Color_mk_Default();
+    uint16_t span_attrs = 0;
+    int span_started = 0;
+
+    for (int c = 0; c < scr->cols; c++) {
+        const Cell *cell = screen_cell_const(scr, r, c);
+        if (cell->wide_cont) continue;
+
+        int new_span = 0;
+        if (!span_started) {
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+            span_started = 1;
+        } else if (cell->attrs != span_attrs ||
+                   !color_equal(cell->fg, span_fg) ||
+                   !color_equal(cell->bg, span_bg)) {
+            new_span = 1;
+        }
+
+        if (new_span && text_len > 0) {
+            char fg_buf[16], bg_buf[16];
+            color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
+            color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
+            PyObject *span = Py_BuildValue("(s#ssiy#)",
+                text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+                col_widths, (Py_ssize_t)col_widths_len);
+            if (!span) { Py_DECREF(spans); return NULL; }
+            if (PyList_Append(spans, span) < 0) {
+                Py_DECREF(span); Py_DECREF(spans); return NULL;
+            }
+            Py_DECREF(span);
+            text_len = 0;
+            span_cols = 0;
+            col_widths_len = 0;
+            span_fg = cell->fg;
+            span_bg = cell->bg;
+            span_attrs = cell->attrs;
+        }
+
+        uint32_t cp = cell->codepoint;
+        if (cp == 0) cp = ' ';
+        int n = render_utf8_encode(cp, text + text_len, 4096 - text_len);
+        text_len += n;
+        int cw = cell->wide ? 2 : 1;
+        span_cols += cw;
+        if (col_widths_len < 4096) col_widths[col_widths_len++] = (uint8_t)cw;
+    }
+
+    if (text_len > 0) {
+        char fg_buf[16], bg_buf[16];
+        color_to_tk(span_fg, default_fg, fg_buf, sizeof(fg_buf));
+        color_to_tk(span_bg, default_bg, bg_buf, sizeof(bg_buf));
+        PyObject *span = Py_BuildValue("(s#ssiy#)",
+            text, (Py_ssize_t)text_len, fg_buf, bg_buf, (int)span_attrs,
+            col_widths, (Py_ssize_t)col_widths_len);
+        if (!span) { Py_DECREF(spans); return NULL; }
+        if (PyList_Append(spans, span) < 0) {
+            Py_DECREF(span); Py_DECREF(spans); return NULL;
+        }
+        Py_DECREF(span);
+    }
+
+    return spans;
+}
+
 /* Build a Python list of render commands for the given screen.
  * Returns list of (row, spans) where spans is a list of (text, fg, bg, attrs).
  * Each span has uniform attributes. Per-cell coloring is preserved. */

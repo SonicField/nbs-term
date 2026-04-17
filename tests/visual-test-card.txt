@@ -1,0 +1,54 @@
+Visual Test Card — nbs-term rendering verification
+===================================================
+
+1. CJK Wide Characters (should be exactly 2 columns each)
+----------------------------------------------------------
+Chinese:  你好世界 (nǐ hǎo shì jiè)
+Japanese: カタカナ ひらがな 漢字
+Korean:   한글 테스트
+
+2. CJK with ASCII alignment test
+---------------------------------
+ABCD你好EFGH  (A-D=4cols, 你好=4cols, E-H=4cols = 12 total)
+123456789012  (ruler: 12 columns)
+
+3. Emoji (width varies by terminal)
+------------------------------------
+Single: 🎉 🔥 🚀 ⭐ 💡 🎯
+Faces:  😀 😎 🤔 😱 🥳 😴
+Flags:  🇺🇸 🇬🇧 🇯🇵 🇩🇪
+
+4. Box Drawing and Symbols
+---------------------------
+┌──────────┐
+│  Box     │
+│  Drawing │
+└──────────┘
+Arrows: ← → ↑ ↓ ↔ ↕
+Math:   ∑ ∏ √ ∞ ≠ ≤ ≥
+
+5. RTL Text (Hebrew, Arabic)
+------------------------------
+Hebrew: שלום עולם
+Arabic: مرحبا بالعالم
+Mixed:  Hello שלום World
+
+6. Combining Characters
+-------------------------
+Accented: café résumé naïve
+Combining: a̐ ö ü é
+
+7. Fullwidth Latin (should be 2 columns each)
+----------------------------------------------
+ＡＢＣＤ vs ABCD
+
+8. Currency and Special
+------------------------
+Currency: $ € £ ¥ ₿ ₹
+Special:  © ® ™ § ¶ †
+
+9. Bold and Italic (via ANSI escapes — view in terminal)
+---------------------------------------------------------
+To test bold/italic, run in nbs-term:
+  printf '\e[1mBold text\e[0m \e[3mItalic text\e[0m \e[1;3mBold+Italic\e[0m\n'
+  printf '\e[1m你好\e[0m \e[3m世界\e[0m \e[1;3mカタカナ\e[0m\n'
