@@ -879,12 +879,20 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             int char_count = utf8_char_count(text, (int)text_len);
             /* Compute column count from per-char widths */
             int col_count = 0;
-            for (Py_ssize_t ci = 0; ci < col_widths_len; ci++)
+            int has_wide = 0;
+            for (Py_ssize_t ci = 0; ci < col_widths_len; ci++) {
                 col_count += col_widths_data[ci];
+                if (col_widths_data[ci] > 1) has_wide = 1;
+            }
             if (col_count == 0) col_count = char_count;  /* fallback */
-            int text_width = render_font_measure(interp, font_tag, text,
-                                                  (int)text_len,
-                                                  col_count * char_width);
+            /* For spans with wide chars, force grid-based width to avoid
+             * font metric mismatch (e.g. CoreText reporting ~1.75x instead
+             * of 2x for CJK glyphs). Normal spans use font measurement. */
+            int text_width = has_wide
+                ? col_count * char_width
+                : render_font_measure(interp, font_tag, text,
+                                      (int)text_len,
+                                      col_count * char_width);
 
             int span_end = col_offset + col_count;
 
