@@ -542,15 +542,15 @@ static PyObject *Terminal_extract_selected_text(TerminalObject *self, PyObject *
         tmp = sc; sc = ec; ec = tmp;
     }
 
-    /* Same point = empty selection */
-    if (sr == er && sc == ec)
+    /* Same point = empty selection (ec is exclusive) */
+    if (sr == er && sc >= ec)
         return PyUnicode_FromString("");
 
     /* Clamp to screen bounds */
     if (sr < 0) sr = 0;
     if (er >= scr->rows) er = scr->rows - 1;
     if (sc < 0) sc = 0;
-    if (ec >= scr->cols) ec = scr->cols - 1;
+    if (ec > scr->cols) ec = scr->cols;
 
     /* Build result string: worst case 4 bytes per char (UTF-8) + newlines */
     int num_rows = er - sr + 1;
@@ -562,7 +562,8 @@ static PyObject *Terminal_extract_selected_text(TerminalObject *self, PyObject *
 
     for (int r = sr; r <= er; r++) {
         int c0 = (r == sr) ? sc : 0;
-        int c1 = (r == er) ? ec : scr->cols - 1;
+        /* ec is exclusive: on last row, extract up to ec-1; on other rows, full width */
+        int c1 = (r == er) ? ec - 1 : scr->cols - 1;
 
         /* Track last non-space position for rstrip */
         int last_nonspace = -1;

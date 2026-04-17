@@ -486,7 +486,8 @@ class TestCExtractSelectedText(unittest.TestCase):
     def test_single_word(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Hello World")
-        self.assertEqual(t.extract_selected_text(0, 0, 0, 4), "Hello")
+        # ec is exclusive: [0, 5) = "Hello"
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 5), "Hello")
 
     def test_empty_same_point(self):
         t = _nbsterm.Terminal(24, 80)
@@ -496,40 +497,60 @@ class TestCExtractSelectedText(unittest.TestCase):
     def test_multiline(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Line 1\r\nLine 2\r\nLine 3")
-        self.assertEqual(t.extract_selected_text(0, 0, 2, 5), "Line 1\nLine 2\nLine 3")
+        # ec exclusive: col 6 on row 2 = "Line 3" (6 chars)
+        self.assertEqual(t.extract_selected_text(0, 0, 2, 6), "Line 1\nLine 2\nLine 3")
 
     def test_partial_line(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Hello World")
-        self.assertEqual(t.extract_selected_text(0, 6, 0, 10), "World")
+        # ec exclusive: [6, 11) = "World"
+        self.assertEqual(t.extract_selected_text(0, 6, 0, 11), "World")
 
     def test_trailing_whitespace_stripped(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Hi")
-        self.assertEqual(t.extract_selected_text(0, 0, 0, 10), "Hi")
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 11), "Hi")
 
     def test_empty_cells(self):
         t = _nbsterm.Terminal(24, 80)
-        self.assertEqual(t.extract_selected_text(5, 0, 5, 9), "")
+        self.assertEqual(t.extract_selected_text(5, 0, 5, 10), "")
 
     def test_with_sgr_colors(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"\x1b[31mRed\x1b[32mGreen\x1b[0m")
-        self.assertEqual(t.extract_selected_text(0, 0, 0, 7), "RedGreen")
+        # ec exclusive: [0, 8) = "RedGreen" (3+5 chars)
+        self.assertEqual(t.extract_selected_text(0, 0, 0, 8), "RedGreen")
 
     def test_backward_selection(self):
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Hello")
-        self.assertEqual(t.extract_selected_text(0, 4, 0, 0), "Hello")
+        # Backward: (0,5) to (0,0) → swapped to [0, 5) = "Hello"
+        self.assertEqual(t.extract_selected_text(0, 5, 0, 0), "Hello")
 
     def test_rstrip_preserves_spaces(self):
         """C rstrip preserves trailing cp=32 spaces, strips only cp=0 NULs.
         Matches iTerm2/GNOME Terminal convention."""
         t = _nbsterm.Terminal(24, 80)
         t.feed(b"Hi   ")  # explicit spaces after text
-        # Select range covering text + trailing spaces (not NUL cells)
-        result = t.extract_selected_text(0, 0, 0, 4)
+        # ec exclusive: [0, 5) = "Hi   " (2 chars + 3 spaces)
+        result = t.extract_selected_text(0, 0, 0, 5)
         self.assertEqual(result, "Hi   ")
+
+    def test_draw_and_extract_agree(self):
+        """draw_selection and extract_selected_text use the same ec convention.
+        What is highlighted must equal what is copied."""
+        t = _nbsterm.Terminal(24, 80)
+        t.feed(b"Hello World Test")
+        # Select "World" — cols 6 through 10 (ec=11, exclusive)
+        sr, sc, er, ec = 0, 6, 0, 11
+        t.draw_selection(sr, sc, er, ec)
+        text = t.extract_selected_text(sr, sc, er, ec)
+        self.assertEqual(text, "World")
+        # Select single char "H" — col 0 (ec=1, exclusive)
+        t.clear_selection()
+        t.draw_selection(0, 0, 0, 1)
+        text = t.extract_selected_text(0, 0, 0, 1)
+        self.assertEqual(text, "H")
 
 
 if __name__ == '__main__':
