@@ -3654,6 +3654,14 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
             /* For spans with wide chars, force grid-based width to avoid
              * font metric mismatch (e.g. CoreText reporting ~1.75x instead
              * of 2x for CJK glyphs). Normal spans use font measurement. */
+            if (has_wide) {
+                static int wide_diag_printed = 0;
+                if (!wide_diag_printed) {
+                    fprintf(stderr, "[nbs-term] WIDE CHAR GRID-SNAP ACTIVE (col_count=%d, char_width=%d)\n",
+                            col_count, char_width);
+                    wide_diag_printed = 1;
+                }
+            }
             int text_width = has_wide
                 ? col_count * char_width
                 : render_font_measure(interp, font_tag, text,
