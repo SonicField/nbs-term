@@ -28,6 +28,7 @@ if platform.system() == "Windows":
         pass  # Pre-Win8.1 or missing shcore
 
 import tkinter as tk
+from tkinter import ttk
 import tkinter.font as tkfont
 import tkinter.simpledialog as simpledialog
 import tkinter.colorchooser as colorchooser
@@ -808,20 +809,17 @@ class PreferencesDialog(tk.Toplevel):
         self.destroy()
 
 
-class TerminalApp:
-    """Main application tying together Tk, Terminal, and SSH."""
+class TabSession:
+    """One tab: a TerminalWidget + SSHTransport pair."""
 
-    def __init__(self, host, port=None, username=None, config=None):
-        self.root = tk.Tk()
-        self.root.title(f"nbs-term — {host}")
-        self._config = config or TerminalConfig()
+    def __init__(self, notebook, host, port, username, config, app):
+        self.app = app
+        self.host = host
+        self.frame = tk.Frame(notebook)
 
-        # No visible menu bar — preferences accessed via Cmd+, (Mac) or Ctrl+, (Linux)
-
-        # Terminal widget with config
         if config:
             self.widget = TerminalWidget(
-                self.root,
+                self.frame,
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
@@ -830,7 +828,67 @@ class TerminalApp:
                 refresh_hz=config.refresh_hz,
             )
         else:
-            self.widget = TerminalWidget(self.root)
+            self.widget = TerminalWidget(self.frame)
+
+        self.ssh = SSHTransport(host, port, username)
+        self.widget.set_write_callback(self.ssh.write)
+        self.ssh.set_data_callback(self._on_data)
+        self.ssh.set_close_callback(self._on_close)
+        self.ssh.set_interaction_handler(TkInteractionHandler(app.root))
+        self.ssh.set_error_callback(self._on_error)
+
+        self.widget.canvas.bind("<Configure>", self._on_configure)
+
+        label = host.split("@")[-1].split(".")[0] if host else "local"
+        notebook.add(self.frame, text=label)
+
+    def start(self):
+        self.ssh.start(self.widget.rows, self.widget.cols)
+
+    def stop(self):
+        self.ssh.stop()
+
+    def _on_data(self, data):
+        self.app.root.after(0, self.widget.feed, data)
+
+    def _on_close(self):
+        self.app.root.after(0, self._handle_disconnect)
+
+    def _handle_disconnect(self):
+        self.widget.feed(b"\r\n[Connection closed]\r\n")
+
+    def _on_error(self, error_msg):
+        self.app.root.after(0, self.widget.feed,
+                            f"\r\n[SSH error: {error_msg}]\r\n".encode())
+
+    def _on_configure(self, event):
+        result = self.widget.handle_resize(event)
+        if result:
+            rows, cols = result
+            self.ssh.resize(rows, cols)
+
+
+class TerminalApp:
+    """Main application with tabbed terminal sessions."""
+
+    def __init__(self, host, port=None, username=None, config=None):
+        self.root = tk.Tk()
+        self.root.title(f"nbs-term — {host}")
+        self._config = config or TerminalConfig()
+        self._host = host
+        self._port = port
+        self._username = username
+        self.tabs = []  # list of TabSession
+
+        # Tab notebook
+        style = ttk.Style()
+        style.configure("TNotebook", borderwidth=0)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # Create first tab
+        self._add_tab(host, port, username)
 
         # Constrain window to screen and center
         self.root.update_idletasks()
@@ -844,52 +902,123 @@ class TerminalApp:
         y = (scr_h - win_h) // 2
         self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
-        # SSH transport
-        self.ssh = SSHTransport(host, port, username)
-
-        # Wire callbacks
-        self.widget.set_write_callback(self.ssh.write)
-        self.ssh.set_data_callback(self._on_ssh_data)
-        self.ssh.set_close_callback(self._on_ssh_close)
-        self.ssh.set_interaction_handler(TkInteractionHandler(self.root))
-        self.ssh.set_error_callback(self._on_ssh_error)
-
-        # Bind keyboard
-        self.root.bind("<Key>", self.widget.handle_key)
+        # Bind keyboard to active tab
+        self.root.bind("<Key>", self._on_key)
 
         # Copy/Paste and Preferences shortcuts
         if sys.platform == "darwin":
             self.root.bind("<Command-c>", self._on_copy)
             self.root.bind("<Command-v>", self._on_paste)
             self.root.bind("<Command-comma>", self._on_preferences)
+            self.root.bind("<Command-t>", self._on_new_tab)
+            self.root.bind("<Command-w>", self._on_close_tab)
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
             self.root.bind("<Control-Shift-V>", self._on_paste)
             self.root.bind("<Control-comma>", self._on_preferences)
+            self.root.bind("<Control-Shift-T>", self._on_new_tab)
+            self.root.bind("<Control-Shift-W>", self._on_close_tab)
+
+        # Tab switching
+        self.root.bind("<Control-Tab>", self._on_next_tab)
+        self.root.bind("<Control-Shift-Tab>", self._on_prev_tab)
 
         # F11 fullscreen toggle (all platforms)
         self.root.bind("<F11>", self._toggle_fullscreen)
 
-        # Bind resize
-        self.widget.canvas.bind("<Configure>", self._on_configure)
-
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    @property
+    def _active_tab(self):
+        """Get the currently active TabSession."""
+        idx = self.notebook.index("current") if self.tabs else -1
+        return self.tabs[idx] if 0 <= idx < len(self.tabs) else None
+
+    @property
+    def widget(self):
+        """Active tab's widget (backward compatibility)."""
+        tab = self._active_tab
+        return tab.widget if tab else None
+
+    def _add_tab(self, host, port=None, username=None):
+        """Create a new tab with an SSH session."""
+        tab = TabSession(self.notebook, host, port, username,
+                         self._config, self)
+        self.tabs.append(tab)
+        self.notebook.select(tab.frame)
+        return tab
+
+    def _on_tab_changed(self, event=None):
+        """Focus the active tab's terminal."""
+        tab = self._active_tab
+        if tab:
+            self.root.title(f"nbs-term — {tab.host}")
+            tab.widget._render()
+
+    def _on_key(self, event):
+        """Route keyboard to active tab."""
+        tab = self._active_tab
+        if tab:
+            tab.widget.handle_key(event)
+
+    def _on_new_tab(self, event=None):
+        """Open a new tab (same host for now)."""
+        tab = self._add_tab(self._host, self._port, self._username)
+        tab.start()
+        return "break"
+
+    def _on_close_tab(self, event=None):
+        """Close the current tab."""
+        tab = self._active_tab
+        if tab and len(self.tabs) > 1:
+            idx = self.tabs.index(tab)
+            tab.stop()
+            self.notebook.forget(tab.frame)
+            self.tabs.remove(tab)
+            # Select adjacent tab
+            if idx >= len(self.tabs):
+                idx = len(self.tabs) - 1
+            if self.tabs:
+                self.notebook.select(self.tabs[idx].frame)
+        elif tab and len(self.tabs) == 1:
+            # Last tab — close window
+            self._on_close()
+        return "break"
+
+    def _on_next_tab(self, event=None):
+        """Switch to next tab."""
+        if len(self.tabs) > 1:
+            idx = self.notebook.index("current")
+            self.notebook.select((idx + 1) % len(self.tabs))
+        return "break"
+
+    def _on_prev_tab(self, event=None):
+        """Switch to previous tab."""
+        if len(self.tabs) > 1:
+            idx = self.notebook.index("current")
+            self.notebook.select((idx - 1) % len(self.tabs))
+        return "break"
+
     def _on_copy(self, event=None):
         """Copy selected text to clipboard."""
-        self.widget.copy_selection()
+        tab = self._active_tab
+        if tab:
+            tab.widget.copy_selection()
         return "break"
 
     def _on_paste(self, event=None):
         """Paste clipboard text into the terminal."""
+        tab = self._active_tab
+        if not tab:
+            return "break"
         try:
             text = self.root.clipboard_get()
         except tk.TclError:
-            return "break"  # clipboard empty
-        if text and self.ssh._running:
-            data = self.widget.term.encode_paste(text.encode("utf-8"))
-            self.ssh.write(data)
+            return "break"
+        if text and tab.ssh._running:
+            data = tab.widget.term.encode_paste(text.encode("utf-8"))
+            tab.ssh.write(data)
         return "break"
 
     def _on_preferences(self, event=None):
@@ -898,66 +1027,35 @@ class TerminalApp:
         return "break"
 
     def _apply_config(self, config):
-        """Apply config changes live — rebuild fonts, update colors, rerender."""
-        w = self.widget
-        # Update fonts
-        w.font.configure(family=config.font.family, size=config.font.size)
-        for key, f in w._font_cache.items():
-            f.configure(family=config.font.family, size=config.font.size)
-        w.char_width = w.font.measure("M")
-        w.char_height = w.font.metrics("linespace")
-        # Update colors
-        w._fg = config.fg
-        w._bg = config.bg
-        w.canvas.configure(bg=w._bg)
-        # Update gamma and refresh rate
-        w._gamma = config.gamma
-        w._refresh_ms = max(1, 1000 // config.refresh_hz)
-        # Update cursor
-        w._cursor_style = config.cursor.style
-        w._cursor_blink = config.cursor.blink
-        w._cursor_color = config.cursor.color or None
-        # Recalculate terminal grid from new font metrics
-        canvas_w = w.canvas.winfo_width()
-        canvas_h = w.canvas.winfo_height()
-        new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
-        new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
-        if new_cols != w.cols or new_rows != w.rows:
-            w.cols = new_cols
-            w.rows = new_rows
-            w.term.resize(new_rows, new_cols)
-            # Reset render state on resize
-            w.canvas.delete("buf_0")
-            w.canvas.delete("buf_1")
-            w.term.render_reset()
-            self.ssh.resize(new_rows, new_cols)
-        # Rerender
-        w._render()
-
-    def _on_ssh_error(self, error_msg):
-        """Show SSH errors in the terminal window."""
-        self.root.after(0, self.widget.feed,
-                        f"\r\n[SSH error: {error_msg}]\r\n".encode())
-
-    def _on_ssh_data(self, data):
-        """Called from asyncio thread when SSH data arrives."""
-        # Marshal to main thread via root.after
-        self.root.after(0, self.widget.feed, data)
-
-    def _on_ssh_close(self):
-        """Called when SSH connection closes."""
-        self.root.after(0, self._handle_disconnect)
-
-    def _handle_disconnect(self):
-        """Handle SSH disconnect on main thread."""
-        self.widget.feed(b"\r\n[Connection closed]\r\n")
-
-    def _on_configure(self, event):
-        """Handle canvas resize."""
-        result = self.widget.handle_resize(event)
-        if result:
-            rows, cols = result
-            self.ssh.resize(rows, cols)
+        """Apply config changes live to all tabs."""
+        for tab in self.tabs:
+            w = tab.widget
+            w.font.configure(family=config.font.family, size=config.font.size)
+            for key, f in w._font_cache.items():
+                f.configure(family=config.font.family, size=config.font.size)
+            w.char_width = w.font.measure("M")
+            w.char_height = w.font.metrics("linespace")
+            w._fg = config.fg
+            w._bg = config.bg
+            w.canvas.configure(bg=w._bg)
+            w._gamma = config.gamma
+            w._refresh_ms = max(1, 1000 // config.refresh_hz)
+            w._cursor_style = config.cursor.style
+            w._cursor_blink = config.cursor.blink
+            w._cursor_color = config.cursor.color or None
+            canvas_w = w.canvas.winfo_width()
+            canvas_h = w.canvas.winfo_height()
+            new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
+            new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
+            if new_cols != w.cols or new_rows != w.rows:
+                w.cols = new_cols
+                w.rows = new_rows
+                w.term.resize(new_rows, new_cols)
+                w.canvas.delete("buf_0")
+                w.canvas.delete("buf_1")
+                w.term.render_reset()
+                tab.ssh.resize(new_rows, new_cols)
+            w._render()
 
     def _toggle_fullscreen(self, event=None):
         """Toggle fullscreen mode (F11)."""
@@ -965,13 +1063,15 @@ class TerminalApp:
         self.root.attributes("-fullscreen", not current)
 
     def _on_close(self):
-        """Handle window close."""
-        self.ssh.stop()
+        """Handle window close — stop all tabs."""
+        for tab in self.tabs:
+            tab.stop()
         self.root.destroy()
 
     def run(self):
         """Start the application."""
-        self.ssh.start(self.widget.rows, self.widget.cols)
+        for tab in self.tabs:
+            tab.start()
         self.root.mainloop()
 
 
