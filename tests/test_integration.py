@@ -610,6 +610,58 @@ class TestDirtyTracking(unittest.TestCase):
         self.assertGreater(len(dirty), 0)
 
 
+class TestTerminalIndependence(unittest.TestCase):
+    """Verify multiple Terminal instances are fully independent.
+    Falsifies the tab architecture's core invariant: each tab's
+    terminal engine must not leak state to another."""
+
+    def test_independent_screen_content(self):
+        """Feed to one terminal does not affect another."""
+        t1 = _nbsterm.Terminal(24, 80)
+        t2 = _nbsterm.Terminal(24, 80)
+        t1.feed(b"Hello from tab 1")
+        t2.feed(b"Tab 2 content")
+        s1 = t1.get_screen()
+        s2 = t2.get_screen()
+        self.assertNotEqual(s1[0][0][0], s2[0][0][0])
+        self.assertIn("Hello", s1[0][0][0])
+        self.assertIn("Tab 2", s2[0][0][0])
+
+    def test_independent_scroll_offset(self):
+        """Scroll offset in one terminal does not affect another."""
+        t1 = _nbsterm.Terminal(4, 80)
+        t2 = _nbsterm.Terminal(4, 80)
+        # Fill t1 with enough lines to overflow into scrollback
+        for i in range(20):
+            t1.feed(f"Line {i}\r\n".encode())
+        # scroll_lines with positive = scroll up into history
+        t1.set_scroll_offset(5)
+        self.assertEqual(t1.get_scroll_offset(), 5)
+        self.assertEqual(t2.get_scroll_offset(), 0)
+
+    def test_independent_selection(self):
+        """Selection in one terminal does not affect another."""
+        t1 = _nbsterm.Terminal(24, 80)
+        t2 = _nbsterm.Terminal(24, 80)
+        t1.feed(b"Select me")
+        t2.feed(b"Not selected")
+        t1.draw_selection(0, 0, 0, 6)
+        text1 = t1.extract_selected_text(0, 0, 0, 6)
+        text2 = t2.extract_selected_text(0, 0, 0, 6)
+        self.assertEqual(text1, "Select")
+        self.assertNotEqual(text1, text2)
+
+    def test_independent_cursor(self):
+        """Cursor position in one terminal is independent of another."""
+        t1 = _nbsterm.Terminal(24, 80)
+        t2 = _nbsterm.Terminal(24, 80)
+        t1.feed(b"Hello")
+        c1 = t1.get_cursor()
+        c2 = t2.get_cursor()
+        self.assertEqual(c1[1], 5)
+        self.assertEqual(c2[1], 0)
+
+
 if __name__ == '__main__':
     # Run with verbose output and summary
     result = unittest.main(verbosity=2, exit=False)
