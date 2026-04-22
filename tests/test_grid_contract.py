@@ -29,6 +29,7 @@ verification', not 'pass'. Bug A regression insurance for D-1776408309.
 import os
 import sys
 import unittest
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,6 +48,14 @@ def _try_make_root():
 
 
 _root = _try_make_root()
+
+if _root is None:
+    warnings.warn(
+        "tests/test_grid_contract.py skipped — needs Tk display. "
+        "Grid contract is UNVERIFIED on this run; not regression coverage.",
+        UserWarning,
+        stacklevel=2,
+    )
 
 
 @unittest.skipIf(_root is None, "no display available (font.measure needs Tk)")
