@@ -101,11 +101,13 @@ class TerminalWidget:
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
-        # Canvas — sized to exact text grid + symmetric PADDING. Packed with
-        # expand=True (no fill) so it centers in the parent; any leftover
-        # space splits equally on all sides instead of accumulating right+bottom.
-        width = self.cols * self.char_width + 2 * PADDING
-        height = self.rows * self.char_height + 2 * PADDING
+        # Canvas — sized to the actual rendered text width (font.measure of
+        # the widest variant), not the math-grid `cols * char_width`. On Mac
+        # CoreText, font.measure(c*N) != N*font.measure(c) (subadditivity, the
+        # same root cause as Bug A); a math-grid canvas leaves the case-3
+        # gap on the right edge inside the canvas. Packed expand=True (no
+        # fill) so any frame-side slop splits symmetrically.
+        width, height = self._grid_canvas_size(self.cols, self.rows)
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
             bg=self._bg, highlightthickness=0, borderwidth=0,
@@ -140,6 +142,14 @@ class TerminalWidget:
 
     def set_write_callback(self, cb):
         self._write_callback = cb
+
+    def _grid_canvas_size(self, cols, rows):
+        """Return (canvas_width, canvas_height) sized to the actual rendered
+        text extent — max font.measure across font variants so mixed-attr
+        rows don't overflow — plus symmetric PADDING. Linux: same as math
+        grid (ratio=1.0). Mac: ~5% narrower (CoreText subadditivity)."""
+        text_w = max(f.measure("M" * cols) for f in self._font_cache.values())
+        return (text_w + 2 * PADDING, rows * self.char_height + 2 * PADDING)
 
     def _pixel_to_cell(self, x, y):
         """Convert pixel coordinates to (row, col), accounting for padding.
@@ -399,13 +409,10 @@ class TerminalWidget:
         (so event.width/height = available area for the canvas)."""
         new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
         new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
-        # Snap canvas to exact text grid + symmetric padding regardless of
-        # whether cols/rows changed; keeps slop equal on all sides as the
-        # parent grows or shrinks within the same grid step.
-        self.canvas.config(
-            width=new_cols * self.char_width + 2 * PADDING,
-            height=new_rows * self.char_height + 2 * PADDING,
-        )
+        # Snap canvas to the actual rendered text extent (not math grid) so
+        # right edge stays symmetric with left under CoreText subadditivity.
+        snap_w, snap_h = self._grid_canvas_size(new_cols, new_rows)
+        self.canvas.config(width=snap_w, height=snap_h)
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
