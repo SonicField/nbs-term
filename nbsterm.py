@@ -295,11 +295,13 @@ class TerminalWidget:
         """Ctrl+Shift+Up: scroll up one line."""
         self.term.scroll_lines(1)
         self._render()
+        return "break"
 
     def _on_key_scroll_down(self, event):
         """Ctrl+Shift+Down: scroll down one line."""
         self.term.scroll_lines(-1)
         self._render()
+        return "break"
 
     def _auto_scroll_to_bottom(self):
         """Reset scroll offset to live output."""
