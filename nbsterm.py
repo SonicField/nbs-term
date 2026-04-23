@@ -152,19 +152,11 @@ class TerminalWidget:
 
     def _row_spans_for_visible(self, row):
         """Return spans for visible viewport row, mirroring C composite-scrollback
-        logic at extension.c:3530-3559. None if unavailable.
-
-        Deferred edge case: the C composite guards on !using_alt; this helper
-        does not (no Python-facing using_alt accessor). Reachable when a user
-        is in an alt-screen app (vim/less) and uses mouse-wheel or
-        Ctrl+Shift+Up/Down to scroll — typing and incoming SSH data both call
-        _auto_scroll_to_bottom first, so neither reaches that state.
-        Misalignment in this state: clicks map against scrollback spans while
-        the canvas shows alt-screen content. TODO: surface using_alt or compare
-        canvas-item text against span text and fall back on mismatch.
+        logic at extension.c:3530-3559 (`scroll_off > 0 && !using_alt`).
+        None if unavailable.
         """
         scroll_off = self.term.get_scroll_offset()
-        if scroll_off > 0:
+        if scroll_off > 0 and not self.term.using_alt():
             sb_count = self.term.get_scrollback_count()
             sb_line_idx = sb_count - scroll_off + row
             if 0 <= sb_line_idx < sb_count:

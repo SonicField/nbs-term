@@ -3841,6 +3841,14 @@ static PyObject *Terminal_render_reset(TerminalObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/* --- using_alt() -> bool: True iff the alt-screen buffer is active.
+ * Mirrors the C composite-scrollback guard at extension.phc render path
+ * (scroll_off > 0 && !using_alt). Read-only: no struct or refcount changes. */
+static PyObject *Terminal_using_alt(TerminalObject *self, PyObject *args) {
+    (void)args;
+    return PyBool_FromLong(self->term->using_alt);
+}
+
 /* --- scroll_offset API: get/set how many lines the view is scrolled back --- */
 static PyObject *Terminal_get_scroll_offset(TerminalObject *self, PyObject *args) {
     (void)args;
@@ -3978,6 +3986,8 @@ static PyMethodDef Terminal_methods[] = {
      "Set scroll offset (clamped to scrollback count)."},
     {"scroll_lines", (PyCFunction)Terminal_scroll_lines, METH_VARARGS,
      "Scroll by delta lines (positive=up/history, negative=down/live). Returns new offset."},
+    {"using_alt", (PyCFunction)Terminal_using_alt, METH_NOARGS,
+     "True iff the alt-screen buffer is active (scrollback navigation does not apply)."},
     {NULL, NULL, 0, NULL}
 };
 
