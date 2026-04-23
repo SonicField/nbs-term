@@ -140,25 +140,121 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col), accounting for padding."""
+        """Convert pixel coordinates to (row, col), accounting for padding.
+
+        Uniform-grid math; correct only when font.measure(c*N) == N*font.measure(c).
+        macOS/CoreText violates that (subadditivity), so this is preserved as a
+        fallback only. Mouse handlers use _pixel_to_cell_text_aware.
+        """
         return _nbsterm.pixel_to_cell(
             x - PADDING, y - PADDING,
             self.char_width, self.char_height, self.cols, self.rows)
 
+    def _row_spans_for_visible(self, row):
+        """Return spans for visible viewport row, mirroring C composite-scrollback
+        logic at extension.c:3530-3559. None if unavailable.
+
+        Deferred edge case: the C composite guards on !using_alt; this helper
+        does not (no Python-facing using_alt accessor). Reachable when a user
+        is in an alt-screen app (vim/less) and uses mouse-wheel or
+        Ctrl+Shift+Up/Down to scroll — typing and incoming SSH data both call
+        _auto_scroll_to_bottom first, so neither reaches that state.
+        Misalignment in this state: clicks map against scrollback spans while
+        the canvas shows alt-screen content. TODO: surface using_alt or compare
+        canvas-item text against span text and fall back on mismatch.
+        """
+        scroll_off = self.term.get_scroll_offset()
+        if scroll_off > 0:
+            sb_count = self.term.get_scrollback_count()
+            sb_line_idx = sb_count - scroll_off + row
+            if 0 <= sb_line_idx < sb_count:
+                spans = self.term.get_scrollback_line(sb_line_idx)
+                return spans if spans else None
+            screen_row = sb_line_idx - sb_count
+            screen = self.term.get_screen()
+            if 0 <= screen_row < len(screen):
+                return screen[screen_row]
+            return None
+        screen = self.term.get_screen()
+        if 0 <= row < len(screen):
+            return screen[row]
+        return None
+
+    @staticmethod
+    def _binary_search_char(text, font, local_x):
+        """Smallest i such that font.measure(text[:i+1]) > local_x.
+        Returns len(text) when local_x lies past the span's right edge."""
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if local_x < font.measure(text[:mid + 1]):
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
+    def _pixel_to_cell_text_aware(self, x, y):
+        """Map (x, y) to (row, col) using actual font metrics for the row's
+        rendered text. Equivalent-by-construction to the C renderer's per-span
+        layout (verified by tests/test_render_layout_equivalence.py).
+
+        Bug A fix: replaces the uniform-grid assumption that breaks on macOS,
+        where CoreText subadditivity makes font.measure(c*N) != N*font.measure(c).
+        Walks get_screen() spans (or scrollback composite when scrolled back),
+        accumulates font.measure(prefix), and binary-searches for the cell x
+        falls in. Falls back to _pixel_to_cell if row spans unavailable.
+        """
+        row = (y - PADDING) // self.char_height
+        if row < 0:
+            row = 0
+        elif row >= self.rows:
+            row = self.rows - 1
+
+        spans = self._row_spans_for_visible(row)
+        if not spans:
+            return self._pixel_to_cell(x, y)
+
+        cur_x = PADDING
+        cur_col = 0
+        for text_bytes, _fg, _bg, attrs, col_widths in spans:
+            text = (text_bytes if isinstance(text_bytes, str)
+                    else text_bytes.decode("utf-8", "replace"))
+            if not text:
+                continue
+            font = self._font_cache.get(attrs & 0x05, self.font)
+            span_width = font.measure(text)
+            if x < cur_x + span_width:
+                local_x = x - cur_x
+                char_i = self._binary_search_char(text, font, local_x)
+                if char_i >= len(text):
+                    col_in_span = sum(col_widths)
+                else:
+                    col_in_span = sum(col_widths[:char_i])
+                col = cur_col + col_in_span
+                if col < 0:
+                    col = 0
+                if col >= self.cols:
+                    col = self.cols - 1
+                return (row, col)
+            cur_x += span_width
+            cur_col += sum(col_widths)
+
+        return (row, self.cols - 1)
+
     def _on_mouse_down(self, event):
         """Start selection."""
-        self._sel_start = self._pixel_to_cell(event.x, event.y)
+        self._sel_start = self._pixel_to_cell_text_aware(event.x, event.y)
         self._sel_end = self._sel_start
         self._clear_selection_highlight()
 
     def _on_mouse_drag(self, event):
         """Extend selection."""
-        self._sel_end = self._pixel_to_cell(event.x, event.y)
+        self._sel_end = self._pixel_to_cell_text_aware(event.x, event.y)
         self._draw_selection_highlight()
 
     def _on_mouse_up(self, event):
         """Finish selection."""
-        self._sel_end = self._pixel_to_cell(event.x, event.y)
+        self._sel_end = self._pixel_to_cell_text_aware(event.x, event.y)
         self._draw_selection_highlight()
 
     def _sel_range(self):
