@@ -972,6 +972,7 @@ class TerminalApp:
         style = ttk.Style()
         style.configure("TNotebook", borderwidth=0, padding=0)
         style.layout("TNotebook", [])  # strip the outer chrome the theme draws around tab content
+        self._default_tab_layout = style.layout("TNotebook.Tab")
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -1036,7 +1037,16 @@ class TerminalApp:
                          self._config, self)
         self.tabs.append(tab)
         self.notebook.select(tab.frame)
+        self._update_tab_visibility()
         return tab
+
+    def _update_tab_visibility(self):
+        """Hide the tab strip when only one tab exists; show when 2+ (Apple Terminal UX)."""
+        style = ttk.Style()
+        if len(self.tabs) <= 1:
+            style.layout("TNotebook.Tab", [])
+        else:
+            style.layout("TNotebook.Tab", self._default_tab_layout)
 
     def _on_tab_changed(self, event=None):
         """Focus the active tab's terminal."""
@@ -1070,6 +1080,7 @@ class TerminalApp:
                 idx = len(self.tabs) - 1
             if self.tabs:
                 self.notebook.select(self.tabs[idx].frame)
+            self._update_tab_visibility()
         elif tab and len(self.tabs) == 1:
             # Last tab — close window
             self._on_close()
