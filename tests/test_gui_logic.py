@@ -553,6 +553,237 @@ class TestCExtractSelectedText(unittest.TestCase):
         self.assertEqual(text, "H")
 
 
+class TestBinarySearchChar(unittest.TestCase):
+    """Test #2 — TerminalWidget._binary_search_char (nbsterm.py:184) directly.
+
+    The function returns smallest i such that font.measure(text[:i+1]) > local_x.
+    This is the per-cell cell-resolution primitive used by
+    _pixel_to_cell_text_aware to translate a pixel offset within a span into a
+    character index, which is then mapped to a column via col_widths.
+
+    Tests headless via a stub font — does not require Tk."""
+
+    @staticmethod
+    def _binary_search_char(text, font, local_x):
+        """Bind generalist's actual method bytecode (it is a @staticmethod on
+        TerminalWidget so the bind is trivial)."""
+        from nbsterm import TerminalWidget
+        return TerminalWidget._binary_search_char(text, font, local_x)
+
+    class _UniformFont:
+        """Stub for tkfont.Font — every char is `width` pixels wide."""
+        def __init__(self, width):
+            self._w = width
+        def measure(self, text):
+            return self._w * len(text)
+
+    class _NonUniformFont:
+        """Stub for a per-char-variable font (e.g. proportional or
+        CoreText-ish where wider chars mid-string accumulate sub-additively).
+        widths is a dict char -> px width; missing chars default to fallback."""
+        def __init__(self, widths, fallback=10):
+            self._widths = widths
+            self._fb = fallback
+        def measure(self, text):
+            return sum(self._widths.get(c, self._fb) for c in text)
+
+    def test_zero_local_x_returns_zero(self):
+        """local_x=0 lies before any cell's right edge → cell 0."""
+        f = self._UniformFont(12)
+        self.assertEqual(self._binary_search_char("Hello", f, 0), 0)
+
+    def test_just_inside_first_cell_returns_zero(self):
+        """local_x=11, char_width=12 → still inside cell 0."""
+        f = self._UniformFont(12)
+        self.assertEqual(self._binary_search_char("Hello", f, 11), 0)
+
+    def test_at_first_cell_boundary_returns_one(self):
+        """local_x=12 (==measure('H')) → cell 1 (the boundary belongs to next cell)."""
+        f = self._UniformFont(12)
+        self.assertEqual(self._binary_search_char("Hello", f, 12), 1)
+
+    def test_mid_cell_returns_correct_index(self):
+        """Pixel inside cell N returns N for any uniform-grid font."""
+        f = self._UniformFont(12)
+        # cell 2 spans [24, 36); local_x=30 → cell 2
+        self.assertEqual(self._binary_search_char("Hello", f, 30), 2)
+
+    def test_past_end_returns_len(self):
+        """local_x past the full span width returns len(text)."""
+        f = self._UniformFont(12)  # "Hello" = 60 px wide
+        self.assertEqual(self._binary_search_char("Hello", f, 100), 5)
+        self.assertEqual(self._binary_search_char("Hello", f, 60), 5)
+
+    def test_empty_text(self):
+        """Empty text → 0, no measure calls needed."""
+        f = self._UniformFont(12)
+        self.assertEqual(self._binary_search_char("", f, 0), 0)
+        self.assertEqual(self._binary_search_char("", f, 999), 0)
+
+    def test_non_uniform_widths(self):
+        """The function must be correct under non-uniform widths — the whole
+        point of the Bug A fix is that font.measure does NOT yield a uniform
+        grid on macOS/CoreText. Construct a font where 'a'=10, 'b'=20.
+        Cumulative widths: '' = 0, 'a' = 10, 'ab' = 30."""
+        f = self._NonUniformFont({"a": 10, "b": 20})
+        text = "ab"
+        # local_x=0, 5 → cell 0 (still inside 'a')
+        self.assertEqual(self._binary_search_char(text, f, 0), 0)
+        self.assertEqual(self._binary_search_char(text, f, 5), 0)
+        # local_x=9 → cell 0 (just before 'a' ends)
+        self.assertEqual(self._binary_search_char(text, f, 9), 0)
+        # local_x=10 → cell 1 (boundary)
+        self.assertEqual(self._binary_search_char(text, f, 10), 1)
+        # local_x=29 → cell 1 (still inside 'b')
+        self.assertEqual(self._binary_search_char(text, f, 29), 1)
+        # local_x=30 → cell 2 (past end)
+        self.assertEqual(self._binary_search_char(text, f, 30), 2)
+
+    def test_long_text_logarithmic_calls(self):
+        """For a 256-char text, binary search should call measure at most
+        ~9 times (log2(256)+1). Falsifies an accidental linear walk that
+        would still return correct results but blow the per-click budget at
+        60Hz drag-move."""
+        class _CountingFont(self._UniformFont):
+            def __init__(self, width):
+                super().__init__(width)
+                self.calls = 0
+            def measure(self, text):
+                self.calls += 1
+                return super().measure(text)
+
+        f = _CountingFont(12)
+        text = "x" * 256
+        self._binary_search_char(text, f, 1500)  # cell 125
+        self.assertLessEqual(
+            f.calls, 12,
+            f"binary search made {f.calls} measure() calls for 256-char text "
+            f"— expected ~log2(256)=8, allowing margin to 12. >12 indicates "
+            f"linear-walk regression that would burn ms/click on long lines.")
+
+    def test_mutation_caught_by_wrong_font_widths(self):
+        """The contract under test must be capable of failing: feed a font that
+        lies (returns wrong widths) and verify the binary search returns a
+        wrong cell index. This proves the assertion can fail."""
+        honest = self._UniformFont(12)
+        liar = self._UniformFont(6)  # claims every char is 6 px wide
+        # local_x=15 in the honest font is cell 1 (cell 1 spans [12, 24))
+        self.assertEqual(self._binary_search_char("Hello", honest, 15), 1)
+        # Same local_x in the liar font is cell 2 (cell 2 spans [12, 18))
+        self.assertEqual(self._binary_search_char("Hello", liar, 15), 2)
+        self.assertNotEqual(
+            self._binary_search_char("Hello", honest, 15),
+            self._binary_search_char("Hello", liar, 15),
+            "Mutation control: function must produce different output for "
+            "different font measurements, else the binary search is "
+            "ignoring its font argument.")
+
+
+class TestMouseHandlerRouting(unittest.TestCase):
+    """Test #3 — mouse handlers route through _pixel_to_cell_text_aware
+    (Bug A fix path), not the legacy uniform-grid _pixel_to_cell.
+
+    Headless: bind handler bytecode against a stub host that records which
+    pixel-to-cell method gets called. No Tk required."""
+
+    class _HandlerHost:
+        """Stub that records routing of pixel-to-cell calls."""
+        def __init__(self):
+            self.text_aware_calls = []
+            self.uniform_calls = []
+            self._sel_start = None
+            self._sel_end = None
+            self._highlight_drawn = False
+            self._highlight_cleared = False
+
+        def _pixel_to_cell_text_aware(self, x, y):
+            self.text_aware_calls.append((x, y))
+            return (1, 2)  # arbitrary fixed cell so handler logic can proceed
+
+        def _pixel_to_cell(self, x, y):
+            self.uniform_calls.append((x, y))
+            return (0, 0)  # different return — divergence is detectable
+
+        def _clear_selection_highlight(self):
+            self._highlight_cleared = True
+
+        def _draw_selection_highlight(self):
+            self._highlight_drawn = True
+
+    @classmethod
+    def _make_host_with_handlers(cls):
+        """Return a stub host with the three mouse handlers bound to it."""
+        from nbsterm import TerminalWidget
+        host = cls._HandlerHost()
+        host._on_mouse_down = TerminalWidget._on_mouse_down.__get__(host, type(host))
+        host._on_mouse_drag = TerminalWidget._on_mouse_drag.__get__(host, type(host))
+        host._on_mouse_up = TerminalWidget._on_mouse_up.__get__(host, type(host))
+        return host
+
+    @staticmethod
+    def _event(x, y):
+        """Stub a Tk MouseEvent — the handlers only access .x and .y."""
+        ev = type("_StubEvent", (), {})()
+        ev.x = x
+        ev.y = y
+        return ev
+
+    def test_mouse_down_routes_through_text_aware(self):
+        host = self._make_host_with_handlers()
+        host._on_mouse_down(self._event(100, 50))
+        self.assertEqual(
+            host.text_aware_calls, [(100, 50)],
+            "mouse_down must route through _pixel_to_cell_text_aware (Bug A "
+            "fix); legacy _pixel_to_cell would resurrect the uniform-grid bug.")
+        self.assertEqual(
+            host.uniform_calls, [],
+            "mouse_down must NOT call legacy _pixel_to_cell — that path is "
+            "preserved as fallback only (nbsterm.py:147).")
+        self.assertEqual(host._sel_start, (1, 2))
+        self.assertEqual(host._sel_end, (1, 2))
+        self.assertTrue(host._highlight_cleared)
+
+    def test_mouse_drag_routes_through_text_aware(self):
+        host = self._make_host_with_handlers()
+        # mouse_down first to seed _sel_start
+        host._on_mouse_down(self._event(50, 25))
+        # Now drag — must call text-aware
+        host._on_mouse_drag(self._event(200, 75))
+        self.assertEqual(
+            host.text_aware_calls, [(50, 25), (200, 75)],
+            "mouse_drag must route through _pixel_to_cell_text_aware on every "
+            "drag event — selection bounds depend on it.")
+        self.assertEqual(host.uniform_calls, [])
+        self.assertEqual(host._sel_end, (1, 2))
+        self.assertTrue(host._highlight_drawn)
+
+    def test_mouse_up_routes_through_text_aware(self):
+        host = self._make_host_with_handlers()
+        host._on_mouse_down(self._event(0, 0))
+        host._on_mouse_up(self._event(150, 60))
+        self.assertEqual(
+            host.text_aware_calls, [(0, 0), (150, 60)],
+            "mouse_up must route through _pixel_to_cell_text_aware to set the "
+            "final selection end coordinate.")
+        self.assertEqual(host.uniform_calls, [])
+
+    def test_no_handler_calls_legacy_pixel_to_cell(self):
+        """Cross-handler invariant: across the full down/drag/up sequence, the
+        legacy _pixel_to_cell must NEVER be called by the mouse handlers."""
+        host = self._make_host_with_handlers()
+        host._on_mouse_down(self._event(10, 10))
+        host._on_mouse_drag(self._event(20, 20))
+        host._on_mouse_drag(self._event(30, 30))
+        host._on_mouse_up(self._event(40, 40))
+        self.assertEqual(
+            host.uniform_calls, [],
+            f"Bug A regression: legacy _pixel_to_cell was called {len(host.uniform_calls)} "
+            f"times by mouse handlers (calls: {host.uniform_calls}). The legacy "
+            f"path is fallback-only (nbsterm.py:147); routing through it from "
+            f"mouse handlers re-introduces the CoreText subadditivity bug.")
+        self.assertEqual(len(host.text_aware_calls), 4)
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun

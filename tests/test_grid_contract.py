@@ -25,11 +25,29 @@ a display-equipped platform (macOS desktop, Windows desktop, Linux X11/Wayland
 desktop). Headless CI cannot exercise CoreText behaviour; running this under
 Xvfb would yield false confidence. Treat skips here as 'pending platform
 verification', not 'pass'. Bug A regression insurance for D-1776408309.
+
+**xfail on darwin (added 2026-04-23):** Bug A's root cause IS the grid-contract
+violation on Menlo/CoreText (font.measure('M' * 10) == 115 != 120, ratio 0.9583).
+The fix (TerminalWidget._pixel_to_cell_text_aware in nbsterm.py:184) does NOT
+restore the contract — it sidesteps the contract by routing mouse hit-testing
+through font.measure prefix-sums instead of uniform-grid division. The legacy
+_pixel_to_cell is preserved as fallback only (nbsterm.py:142-148). So this test
+is EXPECTED to fail on darwin post-fix; the failure documents the still-violated
+invariant rather than gating CI. xfail uses strict=True so an unexpected pass on
+darwin (e.g. Apple fixes CoreText subadditivity, or font default changes) gets
+reported as XPASS — surfaces the platform-state change that would warrant
+re-evaluation.
+
+Per testkeeper standards, a structured xfail-as-skip needs the same visibility
+treatment as the headless-skip warning: emit a UserWarning at module load on
+darwin so the xfail status doesn't silently disappear into the pytest summary.
 """
 import os
 import sys
 import unittest
 import warnings
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -56,6 +74,33 @@ if _root is None:
         UserWarning,
         stacklevel=2,
     )
+
+if sys.platform == "darwin":
+    warnings.warn(
+        "tests/test_grid_contract.py is xfail-on-darwin — Bug A's root cause "
+        "(CoreText subadditivity on Menlo) is a documented invariant violation "
+        "fixed via _pixel_to_cell_text_aware, not via restoring the contract. "
+        "Unexpected pass (XPASS) on darwin would indicate platform-state "
+        "change worth re-evaluating; unexpected XPASS is reported as failure.",
+        UserWarning,
+        stacklevel=2,
+    )
+
+
+# Per-method xfail marker — pytest.mark.xfail at the class level does NOT
+# propagate to test methods on a unittest.TestCase subclass (alexie crash run
+# 2026-04-23 11:36 showed FFFF.FF on darwin: marker silently ignored, plain
+# failures reported instead of XFAIL). Apply per method.
+_xfail_on_darwin = pytest.mark.xfail(
+    sys.platform == "darwin",
+    strict=True,
+    reason="Bug A: CoreText subadditivity on Menlo violates the grid contract. "
+           "Fix via TerminalWidget._pixel_to_cell_text_aware (nbsterm.py:184) "
+           "sidesteps the contract for mouse hit-testing; legacy _pixel_to_cell "
+           "is fallback-only (nbsterm.py:142-148). Test failure on darwin "
+           "documents the still-violated invariant. Unexpected pass = Apple "
+           "fixed CoreText, or font default changed — re-evaluate.",
+)
 
 
 @unittest.skipIf(_root is None, "no display available (font.measure needs Tk)")
@@ -93,24 +138,37 @@ class TestGridContract(unittest.TestCase):
             f"computed column will diverge. See D-1776409935.",
         )
 
+    @_xfail_on_darwin
     def test_M_x5(self):
         self._assert_grid("M", 5)
 
+    @_xfail_on_darwin
     def test_M_x10(self):
         self._assert_grid("M", 10)
 
+    @_xfail_on_darwin
     def test_M_x50(self):
         self._assert_grid("M", 50)
 
+    @_xfail_on_darwin
     def test_i_x10(self):
         self._assert_grid("i", 10)
 
+    @_xfail_on_darwin
     def test_W_x10(self):
         self._assert_grid("W", 10)
 
+    @_xfail_on_darwin
     def test_space_x10(self):
         self._assert_grid(" ", 10)
 
+    # NOTE: test_all_glyphs_share_M_width does NOT carry the xfail mark.
+    # Mac-CoreText subadditivity affects MULTI-character measure (the c×N
+    # tests above); single-character widths agree on Menlo (verified in
+    # alexie's run 11:36 — this test was the lone PASS in FFFF.FF). The
+    # bug A path doesn't break this invariant, so this test should continue
+    # to pass on darwin too. If it ever fails on darwin, the font defaulting
+    # changed (e.g. Menlo replaced by a proportional font), not Bug A.
     def test_all_glyphs_share_M_width(self):
         """In a true monospace font, every glyph occupies the same cell width.
 
