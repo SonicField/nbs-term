@@ -101,14 +101,16 @@ class TerminalWidget:
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
-        # Canvas
-        width = self.cols * self.char_width
-        height = self.rows * self.char_height
+        # Canvas — sized to exact text grid + symmetric PADDING. Packed with
+        # expand=True (no fill) so it centers in the parent; any leftover
+        # space splits equally on all sides instead of accumulating right+bottom.
+        width = self.cols * self.char_width + 2 * PADDING
+        height = self.rows * self.char_height + 2 * PADDING
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
             bg=self._bg, highlightthickness=0, borderwidth=0,
         )
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.pack(expand=True)
 
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
@@ -391,9 +393,17 @@ class TerminalWidget:
             self._write_callback(data)
 
     def handle_resize(self, event):
-        """Handle window resize."""
+        """Handle window resize. event comes from the parent frame's Configure
+        (so event.width/height = available area for the canvas)."""
         new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
         new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
+        # Snap canvas to exact text grid + symmetric padding regardless of
+        # whether cols/rows changed; keeps slop equal on all sides as the
+        # parent grows or shrinks within the same grid step.
+        self.canvas.config(
+            width=new_cols * self.char_width + 2 * PADDING,
+            height=new_rows * self.char_height + 2 * PADDING,
+        )
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
@@ -925,7 +935,12 @@ class TabSession:
         self.ssh.set_interaction_handler(TkInteractionHandler(app.root))
         self.ssh.set_error_callback(self._on_error)
 
-        self.widget.canvas.bind("<Configure>", self._on_configure)
+        # Match frame bg to canvas bg so the symmetric slop around the
+        # centered canvas blends rather than showing as a grey panel.
+        self.frame.config(bg=self.widget._bg)
+        # Bind on the frame (not canvas) so window resizes deliver Configure
+        # events with the available canvas-area size, not the canvas's own size.
+        self.frame.bind("<Configure>", self._on_configure)
 
         label = host.split("@")[-1].split(".")[0] if host else "local"
         notebook.add(self.frame, text=label)
