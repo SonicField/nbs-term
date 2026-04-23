@@ -886,5 +886,91 @@ class TestAltScreenAppRenders(unittest.TestCase):
             f"path has regressed.")
 
 
+class TestMultiTabFontRegistrySafe(unittest.TestCase):
+    """Test #10 — Bug D regression test: TerminalWidget multi-instance font safety.
+
+    Bug D (alexie 2026-04-23 17:15:55): Cmd+T crashed on Mac (Tk 9.0.3) with
+    TclError 'named font font_normal already exists' because
+    TerminalWidget.__init__ called `tkfont.Font(name="font_normal")` directly,
+    and Tk's font registry is global per interpreter.
+
+    Fix (29d357e): TerminalWidget uses `_named_font()` helper at nbsterm.py:62
+    that checks `tkfont.names()` and calls `tkfont.nametofont(name)` for
+    existing names instead of creating a new font.
+
+    Two test shapes:
+    1. **Static (Tk-version-independent):** TerminalWidget source must use the
+       `_named_font` helper for the four font slots, not raw `tkfont.Font(name=`.
+       This is the real regression-protector — the behavioral test is vacuous
+       on Linux Tk 8.6 (which silently reuses on duplicate `font create`)
+       but Tk 9.0+ raises. Static check protects regardless of Tk version.
+    2. **Behavioral (gated on display):** construct two TerminalWidget instances
+       on the same Tk root, assert no TclError. Catches the bug only on Tk 9.0+
+       runners; vacuous on older Tk but harmless.
+    """
+
+    def test_terminalwidget_uses_named_font_helper(self):
+        """Static regression: TerminalWidget MUST instantiate fonts via the
+        `_named_font` helper, NOT via raw `tkfont.Font(name=...)`. The raw
+        form crashes on Tk 9.0+ (Mac) when a second TerminalWidget is created
+        — Linux Tk 8.6 silently reuses, so this test is the only Tk-version-
+        independent guard."""
+        import inspect
+        import re
+        from nbsterm import TerminalWidget
+        src = inspect.getsource(TerminalWidget)
+
+        # Negative: raw `tkfont.Font(...name=...)` is forbidden in TerminalWidget
+        raw_pattern = re.compile(r'tkfont\.Font\([^)]*\bname\s*=')
+        match = raw_pattern.search(src)
+        self.assertIsNone(
+            match,
+            f"BUG D REGRESSION: TerminalWidget contains raw "
+            f"`tkfont.Font(...name=...)` call: {match.group(0) if match else None!r}. "
+            f"Must use the `_named_font` helper at nbsterm.py:62 instead. "
+            f"Raw form crashes on Tk 9.0+ (Mac) when a second TerminalWidget "
+            f"instance is created — see alexie's Cmd+T crash 2026-04-23 17:15:55."
+        )
+
+        # Positive: helper IS used, at least 4 times (font_normal/bold/italic/bold_italic)
+        helper_pattern = re.compile(r'_named_font\(\s*["\']')
+        helper_calls = helper_pattern.findall(src)
+        self.assertGreaterEqual(
+            len(helper_calls), 4,
+            f"TerminalWidget calls _named_font helper only {len(helper_calls)} times; "
+            f"expected at least 4 (one per font slot: normal/bold/italic/bold_italic). "
+            f"If a slot reverts to raw tkfont.Font(name=), Bug D returns on Tk 9.0+."
+        )
+
+    @unittest.skipIf(_root is None, "no display available (TerminalWidget needs Tk)")
+    def test_two_terminal_widgets_no_tclerror(self):
+        """Behavioral regression: two TerminalWidget instances on the same Tk
+        root must construct without TclError. Catches Bug D on Tk 9.0+
+        (Mac) where `font create` raises on duplicate names; vacuous on
+        Tk 8.6 (Linux Xvfb) where duplicates silently reuse — harmless."""
+        # Ensure the module's _root is the default — other test modules may
+        # have destroyed their own root and unset tkinter._default_root,
+        # which breaks tkfont.names() inside the _named_font helper.
+        tkinter._default_root = _root
+
+        parent = tkinter.Frame(_root)
+        try:
+            widget1 = TerminalWidget(parent, rows=5, cols=20,
+                                     cursor_blink=False, refresh_hz=60)
+            try:
+                widget2 = TerminalWidget(parent, rows=5, cols=20,
+                                         cursor_blink=False, refresh_hz=60)
+            except tkinter.TclError as e:
+                if "already exists" in str(e):
+                    self.fail(
+                        f"BUG D REGRESSION: second TerminalWidget construction "
+                        f"raised TclError on font-name collision: {e}. "
+                        f"The _named_font helper at nbsterm.py:62 should reuse "
+                        f"via nametofont() when the name already exists.")
+                raise
+        finally:
+            parent.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
