@@ -712,5 +712,179 @@ class TestBugAFixDisagrees(unittest.TestCase):
             f"division.")
 
 
+_SESSIONS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "sessions")
+
+
+@unittest.skipIf(_root is None, "no display available (render_frame needs Tk)")
+class TestAltScreenAppRenders(unittest.TestCase):
+    """Test #8 — alt-screen application end-to-end rendering smoke + content
+    check. Closes pythia #56's gap: no test exercised an alt-screen app
+    end-to-end (test #6 only verified the gate's truth-value, not that
+    content actually renders to the canvas).
+
+    Two test shapes:
+    1. **Synthetic alt-screen + content** (correctness): enter alt-screen
+       via DECSET 1049, write known text, render, assert the text appears
+       on canvas. Catches the user-visible 'blank screen in vim/htop' bug
+       reported by alexie 2026-04-23 12:46:51.
+    2. **Session-log playback** (smoke): real recorded escape streams from
+       htop / vim / bash; assert no exception, no catastrophic crash. Logs
+       are short snippets, primarily setup/teardown sequences — they exist
+       to catch parser regressions, not assert content.
+
+    Bisect substrate (per supervisor 12:54:56): if the synthetic test
+    passes on b564910's parent (01c39a7) but fails on current main, b564910
+    caused the alt-screen rendering regression. If both fail, the bug is
+    pre-existing — generalist's hypothesis (DECSTBM / charset handlers
+    missing) is vindicated.
+    """
+
+    ROWS = 24
+    COLS = 80
+
+    @classmethod
+    def setUpClass(cls):
+        cls.canvas = tkinter.Canvas(
+            _root, width=cls.COLS * _CHAR_WIDTH + 2 * PADDING,
+            height=cls.ROWS * _CHAR_HEIGHT + 2 * PADDING,
+            bg="#000000", highlightthickness=0, borderwidth=0)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.canvas.destroy()
+
+    def setUp(self):
+        self.term = _nbsterm.Terminal(self.ROWS, self.COLS)
+        self.canvas.delete("all")
+        self.term.render_reset()
+
+    def _render(self):
+        self.term.render_frame(
+            _root.tk.interpaddr(),
+            str(self.canvas),
+            False, 0, "", "#ffffff", "#000000",
+            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING,
+        )
+
+    def _all_canvas_text(self):
+        """Return concatenated text from all canvas text items."""
+        return "".join(
+            self.canvas.itemcget(i, "text")
+            for i in self.canvas.find_all()
+            if self.canvas.type(i) == "text"
+        )
+
+    @staticmethod
+    def _strip_script_wrapper(data):
+        """Drop the 'Script started/done' lines from a script(1) capture."""
+        lines = data.split(b"\n")
+        return b"\n".join(l for l in lines if not l.startswith(b"Script "))
+
+    # ------ Synthetic alt-screen tests (the user-bug catcher) ------
+
+    def test_alt_screen_then_text_renders(self):
+        """User-bug catcher: enter alt-screen, write text, assert text appears.
+        If this fails, the alt-screen rendering path is broken — exactly the
+        symptom alexie reported with htop (blank screen)."""
+        marker = "ALT_SCREEN_VISIBLE_CONTENT"
+        self.term.feed(b"\x1b[?1049h" + marker.encode())
+        self._render()
+        self.assertTrue(self.term.using_alt(),
+            "Pre-condition: ?1049h should put terminal in alt-screen state")
+        text = self._all_canvas_text()
+        self.assertIn(marker, text,
+            f"ALT-SCREEN RENDERING REGRESSION: text written after ?1049h "
+            f"does not appear on canvas. canvas_text={text!r}. This is the "
+            f"symptom alexie reported with htop (blank screen on alt-screen "
+            f"apps). If this fails on current main but passes on b564910's "
+            f"parent (01c39a7), b564910 caused it. If both fail, the bug "
+            f"is pre-existing.")
+
+    def test_alt_screen_with_decstbm_renders(self):
+        """htop hypothesis: DECSTBM `\\x1b[1;24r` (set scroll region) is
+        unhandled. Test that text written after DECSTBM still renders.
+        If DECSTBM ignored cleanly: text appears (test passes).
+        If DECSTBM aborts the parser or corrupts state: text missing (fails).
+        """
+        # Mimic htop's first sequence: ?1049h + ?1049t-equivalent + 1;24r + body
+        self.term.feed(
+            b"\x1b[?1049h"
+            b"\x1b[1;24r"        # DECSTBM set scroll region rows 1-24
+            b"\x1b[H"            # CUP to home
+            b"HEADER_ROW_AFTER_DECSTBM"
+            b"\x1b[2;1H"         # CUP to row 2 col 1
+            b"BODY_ROW_AFTER_CUP"
+        )
+        self._render()
+        text = self._all_canvas_text()
+        self.assertIn("HEADER_ROW_AFTER_DECSTBM", text,
+            f"DECSTBM regression: text written after `\\x1b[1;24r` does "
+            f"not render. Canvas text: {text!r}. If unhandled DECSTBM is "
+            f"corrupting parser state, this catches it.")
+        self.assertIn("BODY_ROW_AFTER_CUP", text,
+            f"DECSTBM + CUP regression: text written after CUP `\\x1b[2;1H` "
+            f"following an unhandled DECSTBM does not render. "
+            f"Canvas text: {text!r}.")
+
+    def test_alt_screen_with_charset_designate_renders(self):
+        """htop hypothesis: G0 charset designate `(B` (ASCII) is unhandled.
+        If unhandled cleanly, text after the designate should still render."""
+        self.term.feed(
+            b"\x1b[?1049h"
+            b"(B"               # SCS G0 = ASCII
+            b"\x1b[m"           # SGR reset
+            b"\x1b[H"
+            b"TEXT_AFTER_CHARSET_DESIGNATE"
+        )
+        self._render()
+        text = self._all_canvas_text()
+        self.assertIn("TEXT_AFTER_CHARSET_DESIGNATE", text,
+            f"Charset-designate regression: text after `(B` does not render. "
+            f"Canvas text: {text!r}.")
+
+    # ------ Session-log smoke tests (parser crash catcher) ------
+
+    def _feed_session_log(self, name):
+        path = os.path.join(_SESSIONS_DIR, name)
+        with open(path, "rb") as f:
+            data = self._strip_script_wrapper(f.read())
+        try:
+            self.term.feed(data)
+        except Exception as e:
+            self.fail(f"{name}: term.feed raised: {e!r}")
+        try:
+            self._render()
+        except Exception as e:
+            self.fail(f"{name}: render raised: {e!r}")
+
+    def test_htop_session_log_does_not_crash(self):
+        """Smoke: htop_frame.log's escape sequences must not crash the parser
+        or render path. Log is initial-setup-only so no content assertion."""
+        self._feed_session_log("htop_frame.log")
+        # Diagnostic: report state for bisect comparison
+        self.assertEqual(self.term.using_alt(), True,
+            "htop_frame.log includes ?1049h; alt-screen state should be on")
+
+    def test_vim_session_log_does_not_crash(self):
+        """Smoke: vim_startup.log must not crash. Log enters AND exits
+        alt-screen so final state should be back on the main screen."""
+        self._feed_session_log("vim_startup.log")
+        self.assertEqual(self.term.using_alt(), False,
+            "vim_startup.log includes ?1049h then ?1049l; final state "
+            "should be back on the main screen")
+
+    def test_bash_session_log_renders_visible_text(self):
+        """bash_session.log includes literal 'hello' + a directory listing
+        on the main (non-alt) screen. Both should appear on canvas — this
+        is the only session log with non-trivial content."""
+        self._feed_session_log("bash_session.log")
+        text = self._all_canvas_text()
+        self.assertIn("hello", text,
+            f"bash session: 'hello' should appear in rendered canvas text. "
+            f"Got: {text!r}. If this fails, the basic main-screen render "
+            f"path has regressed.")
+
+
 if __name__ == "__main__":
     unittest.main()
