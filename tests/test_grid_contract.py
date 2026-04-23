@@ -95,11 +95,14 @@ _xfail_on_darwin = pytest.mark.xfail(
     sys.platform == "darwin",
     strict=True,
     reason="Bug A: CoreText subadditivity on Menlo violates the grid contract. "
-           "Fix via TerminalWidget._pixel_to_cell_text_aware (nbsterm.py:184) "
-           "sidesteps the contract for mouse hit-testing; legacy _pixel_to_cell "
-           "is fallback-only (nbsterm.py:142-148). Test failure on darwin "
-           "documents the still-violated invariant. Unexpected pass = Apple "
-           "fixed CoreText, or font default changed — re-evaluate.",
+           "Compensated by TerminalWidget._pixel_to_cell_text_aware (text-aware "
+           "click-to-cell helper) which walks per-char font.measure widths "
+           "instead of dividing by char_width. Legacy _pixel_to_cell is "
+           "preserved as fallback only. Compensation is regression-protected "
+           "by tests/test_render_layout_equivalence.py::TestBugAFixDisagrees "
+           "(stub-FakeFont DISAGREE assertion, Linux-runnable). Test failure "
+           "on darwin documents the still-violated invariant; unexpected pass "
+           "= Apple fixed CoreText, or font default changed — re-evaluate.",
 )
 
 

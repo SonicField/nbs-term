@@ -525,5 +525,192 @@ class TestScrollbackCompositeEquivalence(unittest.TestCase):
             f"nbsterm.py:159 vs extension.c:3532.")
 
 
+class _SubadditiveFont:
+    """Mock font that returns N * char_width * ratio for measure(text * N).
+
+    Mimics CoreText subadditivity (alexie's Mac: ratio ≈ 0.9583 for Menlo).
+    Lets test #7 force case-3 behaviour on Linux without requiring a real
+    Mac CoreText font.
+    """
+    def __init__(self, char_width=12, ratio=0.96):
+        self._cw = char_width
+        self._ratio = ratio
+
+    def measure(self, text):
+        return int(len(text) * self._cw * self._ratio)
+
+
+class TestBugAFixDisagrees(unittest.TestCase):
+    """Test #7 — end-to-end Bug A regression test (per pythia #55, theologian
+    + supervisor 12:17:42). Uses a stub-FakeFont with subadditive widths to
+    force case-3 behaviour on Linux without requiring a real Mac CoreText font.
+
+    Asserts: under non-uniform cell widths, _pixel_to_cell (legacy uniform-grid)
+    and _pixel_to_cell_text_aware (Bug A fix) MUST produce DIFFERENT outputs
+    for clicks past the column where ratio drift exceeds 1 cell. The
+    DISAGREEMENT IS the fix — if the two helpers ever agree on case-3 input,
+    someone regressed _pixel_to_cell_text_aware back to uniform-grid math.
+
+    Cross-check: the text-aware helper's output must match the cell whose
+    rendered position contains the click pixel (visual-correctness contract).
+
+    Headless: no Tk required. Pure-Python via stub host with FakeFont and
+    bound-method invocation of generalist's actual helper bytecode.
+    """
+
+    CHAR_WIDTH = 12
+    CHAR_HEIGHT = 22
+    RATIO = 0.96  # subadditivity factor (close to alexie's 0.9583)
+    COLS = 80
+    ROWS = 10
+
+    def setUp(self):
+        # Real terminal so get_screen() returns the row content the helper walks.
+        self.term = _nbsterm.Terminal(self.ROWS, self.COLS)
+        # Fill row 0 with M's so the row has one full-width span of known content.
+        self.term.feed(b"M" * self.COLS)
+
+        fakefont = _SubadditiveFont(self.CHAR_WIDTH, self.RATIO)
+
+        host = type("_Host", (), {})()
+        host.term = self.term
+        host.char_width = self.CHAR_WIDTH
+        host.char_height = self.CHAR_HEIGHT
+        host.cols = self.COLS
+        host.rows = self.ROWS
+        # Inject FakeFont as the entire font cache so every attrs maps to the
+        # subadditive font. The helper's font lookup at nbsterm.py:221 is
+        # `self._font_cache.get(attrs & 0x05, self.font)`.
+        host._font_cache = {0x00: fakefont, 0x01: fakefont,
+                            0x04: fakefont, 0x05: fakefont}
+        host.font = fakefont
+        # Bind the actual TerminalWidget method bytecode for both helpers.
+        host._row_spans_for_visible = TerminalWidget._row_spans_for_visible.__get__(
+            host, type(host))
+        host._binary_search_char = TerminalWidget._binary_search_char  # @staticmethod
+        host._pixel_to_cell_text_aware = TerminalWidget._pixel_to_cell_text_aware.__get__(
+            host, type(host))
+        host._pixel_to_cell = TerminalWidget._pixel_to_cell.__get__(
+            host, type(host))
+        self.host = host
+
+    def _click_at_visual_col_middle(self, col):
+        """Compute the click pixel at the visual middle of a rendered cell.
+
+        Under subadditive rendering, cell `col` spans
+        [PADDING + col * char_width * ratio, PADDING + (col+1) * char_width * ratio).
+        Middle = PADDING + (col + 0.5) * char_width * ratio.
+        """
+        return int(PADDING + (col + 0.5) * self.CHAR_WIDTH * self.RATIO)
+
+    def test_helpers_disagree_on_case_3_input(self):
+        """For a click at the visual middle of col 50 under ratio 0.96:
+        - text-aware helper returns col 50 (correct — matches visual position).
+        - legacy uniform-grid helper returns col 48 (wrong — bug A symptom).
+        The DISAGREEMENT IS the fix. If they agree, the fix has regressed."""
+        visual_col = 50
+        click_x = self._click_at_visual_col_middle(visual_col)
+        click_y = PADDING + 5  # row 0
+
+        legacy = self.host._pixel_to_cell(click_x, click_y)
+        text_aware = self.host._pixel_to_cell_text_aware(click_x, click_y)
+
+        self.assertNotEqual(
+            legacy, text_aware,
+            f"Bug A FIX REGRESSION: helpers AGREE on case-3 input "
+            f"(_pixel_to_cell={legacy} == _pixel_to_cell_text_aware={text_aware}). "
+            f"Under subadditive font (ratio {self.RATIO}, char_width "
+            f"{self.CHAR_WIDTH}, click_x={click_x}, visual col {visual_col}), "
+            f"they MUST differ — the legacy uniform-grid helper assumes "
+            f"every cell is char_width wide; the text-aware helper walks "
+            f"actual font.measure widths. If they agree, someone has "
+            f"regressed _pixel_to_cell_text_aware back to uniform-grid math.")
+
+        self.assertEqual(
+            text_aware[1], visual_col,
+            f"Text-aware helper visual-correctness contract: click at the "
+            f"middle of visual col {visual_col} (pixel {click_x}) should "
+            f"return col {visual_col}, got col {text_aware[1]}. The helper "
+            f"is supposed to return the cell whose RENDERED position "
+            f"contains the click pixel.")
+
+        # Sanity: legacy helper returns the uniform-grid (wrong) col
+        expected_legacy_col = (click_x - PADDING) // self.CHAR_WIDTH
+        self.assertEqual(
+            legacy[1], expected_legacy_col,
+            f"Legacy helper sanity: should return uniform-grid col "
+            f"{expected_legacy_col} for click at {click_x}, got {legacy[1]}. "
+            f"If wrong, _pixel_to_cell semantics changed unexpectedly.")
+
+        # The drift should be at least 1 cell (Bug A is visible at col 50,
+        # ratio 0.96 → ~2 cells of drift)
+        self.assertGreaterEqual(
+            visual_col - expected_legacy_col, 1,
+            f"Test fixture too weak: ratio {self.RATIO} at col {visual_col} "
+            f"produces drift of only {visual_col - expected_legacy_col} cells. "
+            f"Test must exercise visible drift (>=1 cell) to be a meaningful "
+            f"falsifier; raise the col or lower the ratio.")
+
+    def test_helpers_agree_on_case_1_input(self):
+        """Sanity / negative control: under uniform-grid font (ratio=1.0), the
+        two helpers MUST AGREE on any click. This proves the disagreement in
+        the case-3 test is caused by the subadditive font, not by some
+        unrelated divergence in the helpers."""
+        # Re-build host with a non-subadditive font (ratio=1.0).
+        uniform_font = _SubadditiveFont(self.CHAR_WIDTH, ratio=1.0)
+        host = type("_Host", (), {})()
+        host.term = self.term
+        host.char_width = self.CHAR_WIDTH
+        host.char_height = self.CHAR_HEIGHT
+        host.cols = self.COLS
+        host.rows = self.ROWS
+        host._font_cache = {0x00: uniform_font, 0x01: uniform_font,
+                            0x04: uniform_font, 0x05: uniform_font}
+        host.font = uniform_font
+        host._row_spans_for_visible = TerminalWidget._row_spans_for_visible.__get__(
+            host, type(host))
+        host._binary_search_char = TerminalWidget._binary_search_char
+        host._pixel_to_cell_text_aware = TerminalWidget._pixel_to_cell_text_aware.__get__(
+            host, type(host))
+        host._pixel_to_cell = TerminalWidget._pixel_to_cell.__get__(
+            host, type(host))
+
+        for visual_col in (5, 25, 50, 75):
+            with self.subTest(visual_col=visual_col):
+                click_x = int(PADDING + (visual_col + 0.5) * self.CHAR_WIDTH)
+                click_y = PADDING + 5
+                legacy = host._pixel_to_cell(click_x, click_y)
+                text_aware = host._pixel_to_cell_text_aware(click_x, click_y)
+                self.assertEqual(
+                    legacy, text_aware,
+                    f"Negative control failed: under uniform-grid font "
+                    f"(ratio=1.0) at col {visual_col}, helpers DIFFER "
+                    f"(_pixel_to_cell={legacy} vs "
+                    f"_pixel_to_cell_text_aware={text_aware}). The text-aware "
+                    f"helper is supposed to reduce to uniform-grid behavior "
+                    f"when the font is uniform.")
+
+    def test_drift_grows_with_column(self):
+        """Bug A insight: the drift is LINEAR in column. Click at col 10 vs
+        col 70 should produce different drift magnitudes (the further from
+        the row's left edge, the more accumulated subadditivity)."""
+        click_y = PADDING + 5
+        drifts = {}
+        for visual_col in (10, 30, 50, 70):
+            click_x = self._click_at_visual_col_middle(visual_col)
+            legacy = self.host._pixel_to_cell(click_x, click_y)
+            drift = visual_col - legacy[1]
+            drifts[visual_col] = drift
+
+        # Drift at col 70 should exceed drift at col 10.
+        self.assertGreater(
+            drifts[70], drifts[10],
+            f"Bug A drift should grow with column: drifts={drifts}. If the "
+            f"drift at col 70 ({drifts[70]}) is not greater than at col 10 "
+            f"({drifts[10]}), the synthetic font is not actually subadditive "
+            f"or the legacy helper is doing something other than uniform-grid "
+            f"division.")
+
+
 if __name__ == "__main__":
     unittest.main()
