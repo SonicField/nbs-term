@@ -1013,7 +1013,8 @@ class TerminalApp:
 
         # Tab notebook
         style = ttk.Style()
-        style.configure("TNotebook", borderwidth=0, padding=0)
+        style.configure("TNotebook", borderwidth=0, padding=0,
+                        background=self._config.bg)
         style.layout("TNotebook", [])  # strip the outer chrome the theme draws around tab content
         self._default_tab_layout = style.layout("TNotebook.Tab")
         self.notebook = ttk.Notebook(self.root)
