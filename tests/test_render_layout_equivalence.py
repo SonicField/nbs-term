@@ -57,6 +57,16 @@ if _root is None:
         UserWarning,
         stacklevel=2,
     )
+else:
+    # Hide the root window. Layout-equivalence tests read canvas item coords
+    # via canvas.coords()/itemcget() — synchronous reads from the display
+    # list that do not require the window to be on screen. On Mac Tk 9.0.3,
+    # leaving the root un-managed AND calling update_idletasks() after a
+    # Canvas pack triggers showRootWindow(), which dereferences NULL+0x170
+    # and segfaults the Python process (alexie crash report 2026-04-23 11:36).
+    # withdraw() puts the root in iconified state without realising the
+    # platform-window structure showRootWindow walks.
+    _root.withdraw()
 
 
 def _attrs_to_font_tag(attrs):
@@ -104,8 +114,11 @@ class TestRenderLayoutEquivalence(unittest.TestCase):
             _root, width=80 * cls.char_width + 2 * PADDING,
             height=10 * cls.char_height + 2 * PADDING,
             bg="#000000", highlightthickness=0, borderwidth=0)
-        cls.canvas.pack()
-        _root.update_idletasks()
+        # No canvas.pack() and no update_idletasks() — Mac Tk 9.0.3 segfaults
+        # in showRootWindow() when the canvas is geometry-managed before the
+        # root is shown (see _root.withdraw() at module load). Canvas
+        # operations (Tcl create text via render_frame, coords readback)
+        # work without geometry management.
 
     @classmethod
     def tearDownClass(cls):
@@ -133,7 +146,9 @@ class TestRenderLayoutEquivalence(unittest.TestCase):
             self.char_height,
             PADDING,
         )
-        _root.update_idletasks()
+        # No update_idletasks — render_frame is synchronous via Tcl_EvalObjv;
+        # canvas items are in the display list immediately on return.
+        # See module-load _root.withdraw() comment for the Mac crash context.
 
     def _canvas_text_items_at_row(self, row):
         """Return [(x, text, font_tag), ...] for each canvas text item whose y
