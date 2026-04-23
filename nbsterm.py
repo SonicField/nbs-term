@@ -54,7 +54,19 @@ DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
 PADDING = 8  # pixels of margin around terminal content
+
+
 SCROLLBACK_LINES = 10000
+
+
+def _named_font(name, **kwargs):
+    """Return the named font, reusing the existing one if already in Tk's
+    global registry. Tk font names are global per interpreter, so a second
+    TerminalWidget instance (e.g. opened via Cmd+T) cannot create the
+    same name again — reuse instead. Bug D fix."""
+    if name in tkfont.names():
+        return tkfont.nametofont(name)
+    return tkfont.Font(name=name, **kwargs)
 
 
 # Color utilities — implemented in C (src/color_utils.phc)
@@ -89,14 +101,21 @@ class TerminalWidget:
         self._cursor_visible = True
         self._blink_id = None
 
-        # Font setup — use requested font (no silent fallback)
-        # Named fonts so C render_frame() can reference them via Tcl
-        self.font = tkfont.Font(family=font_family, size=font_size, name="font_normal")
+        # Font setup — use requested font (no silent fallback). Named fonts
+        # so C render_frame() can reference them via Tcl. Reuse existing
+        # named fonts on second+ TerminalWidget (Cmd+T) — Tk font names are
+        # global per interpreter so we cannot create the same name twice.
+        self.font = _named_font(
+            "font_normal", family=font_family, size=font_size)
         self._font_cache = {
             0: self.font,
-            0x01: tkfont.Font(family=font_family, size=font_size, weight="bold", name="font_bold"),
-            0x04: tkfont.Font(family=font_family, size=font_size, slant="italic", name="font_italic"),
-            0x05: tkfont.Font(family=font_family, size=font_size, weight="bold", slant="italic", name="font_bold_italic"),
+            0x01: _named_font(
+                "font_bold", family=font_family, size=font_size, weight="bold"),
+            0x04: _named_font(
+                "font_italic", family=font_family, size=font_size, slant="italic"),
+            0x05: _named_font(
+                "font_bold_italic", family=font_family, size=font_size,
+                weight="bold", slant="italic"),
         }
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
