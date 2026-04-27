@@ -392,6 +392,20 @@ class TerminalWidget:
 
     def _render(self):
         """Delegate rendering to C via Tcl. C manages double-buffering internally."""
+        # Bug C v3 hypothesis-under-test: paint a canvas-item rectangle over the
+        # full canvas with bg color. On macOS aqua the canvas WIDGET bg attr
+        # appears aqua-tinted (lighter) where no per-character rect covers it;
+        # canvas-item fills are not tinted. If this rect eliminates the slop,
+        # the widget-bg-tint hypothesis is confirmed. If it does not, the slop
+        # is owned by something the canvas cannot reach (e.g. NSTabView pane
+        # chrome behind ttk.Notebook).
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        self.canvas.delete("bg_fill")
+        self.canvas.create_rectangle(
+            0, 0, canvas_w, canvas_h,
+            fill=self._bg, outline="", tags="bg_fill")
+        self.canvas.tag_lower("bg_fill")
         # Cursor style: 0=Block, 1=Underline, 2=Bar
         style_map = {"Block": 0, "Underline": 1, "Bar": 2}
         cursor_style_int = style_map.get(self._cursor_style, 0)
