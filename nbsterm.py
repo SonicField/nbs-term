@@ -972,10 +972,11 @@ class PreferencesDialog(tk.Toplevel):
 class TabSession:
     """One tab: a TerminalWidget + SSHTransport pair."""
 
-    def __init__(self, notebook, host, port, username, config, app):
+    def __init__(self, parent, host, port, username, config, app):
         self.app = app
         self.host = host
-        self.frame = tk.Frame(notebook)
+        self.label = host.split("@")[-1].split(".")[0] if host else "local"
+        self.frame = tk.Frame(parent)
 
         if config:
             self.widget = TerminalWidget(
@@ -1003,9 +1004,8 @@ class TabSession:
         # Bind on the frame (not canvas) so window resizes deliver Configure
         # events with the available canvas-area size, not the canvas's own size.
         self.frame.bind("<Configure>", self._on_configure)
-
-        label = host.split("@")[-1].split(".")[0] if host else "local"
-        notebook.add(self.frame, text=label)
+        # Caller (TerminalApp._select_tab) packs/unpacks self.frame to swap
+        # which tab is visible. Not packed here.
 
     def start(self):
         self.ssh.start(self.widget.rows, self.widget.cols)
@@ -1036,6 +1036,12 @@ class TabSession:
 class TerminalApp:
     """Main application with tabbed terminal sessions."""
 
+    # Tab strip visual styling
+    _TAB_BG_INACTIVE = "#2a2a2a"
+    _TAB_BG_ACTIVE = "#404040"
+    _TAB_FG_INACTIVE = "#888888"
+    _TAB_FG_ACTIVE = "#ffffff"
+
     def __init__(self, host, port=None, username=None, config=None):
         self.root = tk.Tk()
         self.root.title(f"nbs-term — {host}")
@@ -1044,16 +1050,21 @@ class TerminalApp:
         self._port = port
         self._username = username
         self.tabs = []  # list of TabSession
+        self._tab_buttons = []  # parallel to self.tabs
+        self._active_tab_idx = -1
 
-        # Tab notebook
-        style = ttk.Style()
-        style.configure("TNotebook", borderwidth=0, padding=0,
-                        background=self._config.bg)
-        style.layout("TNotebook", [])  # strip the outer chrome the theme draws around tab content
-        self._default_tab_layout = style.layout("TNotebook.Tab")
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Manual tab UI (replaces ttk.Notebook). On macOS aqua, ttk.Notebook
+        # is backed by NSTabView whose pane chrome paints a lighter aqua-tinted
+        # bezel that ttk styling cannot strip — that bezel was Bug C v3's
+        # "lighter slop" perimeter. tk.Frame + custom tab-strip avoids the
+        # native control entirely (alexie 2026-04-27 17:35:42, 17:38:45).
+        self.tab_area = tk.Frame(self.root, bg=self._config.bg)
+        self.tab_area.pack(fill=tk.BOTH, expand=True)
+        self.tab_strip = tk.Frame(self.tab_area, bg=self._config.bg)
+        # Strip is packed lazily in _refresh_tab_strip when 2+ tabs exist
+        # (preserves a45403a auto-hide behavior on single tab).
+        self.tab_content = tk.Frame(self.tab_area, bg=self._config.bg)
+        self.tab_content.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
         # Create first tab
         self._add_tab(host, port, username)
@@ -1100,8 +1111,9 @@ class TerminalApp:
     @property
     def _active_tab(self):
         """Get the currently active TabSession."""
-        idx = self.notebook.index("current") if self.tabs else -1
-        return self.tabs[idx] if 0 <= idx < len(self.tabs) else None
+        if 0 <= self._active_tab_idx < len(self.tabs):
+            return self.tabs[self._active_tab_idx]
+        return None
 
     @property
     def widget(self):
@@ -1111,27 +1123,54 @@ class TerminalApp:
 
     def _add_tab(self, host, port=None, username=None):
         """Create a new tab with an SSH session."""
-        tab = TabSession(self.notebook, host, port, username,
+        tab = TabSession(self.tab_content, host, port, username,
                          self._config, self)
         self.tabs.append(tab)
-        self.notebook.select(tab.frame)
-        self._update_tab_visibility()
+        # Tab button for the strip; index captured at creation time and
+        # refreshed in _refresh_tab_strip after add/remove.
+        btn = tk.Button(
+            self.tab_strip, text=tab.label,
+            relief=tk.FLAT, borderwidth=0,
+            highlightthickness=0, padx=12, pady=4,
+            bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE,
+            activebackground=self._TAB_BG_ACTIVE,
+            activeforeground=self._TAB_FG_ACTIVE,
+        )
+        self._tab_buttons.append(btn)
+        self._select_tab(len(self.tabs) - 1)
         return tab
 
-    def _update_tab_visibility(self):
-        """Hide the tab strip when only one tab exists; show when 2+ (Apple Terminal UX)."""
-        style = ttk.Style()
-        if len(self.tabs) <= 1:
-            style.layout("TNotebook.Tab", [])
-        else:
-            style.layout("TNotebook.Tab", self._default_tab_layout)
+    def _select_tab(self, idx):
+        """Make tab `idx` the visible/active tab."""
+        if not (0 <= idx < len(self.tabs)):
+            return
+        # Hide currently visible tab content
+        if 0 <= self._active_tab_idx < len(self.tabs):
+            self.tabs[self._active_tab_idx].frame.pack_forget()
+        self._active_tab_idx = idx
+        self.tabs[idx].frame.pack(in_=self.tab_content,
+                                  fill=tk.BOTH, expand=True)
+        self._refresh_tab_strip()
+        self.root.title(f"nbs-term — {self.tabs[idx].host}")
+        self.tabs[idx].widget._render()
 
-    def _on_tab_changed(self, event=None):
-        """Focus the active tab's terminal."""
-        tab = self._active_tab
-        if tab:
-            self.root.title(f"nbs-term — {tab.host}")
-            tab.widget._render()
+    def _refresh_tab_strip(self):
+        """Repack tab buttons + auto-hide the strip on single tab.
+        Rebinds button commands to current indices (indices shift on close)."""
+        if len(self.tabs) <= 1:
+            self.tab_strip.pack_forget()
+        else:
+            self.tab_strip.pack(side=tk.TOP, fill=tk.X,
+                                before=self.tab_content)
+        for i, btn in enumerate(self._tab_buttons):
+            btn.pack_forget()
+        for i, btn in enumerate(self._tab_buttons):
+            btn.config(command=lambda x=i: self._select_tab(x))
+            if i == self._active_tab_idx:
+                btn.config(bg=self._TAB_BG_ACTIVE, fg=self._TAB_FG_ACTIVE)
+            else:
+                btn.config(bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE)
+            btn.pack(side=tk.LEFT)
 
     def _on_key(self, event):
         """Route keyboard to active tab."""
@@ -1147,19 +1186,21 @@ class TerminalApp:
 
     def _on_close_tab(self, event=None):
         """Close the current tab."""
-        tab = self._active_tab
-        if tab and len(self.tabs) > 1:
-            idx = self.tabs.index(tab)
+        if not (0 <= self._active_tab_idx < len(self.tabs)):
+            return "break"
+        if len(self.tabs) > 1:
+            idx = self._active_tab_idx
+            tab = self.tabs.pop(idx)
             tab.stop()
-            self.notebook.forget(tab.frame)
-            self.tabs.remove(tab)
-            # Select adjacent tab
-            if idx >= len(self.tabs):
-                idx = len(self.tabs) - 1
-            if self.tabs:
-                self.notebook.select(self.tabs[idx].frame)
-            self._update_tab_visibility()
-        elif tab and len(self.tabs) == 1:
+            tab.frame.destroy()
+            btn = self._tab_buttons.pop(idx)
+            btn.destroy()
+            new_idx = min(idx, len(self.tabs) - 1)
+            # Force _select_tab to repack (skip the pack_forget on the old idx
+            # which no longer exists).
+            self._active_tab_idx = -1
+            self._select_tab(new_idx)
+        elif len(self.tabs) == 1:
             # Last tab — close window
             self._on_close()
         return "break"
@@ -1167,15 +1208,13 @@ class TerminalApp:
     def _on_next_tab(self, event=None):
         """Switch to next tab."""
         if len(self.tabs) > 1:
-            idx = self.notebook.index("current")
-            self.notebook.select((idx + 1) % len(self.tabs))
+            self._select_tab((self._active_tab_idx + 1) % len(self.tabs))
         return "break"
 
     def _on_prev_tab(self, event=None):
         """Switch to previous tab."""
         if len(self.tabs) > 1:
-            idx = self.notebook.index("current")
-            self.notebook.select((idx - 1) % len(self.tabs))
+            self._select_tab((self._active_tab_idx - 1) % len(self.tabs))
         return "break"
 
     def _on_copy(self, event=None):
