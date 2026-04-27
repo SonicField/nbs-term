@@ -187,7 +187,7 @@ class TestRenderLayoutEquivalence(unittest.TestCase):
             _root.tk.interpaddr(),
             str(self.canvas),
             False, 0, "", "#ffffff", "#000000",
-            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING,
+            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING, PADDING,
         )
         # No update_idletasks — see module-load _root.withdraw() comment.
 
@@ -319,7 +319,7 @@ class TestScrollbackCompositeEquivalence(unittest.TestCase):
             _root.tk.interpaddr(),
             str(self.canvas),
             False, 0, "", "#ffffff", "#000000",
-            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING,
+            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING, PADDING,
         )
         # No update_idletasks — see module-load _root.withdraw() comment.
 
@@ -578,6 +578,9 @@ class TestBugAFixDisagrees(unittest.TestCase):
         host.char_height = self.CHAR_HEIGHT
         host.cols = self.COLS
         host.rows = self.ROWS
+        # Test fixture mirrors the symmetric-canvas layout where origin == PADDING.
+        host._origin_x = PADDING
+        host._origin_y = PADDING
         # Inject FakeFont as the entire font cache so every attrs maps to the
         # subadditive font. The helper's font lookup at nbsterm.py:221 is
         # `self._font_cache.get(attrs & 0x05, self.font)`.
@@ -664,6 +667,8 @@ class TestBugAFixDisagrees(unittest.TestCase):
         host.char_height = self.CHAR_HEIGHT
         host.cols = self.COLS
         host.rows = self.ROWS
+        host._origin_x = PADDING
+        host._origin_y = PADDING
         host._font_cache = {0x00: uniform_font, 0x01: uniform_font,
                             0x04: uniform_font, 0x05: uniform_font}
         host.font = uniform_font
@@ -764,7 +769,7 @@ class TestAltScreenAppRenders(unittest.TestCase):
             _root.tk.interpaddr(),
             str(self.canvas),
             False, 0, "", "#ffffff", "#000000",
-            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING,
+            1.0, _CHAR_WIDTH, _CHAR_HEIGHT, PADDING, PADDING,
         )
 
     def _all_canvas_text(self):

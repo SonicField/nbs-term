@@ -53,7 +53,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
-PADDING = 8  # pixels of margin around terminal content
+PADDING = 8  # default margin; render code uses dynamic per-axis origin (centered text inside canvas-filled frame) — see TerminalWidget._compute_origin_for
 
 
 SCROLLBACK_LINES = 10000
@@ -120,18 +120,24 @@ class TerminalWidget:
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
-        # Canvas — sized to the actual rendered text width (font.measure of
-        # the widest variant), not the math-grid `cols * char_width`. On Mac
-        # CoreText, font.measure(c*N) != N*font.measure(c) (subadditivity, the
-        # same root cause as Bug A); a math-grid canvas leaves the case-3
-        # gap on the right edge inside the canvas. Packed expand=True (no
-        # fill) so any frame-side slop splits symmetrically.
-        width, height = self._grid_canvas_size(self.cols, self.rows)
+        # Canvas fills the parent frame (fill=BOTH, expand=True). Text is
+        # centered inside the canvas via the per-axis (origin_x, origin_y)
+        # passed to render_frame; the surrounding canvas pixels paint clean
+        # bg. Load-bearing: tk.Frame on macOS aqua tints its bg lighter than
+        # tk.Canvas does, so any frame-perimeter visible to the user shows
+        # as a "lighter slop" band (Bug C). fill=BOTH eliminates that band
+        # geometrically — the frame's tinted region is no longer visible.
+        width, height = self.cols * self.char_width, self.rows * self.char_height
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
             bg=self._bg, highlightthickness=0, borderwidth=0,
         )
-        self.canvas.pack(expand=True)
+        self.canvas.pack(expand=True, fill=tk.BOTH)
+        # Per-axis text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2).
+        # Recomputed in handle_resize. Initial values set for the math-grid
+        # canvas before the first <Configure>.
+        self._origin_x = 0
+        self._origin_y = 0
 
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
@@ -162,13 +168,21 @@ class TerminalWidget:
     def set_write_callback(self, cb):
         self._write_callback = cb
 
-    def _grid_canvas_size(self, cols, rows):
-        """Return (canvas_width, canvas_height) sized to the actual rendered
-        text extent — max font.measure across font variants so mixed-attr
-        rows don't overflow — plus symmetric PADDING. Linux: same as math
-        grid (ratio=1.0). Mac: ~5% narrower (CoreText subadditivity)."""
+    def _text_extent(self, cols, rows):
+        """Return (text_w, text_h): pixel size of the cols×rows grid as
+        actually rendered — max font.measure across font variants so mixed-attr
+        rows don't overflow. Linux: same as math grid. Mac: ~5% narrower
+        (CoreText subadditivity, same root cause as Bug A)."""
         text_w = max(f.measure("M" * cols) for f in self._font_cache.values())
-        return (text_w + 2 * PADDING, rows * self.char_height + 2 * PADDING)
+        return (text_w, rows * self.char_height)
+
+    def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
+        """Centered text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2).
+        Half-cell minimum padding is enforced by the cols/rows formula in
+        handle_resize (reserves char_width/char_height worth of slack)."""
+        text_w, text_h = self._text_extent(cols, rows)
+        return (max(0, (canvas_w - text_w) // 2),
+                max(0, (canvas_h - text_h) // 2))
 
     def _pixel_to_cell(self, x, y):
         """Convert pixel coordinates to (row, col), accounting for padding.
@@ -178,7 +192,7 @@ class TerminalWidget:
         fallback only. Mouse handlers use _pixel_to_cell_text_aware.
         """
         return _nbsterm.pixel_to_cell(
-            x - PADDING, y - PADDING,
+            x - self._origin_x, y - self._origin_y,
             self.char_width, self.char_height, self.cols, self.rows)
 
     def _row_spans_for_visible(self, row):
@@ -227,7 +241,7 @@ class TerminalWidget:
         accumulates font.measure(prefix), and binary-searches for the cell x
         falls in. Falls back to _pixel_to_cell if row spans unavailable.
         """
-        row = (y - PADDING) // self.char_height
+        row = (y - self._origin_y) // self.char_height
         if row < 0:
             row = 0
         elif row >= self.rows:
@@ -237,7 +251,7 @@ class TerminalWidget:
         if not spans:
             return self._pixel_to_cell(x, y)
 
-        cur_x = PADDING
+        cur_x = self._origin_x
         cur_col = 0
         for text_bytes, _fg, _bg, attrs, col_widths in spans:
             text = (text_bytes if isinstance(text_bytes, str)
@@ -393,7 +407,8 @@ class TerminalWidget:
             self._gamma,
             self.char_width,
             self.char_height,
-            PADDING,
+            self._origin_x,
+            self._origin_y,
         )
 
         # Restart blink timer
@@ -425,22 +440,27 @@ class TerminalWidget:
 
     def handle_resize(self, event):
         """Handle window resize. event comes from the parent frame's Configure
-        (so event.width/height = available area for the canvas)."""
-        new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
-        new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
-        # Snap canvas to the actual rendered text extent (not math grid) so
-        # right edge stays symmetric with left under CoreText subadditivity.
-        snap_w, snap_h = self._grid_canvas_size(new_cols, new_rows)
-        self.canvas.config(width=snap_w, height=snap_h)
-        if new_cols != self.cols or new_rows != self.rows:
+        (so event.width/height = the canvas area, since canvas fills frame).
+        Reserves char_width/char_height of slack so the centered text always
+        has at least half-cell padding on each side."""
+        new_cols = max(1, (event.width - self.char_width) // self.char_width)
+        new_rows = max(1, (event.height - self.char_height) // self.char_height)
+        new_origin = self._compute_origin_for(new_cols, new_rows,
+                                              event.width, event.height)
+        resized = (new_cols != self.cols or new_rows != self.rows)
+        origin_shifted = (new_origin != (self._origin_x, self._origin_y))
+        if resized:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-            # Reset render state on resize
+        if resized or origin_shifted:
+            # Existing canvas items live at the old origin; clear and re-draw.
             self.canvas.delete("buf_0")
             self.canvas.delete("buf_1")
             self.term.render_reset()
+            self._origin_x, self._origin_y = new_origin
             self._render()
+        if resized:
             return (new_rows, new_cols)
         return None
 
@@ -1189,8 +1209,8 @@ class TerminalApp:
             w._cursor_color = config.cursor.color or None
             canvas_w = w.canvas.winfo_width()
             canvas_h = w.canvas.winfo_height()
-            new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
-            new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
+            new_cols = max(1, (canvas_w - w.char_width) // w.char_width)
+            new_rows = max(1, (canvas_h - w.char_height) // w.char_height)
             if new_cols != w.cols or new_rows != w.rows:
                 w.cols = new_cols
                 w.rows = new_rows
@@ -1199,6 +1219,8 @@ class TerminalApp:
                 w.canvas.delete("buf_1")
                 w.term.render_reset()
                 tab.ssh.resize(new_rows, new_cols)
+            w._origin_x, w._origin_y = w._compute_origin_for(
+                w.cols, w.rows, canvas_w, canvas_h)
             w._render()
 
     def _toggle_fullscreen(self, event=None):

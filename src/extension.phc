@@ -841,12 +841,13 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
     int cursor_visible, cursor_style;
     const char *cursor_color_str, *fg_str, *bg_str;
     double gamma_val;
-    int char_width, char_height, padding;
+    int char_width, char_height, padding_x, padding_y;
 
-    if (!PyArg_ParseTuple(args, "Kspisssdiii", &interp_addr, &canvas_path,
+    if (!PyArg_ParseTuple(args, "Kspisssdiiii", &interp_addr, &canvas_path,
                           &cursor_visible, &cursor_style,
                           &cursor_color_str, &fg_str, &bg_str,
-                          &gamma_val, &char_width, &char_height, &padding))
+                          &gamma_val, &char_width, &char_height,
+                          &padding_x, &padding_y))
         return NULL;
 
     Tcl_Interp *interp = (Tcl_Interp *)(uintptr_t)interp_addr;
@@ -944,8 +945,8 @@ static PyObject *Terminal_render_frame(TerminalObject *self, PyObject *args) {
 
         PyObject *spans = PyList_GET_ITEM(screen, r);
         int col_offset = 0;
-        int x = padding;
-        int y = padding + r * char_height;
+        int x = padding_x;
+        int y = padding_y + r * char_height;
 
         for (Py_ssize_t si = 0; si < PyList_GET_SIZE(spans); si++) {
             PyObject *span = PyList_GET_ITEM(spans, si);
