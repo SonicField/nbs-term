@@ -784,6 +784,71 @@ class TestMouseHandlerRouting(unittest.TestCase):
         self.assertEqual(len(host.text_aware_calls), 4)
 
 
+class TestConfigureBindingPlacement(unittest.TestCase):
+    """Configure-binding placement regression test.
+
+    Invariant: <Configure> MUST be bound on TabSession.frame (the parent
+    whose Configure event tracks real window resizes) and MUST NOT be
+    bound on TerminalWidget.canvas.
+
+    Originally added to guard da5b9a1's choice of frame as the resize
+    hook. The architecture evolved (26c9344 made canvas fill the frame
+    via pack(fill=BOTH, expand=True), removing the canvas.config snap)
+    but the invariant still holds: frame is the geometry source-of-truth
+    for resize, canvas is its child. A canvas-bound Configure listener
+    would either duplicate notifications redundantly or — if the file
+    later re-introduces canvas.configure(width=, height=) calls in
+    handle_resize — feedback-loop into recursive resize.
+
+    Static source inspection — no Tk display needed.
+    """
+
+    def test_canvas_has_no_configure_binding(self):
+        """A Configure binding on canvas risks redundant or recursive
+        resize notification — assert no such binding exists in
+        TerminalWidget."""
+        import inspect
+        from nbsterm import TerminalWidget
+        src = inspect.getsource(TerminalWidget)
+
+        import re
+        canvas_configure_pattern = re.compile(
+            r'self\.canvas\.bind\(\s*["\']<Configure>["\']'
+        )
+        match = canvas_configure_pattern.search(src)
+        self.assertIsNone(
+            match,
+            f"REGRESSION: TerminalWidget binds <Configure> on canvas at "
+            f"line containing {match.group(0) if match else None!r}. "
+            f"Resize must hook from the parent frame (TabSession.frame), "
+            f"not the canvas — the canvas is the child whose size is "
+            f"derived from the frame, so a canvas-bound Configure either "
+            f"fires redundantly or feedback-loops with any future "
+            f"canvas.configure(width=, height=) in handle_resize."
+        )
+
+    def test_frame_has_configure_binding(self):
+        """Positive control: TabSession must bind <Configure> on
+        self.frame (the parent whose Configure tracks real window
+        resizes)."""
+        import inspect
+        from nbsterm import TabSession
+        src = inspect.getsource(TabSession)
+
+        import re
+        frame_configure_pattern = re.compile(
+            r'self\.frame\.bind\(\s*["\']<Configure>["\']'
+        )
+        self.assertIsNotNone(
+            frame_configure_pattern.search(src),
+            "TabSession does not bind <Configure> on self.frame. The "
+            "resize handler must trigger from frame's Configure "
+            "(parent area changes track real window resizes); without "
+            "it, handle_resize never fires and the terminal does not "
+            "adapt to window size."
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
