@@ -976,7 +976,10 @@ class TabSession:
         self.app = app
         self.host = host
         self.label = host.split("@")[-1].split(".")[0] if host else "local"
-        self.frame = tk.Frame(parent)
+        # highlightthickness=0 + borderwidth=0 — aqua's default focus-highlight
+        # ring on tk.Frame contributes to the lighter perimeter band when
+        # canvas is text-extent-smaller than the frame (Bug C v3 chain).
+        self.frame = tk.Frame(parent, highlightthickness=0, borderwidth=0)
 
         if config:
             self.widget = TerminalWidget(
@@ -1058,12 +1061,22 @@ class TerminalApp:
         # bezel that ttk styling cannot strip — that bezel was Bug C v3's
         # "lighter slop" perimeter. tk.Frame + custom tab-strip avoids the
         # native control entirely (alexie 2026-04-27 17:35:42, 17:38:45).
-        self.tab_area = tk.Frame(self.root, bg=self._config.bg)
+        # highlightthickness=0 + borderwidth=0 on every tk.Frame: aqua draws
+        # a focus-highlight ring (default highlightthickness=2px on aqua)
+        # at the perimeter of each Frame which compounds across the four
+        # nested containers (tab_area→tab_strip/tab_content→TabSession.frame)
+        # into the asymmetric lighter band alexie reported post-6164ef5
+        # (2026-04-28 06:45:46). Stripping per-Frame chrome eliminates the
+        # paint regardless of fill semantics.
+        self.tab_area = tk.Frame(self.root, bg=self._config.bg,
+                                 highlightthickness=0, borderwidth=0)
         self.tab_area.pack(fill=tk.BOTH, expand=True)
-        self.tab_strip = tk.Frame(self.tab_area, bg=self._config.bg)
+        self.tab_strip = tk.Frame(self.tab_area, bg=self._config.bg,
+                                  highlightthickness=0, borderwidth=0)
         # Strip is packed lazily in _refresh_tab_strip when 2+ tabs exist
         # (preserves a45403a auto-hide behavior on single tab).
-        self.tab_content = tk.Frame(self.tab_area, bg=self._config.bg)
+        self.tab_content = tk.Frame(self.tab_area, bg=self._config.bg,
+                                    highlightthickness=0, borderwidth=0)
         self.tab_content.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
         # Create first tab
