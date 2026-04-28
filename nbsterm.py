@@ -168,13 +168,37 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
-        """Centered text origin. text_w/text_h match what render_frame
-        actually draws (cols * char_width, rows * char_height — one cell
-        per char_width pixels, regardless of font.measure subadditivity
-        on Mac CoreText). No PADDING clamp needed: cols/rows are derived
-        as (canvas - 2*PADDING) // cell, so the remainder is always
-        >= 2*PADDING and origin is naturally >= PADDING."""
-        text_w = cols * self.char_width
+        """Centered text origin via the same per-span font.measure machinery
+        the mouse-selection fix uses (_pixel_to_cell_text_aware). Walks
+        _row_spans_for_visible(r) for each row, sums font.measure(span_text)
+        with the per-span font (bold/italic/etc keyed on attrs & 0x05);
+        takes the max row width as text_w. Pixel-accurate on Mac CoreText
+        because Tcl 'font measure' (used by both render_frame and
+        Python tkfont.Font.measure) is the same call on the same text.
+
+        Vertical: rows * char_height — line metric is uniform, no
+        subadditivity in the y direction.
+
+        Cold start (no spans yet, all rows return None or empty): origin
+        = (PADDING, PADDING) so the first paint lands at a defined spot."""
+        text_w = 0
+        for r in range(rows):
+            spans = self._row_spans_for_visible(r)
+            if not spans:
+                continue
+            row_w = 0
+            for span in spans:
+                text_bytes, _fg, _bg, attrs, _col_widths = span
+                text = (text_bytes if isinstance(text_bytes, str)
+                        else text_bytes.decode("utf-8", "replace"))
+                if not text:
+                    continue
+                font = self._font_cache.get(attrs & 0x05, self.font)
+                row_w += font.measure(text)
+            if row_w > text_w:
+                text_w = row_w
+        if text_w == 0:
+            return (PADDING, PADDING)
         text_h = rows * self.char_height
         return ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2)
 
