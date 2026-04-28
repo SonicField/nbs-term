@@ -53,7 +53,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
-PADDING = 8  # canvas-internal border (text drawn at fixed (PADDING, PADDING) offset from canvas top-left). Cross-platform Tk semantics — pack handles fill, no manual centering math.
+PADDING = 8  # minimum canvas-internal border. Text origin centers in the canvas via _compute_origin_for, but never closer than PADDING to any edge.
 
 
 SCROLLBACK_LINES = 10000
@@ -122,16 +122,21 @@ class TerminalWidget:
 
         # Canvas — single widget, owned by TerminalWidget, packed by caller
         # (TerminalApp swaps tabs via canvas.pack/pack_forget on root). Text
-        # is drawn at fixed (PADDING, PADDING) offset from canvas top-left;
-        # PADDING constitutes the visual "wide border" around the text grid.
-        # No manual centering math, no frame wrappers, no platform-conditional
-        # paint workarounds (alexie 2026-04-28 06:59:16 architectural reset).
+        # is drawn at (origin_x, origin_y) computed per resize so the text
+        # grid stays centered inside the canvas with at least PADDING on
+        # every side. Border region (canvas pixels outside the text grid)
+        # is painted by a canvas-item rectangle in _render so it shows
+        # clean bg even when the canvas WIDGET bg attr aqua-tints.
         width = self.cols * self.char_width + 2 * PADDING
         height = self.rows * self.char_height + 2 * PADDING
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
             bg=self._bg, highlightthickness=0, borderwidth=0,
         )
+        # Initial origin = PADDING; recomputed in handle_resize once the
+        # canvas has its real geometry.
+        self._origin_x = PADDING
+        self._origin_y = PADDING
 
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
@@ -162,15 +167,23 @@ class TerminalWidget:
     def set_write_callback(self, cb):
         self._write_callback = cb
 
+    def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
+        """Centered text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2),
+        floored at PADDING so the border never collapses. Uses font.measure
+        for accurate text width on Mac (CoreText subadditivity)."""
+        text_w = max(f.measure("M" * cols) for f in self._font_cache.values())
+        text_h = rows * self.char_height
+        return (max(PADDING, (canvas_w - text_w) // 2),
+                max(PADDING, (canvas_h - text_h) // 2))
+
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col), accounting for the fixed
-        PADDING border. Uniform-grid math; correct only when
+        """Convert pixel coordinates to (row, col) accounting for centered
+        text origin. Uniform-grid math; correct only when
         font.measure(c*N) == N*font.measure(c). macOS/CoreText violates that
         (subadditivity), so this is preserved as a fallback only. Mouse handlers
-        use _pixel_to_cell_text_aware.
-        """
+        use _pixel_to_cell_text_aware."""
         return _nbsterm.pixel_to_cell(
-            x - PADDING, y - PADDING,
+            x - self._origin_x, y - self._origin_y,
             self.char_width, self.char_height, self.cols, self.rows)
 
     def _row_spans_for_visible(self, row):
@@ -219,7 +232,7 @@ class TerminalWidget:
         accumulates font.measure(prefix), and binary-searches for the cell x
         falls in. Falls back to _pixel_to_cell if row spans unavailable.
         """
-        row = (y - PADDING) // self.char_height
+        row = (y - self._origin_y) // self.char_height
         if row < 0:
             row = 0
         elif row >= self.rows:
@@ -229,7 +242,7 @@ class TerminalWidget:
         if not spans:
             return self._pixel_to_cell(x, y)
 
-        cur_x = PADDING
+        cur_x = self._origin_x
         cur_col = 0
         for text_bytes, _fg, _bg, attrs, col_widths in spans:
             text = (text_bytes if isinstance(text_bytes, str)
@@ -370,8 +383,18 @@ class TerminalWidget:
 
     def _render(self):
         """Delegate rendering to C via Tcl. C manages double-buffering internally.
-        Text drawn at fixed (PADDING, PADDING) offset — canvas widget bg fills
-        the surrounding border area cross-platform."""
+        Text drawn at fixed (PADDING, PADDING) offset; a canvas-item rectangle
+        is painted under it covering the full canvas with bg color so that the
+        border region (where no per-character rect exists) shows clean bg.
+        Hypothesis-as-test for tk.Canvas widget-bg-attr aqua-tinting (alexie
+        2026-04-28 07:18:41 + supervisor 07:20:12)."""
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        self.canvas.delete("bg_fill")
+        self.canvas.create_rectangle(
+            0, 0, canvas_w, canvas_h,
+            fill=self._bg, outline="", tags="bg_fill")
+        self.canvas.tag_lower("bg_fill")
         # Cursor style: 0=Block, 1=Underline, 2=Bar
         style_map = {"Block": 0, "Underline": 1, "Bar": 2}
         cursor_style_int = style_map.get(self._cursor_style, 0)
@@ -387,8 +410,8 @@ class TerminalWidget:
             self._gamma,
             self.char_width,
             self.char_height,
-            PADDING,
-            PADDING,
+            self._origin_x,
+            self._origin_y,
         )
 
         # Restart blink timer
@@ -420,11 +443,13 @@ class TerminalWidget:
 
     def handle_resize(self, event):
         """Handle window resize. event comes from the canvas's Configure
-        (event.width/height = canvas size). Text origin is fixed at (PADDING,
-        PADDING); only cols/rows recompute on resize. Reserves 2*PADDING
-        worth of border so text is bounded by the canvas-internal margin."""
+        (event.width/height = canvas size). Recomputes text origin so the
+        grid stays centered, and recomputes cols/rows so the grid fits the
+        canvas with at least PADDING border on every side."""
         new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
         new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
+        self._origin_x, self._origin_y = self._compute_origin_for(
+            new_cols, new_rows, event.width, event.height)
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
@@ -434,6 +459,12 @@ class TerminalWidget:
             self.term.render_reset()
             self._render()
             return (new_rows, new_cols)
+        # Origin shifted but grid dims unchanged — still need a redraw to
+        # move the text under the new origin.
+        self.canvas.delete("buf_0")
+        self.canvas.delete("buf_1")
+        self.term.render_reset()
+        self._render()
         return None
 
 
@@ -1220,6 +1251,8 @@ class TerminalApp:
             canvas_h = w.canvas.winfo_height()
             new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
             new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
+            w._origin_x, w._origin_y = w._compute_origin_for(
+                new_cols, new_rows, canvas_w, canvas_h)
             if new_cols != w.cols or new_rows != w.rows:
                 w.cols = new_cols
                 w.rows = new_rows
