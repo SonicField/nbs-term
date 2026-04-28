@@ -69,7 +69,7 @@ if (-not $hasCompiler) {
     Write-Host "C compiler (MSVC Build Tools) not found." -ForegroundColor Yellow
     $response = Read-Host "Install Visual Studio Build Tools? [Y]/n"
     if ($response -eq '' -or $response -eq 'Y' -or $response -eq 'y') {
-        # Check elevation — Build Tools install requires admin rights
+        # Check elevation - Build Tools install requires admin rights
         $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         if (-not $isAdmin) {
             Write-Host "ERROR: Build Tools install requires admin rights." -ForegroundColor Red
@@ -97,7 +97,7 @@ Write-Host "C compiler available." -ForegroundColor Green
 
 # Step 4: Create venv
 if (Test-Path $VenvDir) {
-    Write-Host "Venv exists at $VenvDir — reusing." -ForegroundColor Yellow
+    Write-Host "Venv exists at $VenvDir - reusing." -ForegroundColor Yellow
 } else {
     Write-Host "Creating venv at $VenvDir..." -ForegroundColor Yellow
     & "$InstallDir\python.exe" -m venv $VenvDir
@@ -109,7 +109,7 @@ $VenvPip = "$VenvDir\Scripts\pip.exe"
 
 # Step 5: Clone repo (if not already cloned)
 if (Test-Path "$RepoDir\.git") {
-    Write-Host "Repo exists at $RepoDir — pulling latest..." -ForegroundColor Yellow
+    Write-Host "Repo exists at $RepoDir - pulling latest..." -ForegroundColor Yellow
     Push-Location $RepoDir
     git pull
     Pop-Location
