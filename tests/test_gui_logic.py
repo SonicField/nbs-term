@@ -1043,6 +1043,99 @@ class TestResizeOrderingRaceFix(unittest.TestCase):
         )
 
 
+class TestTabFocusFix(unittest.TestCase):
+    """Regression guards for Bug C v3 f80a896 (tab-strip focus stealing).
+
+    Bug alexie reported (2026-04-28 17:05:45): with >1 tab, typing space
+    in the text area redirects to the tab strip and triggers tab
+    selection. Root cause (theologian 2026-04-28 17:24:54): tk.Button
+    defaults takefocus=1 and Tk's Button class binds <Key-space>/<Return>
+    to invoke. After a click, Mac leaves focus on the button; subsequent
+    Space fires button.invoke (re-selects current tab) before root's
+    <Key> handler routes to handle_key.
+
+    Fix (f80a896): (1) takefocus=0 on each tab button so Tab-traversal
+    skips them; (2) self.tabs[idx].canvas.focus_set() at end of
+    _select_tab so Mac click-focus is overridden back to the canvas.
+
+    Static-source inspection — no Tk display needed. Mac click-focus
+    behaviour itself is the falsifier alexie runs.
+    """
+
+    def test_add_tab_button_has_takefocus_zero(self):
+        """TerminalApp._add_tab MUST construct its tk.Button with
+        takefocus=0. Default takefocus=1 makes the button a Tab-traversal
+        target AND lets Tk's Button class binding for <Key-space> /
+        <KeyPress-Return> fire button.invoke when focus is on the
+        button. Removing this kwarg re-introduces the focus-steal bug
+        alexie hit on 59ed176 (2026-04-28 17:05:45)."""
+        import inspect
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._add_tab)
+
+        import re
+        # Match a tk.Button(...) call whose kwargs include takefocus=0.
+        # Allow 0 or False; reject 1 or True. DOTALL so the kwarg can
+        # be on any line within the multi-line constructor call.
+        pattern = re.compile(
+            r'tk\.Button\s*\([^)]*\btakefocus\s*=\s*(?:0|False)\b',
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            pattern.search(src),
+            "REGRESSION: TerminalApp._add_tab does not pass takefocus=0 "
+            "(or False) to tk.Button. Default takefocus=1 makes Mac "
+            "click leave focus on the button and Tk's Button class "
+            "binds <Key-space>/<Return> to invoke — typing Space in the "
+            "text area re-selects the tab (alexie 2026-04-28 17:05:45 "
+            "focus-steal bug).",
+        )
+
+    def test_select_tab_focuses_canvas(self):
+        """TerminalApp._select_tab MUST call .focus_set() on the active
+        tab's canvas. takefocus=0 alone removes Tab-traversal but Mac
+        click still focuses the button — only an explicit focus_set on
+        the canvas restores keyboard focus to the terminal after each
+        tab switch. Cmd-T also routes through _select_tab so this
+        single guard covers both paths."""
+        import inspect
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._select_tab)
+
+        import re
+        # Match either tabs[idx].canvas.focus_set() or
+        # tabs[idx].widget.canvas.focus_set() etc — any expression that
+        # ends in .canvas.focus_set( inside _select_tab. Reject a bare
+        # self.root.focus_set or button.focus_set.
+        pattern = re.compile(
+            r'\.canvas\.focus_set\s*\(\s*\)'
+        )
+        self.assertIsNotNone(
+            pattern.search(src),
+            "REGRESSION: TerminalApp._select_tab does not call "
+            "<...>.canvas.focus_set(). Without this, Mac click leaves "
+            "focus on the tab button (takefocus=0 only blocks "
+            "Tab-traversal, not click-focus on Mac) and the next Space "
+            "in the text area routes through the button's class binding "
+            "for <Key-space>, re-selecting the tab.",
+        )
+
+        # And the focused canvas MUST belong to the tab being selected
+        # (idx), not a hard-coded self.tabs[0] or the previous active.
+        # Otherwise Cmd-T / programmatic switches would land focus on
+        # the wrong canvas.
+        idx_pattern = re.compile(
+            r'self\.tabs\s*\[\s*idx\s*\]\.canvas\.focus_set\s*\(\s*\)'
+        )
+        self.assertIsNotNone(
+            idx_pattern.search(src),
+            "REGRESSION: _select_tab calls .canvas.focus_set() but not "
+            "on self.tabs[idx]. Focus must land on the tab being "
+            "selected, otherwise Cmd-T (which calls _select_tab(len-1)) "
+            "and programmatic switches would focus the wrong canvas.",
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
