@@ -53,7 +53,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
-PADDING = 8  # default margin; render code uses dynamic per-axis origin (centered text inside canvas-filled frame) — see TerminalWidget._compute_origin_for
+PADDING = 8  # canvas-internal border (text drawn at fixed (PADDING, PADDING) offset from canvas top-left). Cross-platform Tk semantics — pack handles fill, no manual centering math.
 
 
 SCROLLBACK_LINES = 10000
@@ -120,24 +120,18 @@ class TerminalWidget:
         self.char_width = self.font.measure("M")
         self.char_height = self.font.metrics("linespace")
 
-        # Canvas fills the parent frame (fill=BOTH, expand=True). Text is
-        # centered inside the canvas via the per-axis (origin_x, origin_y)
-        # passed to render_frame; the surrounding canvas pixels paint clean
-        # bg. Load-bearing: tk.Frame on macOS aqua tints its bg lighter than
-        # tk.Canvas does, so any frame-perimeter visible to the user shows
-        # as a "lighter slop" band (Bug C). fill=BOTH eliminates that band
-        # geometrically — the frame's tinted region is no longer visible.
-        width, height = self.cols * self.char_width, self.rows * self.char_height
+        # Canvas — single widget, owned by TerminalWidget, packed by caller
+        # (TerminalApp swaps tabs via canvas.pack/pack_forget on root). Text
+        # is drawn at fixed (PADDING, PADDING) offset from canvas top-left;
+        # PADDING constitutes the visual "wide border" around the text grid.
+        # No manual centering math, no frame wrappers, no platform-conditional
+        # paint workarounds (alexie 2026-04-28 06:59:16 architectural reset).
+        width = self.cols * self.char_width + 2 * PADDING
+        height = self.rows * self.char_height + 2 * PADDING
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
             bg=self._bg, highlightthickness=0, borderwidth=0,
         )
-        self.canvas.pack(expand=True, fill=tk.BOTH)
-        # Per-axis text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2).
-        # Recomputed in handle_resize. Initial values set for the math-grid
-        # canvas before the first <Configure>.
-        self._origin_x = 0
-        self._origin_y = 0
 
         # Terminal engine
         self.term = _nbsterm.Terminal(rows, cols)
@@ -168,31 +162,15 @@ class TerminalWidget:
     def set_write_callback(self, cb):
         self._write_callback = cb
 
-    def _text_extent(self, cols, rows):
-        """Return (text_w, text_h): pixel size of the cols×rows grid as
-        actually rendered — max font.measure across font variants so mixed-attr
-        rows don't overflow. Linux: same as math grid. Mac: ~5% narrower
-        (CoreText subadditivity, same root cause as Bug A)."""
-        text_w = max(f.measure("M" * cols) for f in self._font_cache.values())
-        return (text_w, rows * self.char_height)
-
-    def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
-        """Centered text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2).
-        Half-cell minimum padding is enforced by the cols/rows formula in
-        handle_resize (reserves char_width/char_height worth of slack)."""
-        text_w, text_h = self._text_extent(cols, rows)
-        return (max(0, (canvas_w - text_w) // 2),
-                max(0, (canvas_h - text_h) // 2))
-
     def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col), accounting for padding.
-
-        Uniform-grid math; correct only when font.measure(c*N) == N*font.measure(c).
-        macOS/CoreText violates that (subadditivity), so this is preserved as a
-        fallback only. Mouse handlers use _pixel_to_cell_text_aware.
+        """Convert pixel coordinates to (row, col), accounting for the fixed
+        PADDING border. Uniform-grid math; correct only when
+        font.measure(c*N) == N*font.measure(c). macOS/CoreText violates that
+        (subadditivity), so this is preserved as a fallback only. Mouse handlers
+        use _pixel_to_cell_text_aware.
         """
         return _nbsterm.pixel_to_cell(
-            x - self._origin_x, y - self._origin_y,
+            x - PADDING, y - PADDING,
             self.char_width, self.char_height, self.cols, self.rows)
 
     def _row_spans_for_visible(self, row):
@@ -241,7 +219,7 @@ class TerminalWidget:
         accumulates font.measure(prefix), and binary-searches for the cell x
         falls in. Falls back to _pixel_to_cell if row spans unavailable.
         """
-        row = (y - self._origin_y) // self.char_height
+        row = (y - PADDING) // self.char_height
         if row < 0:
             row = 0
         elif row >= self.rows:
@@ -251,7 +229,7 @@ class TerminalWidget:
         if not spans:
             return self._pixel_to_cell(x, y)
 
-        cur_x = self._origin_x
+        cur_x = PADDING
         cur_col = 0
         for text_bytes, _fg, _bg, attrs, col_widths in spans:
             text = (text_bytes if isinstance(text_bytes, str)
@@ -391,21 +369,9 @@ class TerminalWidget:
             self._render()
 
     def _render(self):
-        """Delegate rendering to C via Tcl. C manages double-buffering internally."""
-        # Bug C v3 hypothesis-under-test: paint a canvas-item rectangle over the
-        # full canvas with bg color. On macOS aqua the canvas WIDGET bg attr
-        # appears aqua-tinted (lighter) where no per-character rect covers it;
-        # canvas-item fills are not tinted. If this rect eliminates the slop,
-        # the widget-bg-tint hypothesis is confirmed. If it does not, the slop
-        # is owned by something the canvas cannot reach (e.g. NSTabView pane
-        # chrome behind ttk.Notebook).
-        canvas_w = self.canvas.winfo_width()
-        canvas_h = self.canvas.winfo_height()
-        self.canvas.delete("bg_fill")
-        self.canvas.create_rectangle(
-            0, 0, canvas_w, canvas_h,
-            fill=self._bg, outline="", tags="bg_fill")
-        self.canvas.tag_lower("bg_fill")
+        """Delegate rendering to C via Tcl. C manages double-buffering internally.
+        Text drawn at fixed (PADDING, PADDING) offset — canvas widget bg fills
+        the surrounding border area cross-platform."""
         # Cursor style: 0=Block, 1=Underline, 2=Bar
         style_map = {"Block": 0, "Underline": 1, "Bar": 2}
         cursor_style_int = style_map.get(self._cursor_style, 0)
@@ -421,8 +387,8 @@ class TerminalWidget:
             self._gamma,
             self.char_width,
             self.char_height,
-            self._origin_x,
-            self._origin_y,
+            PADDING,
+            PADDING,
         )
 
         # Restart blink timer
@@ -453,28 +419,20 @@ class TerminalWidget:
             self._write_callback(data)
 
     def handle_resize(self, event):
-        """Handle window resize. event comes from the parent frame's Configure
-        (so event.width/height = the canvas area, since canvas fills frame).
-        Reserves char_width/char_height of slack so the centered text always
-        has at least half-cell padding on each side."""
-        new_cols = max(1, (event.width - self.char_width) // self.char_width)
-        new_rows = max(1, (event.height - self.char_height) // self.char_height)
-        new_origin = self._compute_origin_for(new_cols, new_rows,
-                                              event.width, event.height)
-        resized = (new_cols != self.cols or new_rows != self.rows)
-        origin_shifted = (new_origin != (self._origin_x, self._origin_y))
-        if resized:
+        """Handle window resize. event comes from the canvas's Configure
+        (event.width/height = canvas size). Text origin is fixed at (PADDING,
+        PADDING); only cols/rows recompute on resize. Reserves 2*PADDING
+        worth of border so text is bounded by the canvas-internal margin."""
+        new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
+        new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
+        if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
             self.term.resize(new_rows, new_cols)
-        if resized or origin_shifted:
-            # Existing canvas items live at the old origin; clear and re-draw.
             self.canvas.delete("buf_0")
             self.canvas.delete("buf_1")
             self.term.render_reset()
-            self._origin_x, self._origin_y = new_origin
             self._render()
-        if resized:
             return (new_rows, new_cols)
         return None
 
@@ -970,20 +928,18 @@ class PreferencesDialog(tk.Toplevel):
 
 
 class TabSession:
-    """One tab: a TerminalWidget + SSHTransport pair."""
+    """One tab: a TerminalWidget + SSHTransport pair. Owns a tk.Canvas
+    directly (no wrapper frame). Caller (TerminalApp._select_tab) swaps
+    visibility via canvas.pack/pack_forget on the root."""
 
     def __init__(self, parent, host, port, username, config, app):
         self.app = app
         self.host = host
         self.label = host.split("@")[-1].split(".")[0] if host else "local"
-        # highlightthickness=0 + borderwidth=0 — aqua's default focus-highlight
-        # ring on tk.Frame contributes to the lighter perimeter band when
-        # canvas is text-extent-smaller than the frame (Bug C v3 chain).
-        self.frame = tk.Frame(parent, highlightthickness=0, borderwidth=0)
 
         if config:
             self.widget = TerminalWidget(
-                self.frame,
+                parent,
                 rows=config.rows, cols=config.cols,
                 font_family=config.font.family, font_size=config.font.size,
                 cursor_style=config.cursor.style, cursor_blink=config.cursor.blink,
@@ -992,7 +948,8 @@ class TabSession:
                 refresh_hz=config.refresh_hz,
             )
         else:
-            self.widget = TerminalWidget(self.frame)
+            self.widget = TerminalWidget(parent)
+        self.canvas = self.widget.canvas
 
         self.ssh = SSHTransport(host, port, username)
         self.widget.set_write_callback(self.ssh.write)
@@ -1001,14 +958,10 @@ class TabSession:
         self.ssh.set_interaction_handler(TkInteractionHandler(app.root))
         self.ssh.set_error_callback(self._on_error)
 
-        # Match frame bg to canvas bg so the symmetric slop around the
-        # centered canvas blends rather than showing as a grey panel.
-        self.frame.config(bg=self.widget._bg)
-        # Bind on the frame (not canvas) so window resizes deliver Configure
-        # events with the available canvas-area size, not the canvas's own size.
-        self.frame.bind("<Configure>", self._on_configure)
-        # Caller (TerminalApp._select_tab) packs/unpacks self.frame to swap
-        # which tab is visible. Not packed here.
+        # <Configure> on the canvas itself: event.width/height = canvas size.
+        # Cross-platform (Linux/Mac/Windows pack semantics deliver Configure
+        # events on geometry change uniformly).
+        self.canvas.bind("<Configure>", self._on_configure)
 
     def start(self):
         self.ssh.start(self.widget.rows, self.widget.cols)
@@ -1056,28 +1009,14 @@ class TerminalApp:
         self._tab_buttons = []  # parallel to self.tabs
         self._active_tab_idx = -1
 
-        # Manual tab UI (replaces ttk.Notebook). On macOS aqua, ttk.Notebook
-        # is backed by NSTabView whose pane chrome paints a lighter aqua-tinted
-        # bezel that ttk styling cannot strip — that bezel was Bug C v3's
-        # "lighter slop" perimeter. tk.Frame + custom tab-strip avoids the
-        # native control entirely (alexie 2026-04-27 17:35:42, 17:38:45).
-        # highlightthickness=0 + borderwidth=0 on every tk.Frame: aqua draws
-        # a focus-highlight ring (default highlightthickness=2px on aqua)
-        # at the perimeter of each Frame which compounds across the four
-        # nested containers (tab_area→tab_strip/tab_content→TabSession.frame)
-        # into the asymmetric lighter band alexie reported post-6164ef5
-        # (2026-04-28 06:45:46). Stripping per-Frame chrome eliminates the
-        # paint regardless of fill semantics.
-        self.tab_area = tk.Frame(self.root, bg=self._config.bg,
-                                 highlightthickness=0, borderwidth=0)
-        self.tab_area.pack(fill=tk.BOTH, expand=True)
-        self.tab_strip = tk.Frame(self.tab_area, bg=self._config.bg,
+        # Tab strip — single tk.Frame for tab buttons, packed at TOP when
+        # 2+ tabs exist (a45403a auto-hide on single tab). Active TabSession's
+        # canvas is packed directly in root after the strip (TerminalApp swaps
+        # canvases on tab change). No nested Frames, no manual centering math
+        # — alexie 2026-04-28 06:59:16 architectural reset, theologian spec
+        # 07:00:17.
+        self.tab_strip = tk.Frame(self.root, bg=self._config.bg,
                                   highlightthickness=0, borderwidth=0)
-        # Strip is packed lazily in _refresh_tab_strip when 2+ tabs exist
-        # (preserves a45403a auto-hide behavior on single tab).
-        self.tab_content = tk.Frame(self.tab_area, bg=self._config.bg,
-                                    highlightthickness=0, borderwidth=0)
-        self.tab_content.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
         # Create first tab
         self._add_tab(host, port, username)
@@ -1135,12 +1074,14 @@ class TerminalApp:
         return tab.widget if tab else None
 
     def _add_tab(self, host, port=None, username=None):
-        """Create a new tab with an SSH session."""
-        tab = TabSession(self.tab_content, host, port, username,
+        """Create a new tab with an SSH session. The TabSession's canvas is
+        a child of root; visibility managed via pack/pack_forget in
+        _select_tab."""
+        tab = TabSession(self.root, host, port, username,
                          self._config, self)
         self.tabs.append(tab)
-        # Tab button for the strip; index captured at creation time and
-        # refreshed in _refresh_tab_strip after add/remove.
+        # Tab button for the strip; command bound in _refresh_tab_strip
+        # so indices stay correct across tab close.
         btn = tk.Button(
             self.tab_strip, text=tab.label,
             relief=tk.FLAT, borderwidth=0,
@@ -1157,24 +1098,26 @@ class TerminalApp:
         """Make tab `idx` the visible/active tab."""
         if not (0 <= idx < len(self.tabs)):
             return
-        # Hide currently visible tab content
         if 0 <= self._active_tab_idx < len(self.tabs):
-            self.tabs[self._active_tab_idx].frame.pack_forget()
+            self.tabs[self._active_tab_idx].canvas.pack_forget()
         self._active_tab_idx = idx
-        self.tabs[idx].frame.pack(in_=self.tab_content,
-                                  fill=tk.BOTH, expand=True)
+        self.tabs[idx].canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._refresh_tab_strip()
         self.root.title(f"nbs-term — {self.tabs[idx].host}")
         self.tabs[idx].widget._render()
 
     def _refresh_tab_strip(self):
-        """Repack tab buttons + auto-hide the strip on single tab.
-        Rebinds button commands to current indices (indices shift on close)."""
+        """Repack tab buttons + auto-hide the strip on single tab. Rebinds
+        button commands to current indices (indices shift on close)."""
+        active_canvas = self.tabs[self._active_tab_idx].canvas \
+            if 0 <= self._active_tab_idx < len(self.tabs) else None
         if len(self.tabs) <= 1:
             self.tab_strip.pack_forget()
         else:
-            self.tab_strip.pack(side=tk.TOP, fill=tk.X,
-                                before=self.tab_content)
+            kwargs = {"side": tk.TOP, "fill": tk.X}
+            if active_canvas is not None:
+                kwargs["before"] = active_canvas
+            self.tab_strip.pack(**kwargs)
         for i, btn in enumerate(self._tab_buttons):
             btn.pack_forget()
         for i, btn in enumerate(self._tab_buttons):
@@ -1205,7 +1148,7 @@ class TerminalApp:
             idx = self._active_tab_idx
             tab = self.tabs.pop(idx)
             tab.stop()
-            tab.frame.destroy()
+            tab.canvas.destroy()
             btn = self._tab_buttons.pop(idx)
             btn.destroy()
             new_idx = min(idx, len(self.tabs) - 1)
@@ -1275,8 +1218,8 @@ class TerminalApp:
             w._cursor_color = config.cursor.color or None
             canvas_w = w.canvas.winfo_width()
             canvas_h = w.canvas.winfo_height()
-            new_cols = max(1, (canvas_w - w.char_width) // w.char_width)
-            new_rows = max(1, (canvas_h - w.char_height) // w.char_height)
+            new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
+            new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
             if new_cols != w.cols or new_rows != w.rows:
                 w.cols = new_cols
                 w.rows = new_rows
@@ -1285,8 +1228,6 @@ class TerminalApp:
                 w.canvas.delete("buf_1")
                 w.term.render_reset()
                 tab.ssh.resize(new_rows, new_cols)
-            w._origin_x, w._origin_y = w._compute_origin_for(
-                w.cols, w.rows, canvas_w, canvas_h)
             w._render()
 
     def _toggle_fullscreen(self, event=None):

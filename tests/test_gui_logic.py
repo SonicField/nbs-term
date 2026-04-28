@@ -787,65 +787,99 @@ class TestMouseHandlerRouting(unittest.TestCase):
 class TestConfigureBindingPlacement(unittest.TestCase):
     """Configure-binding placement regression test.
 
-    Invariant: <Configure> MUST be bound on TabSession.frame (the parent
-    whose Configure event tracks real window resizes) and MUST NOT be
-    bound on TerminalWidget.canvas.
+    Invariant (post architectural rewrite): <Configure> MUST be bound on
+    TabSession.canvas. The canvas is now the root-child geometry container
+    (no wrapping tk.Frame) and event.width/height = canvas size.
 
-    Originally added to guard da5b9a1's choice of frame as the resize
-    hook. The architecture evolved (26c9344 made canvas fill the frame
-    via pack(fill=BOTH, expand=True), removing the canvas.config snap)
-    but the invariant still holds: frame is the geometry source-of-truth
-    for resize, canvas is its child. A canvas-bound Configure listener
-    would either duplicate notifications redundantly or — if the file
-    later re-introduces canvas.configure(width=, height=) calls in
-    handle_resize — feedback-loop into recursive resize.
+    Pre-rewrite invariant (da5b9a1 era): bind on self.frame. The frame
+    was dropped per alexie's 2026-04-28 06:59:16 architectural reset, so
+    this test guards the new attachment point.
 
     Static source inspection — no Tk display needed.
     """
 
-    def test_canvas_has_no_configure_binding(self):
-        """A Configure binding on canvas risks redundant or recursive
-        resize notification — assert no such binding exists in
-        TerminalWidget."""
-        import inspect
-        from nbsterm import TerminalWidget
-        src = inspect.getsource(TerminalWidget)
-
-        import re
-        canvas_configure_pattern = re.compile(
-            r'self\.canvas\.bind\(\s*["\']<Configure>["\']'
-        )
-        match = canvas_configure_pattern.search(src)
-        self.assertIsNone(
-            match,
-            f"REGRESSION: TerminalWidget binds <Configure> on canvas at "
-            f"line containing {match.group(0) if match else None!r}. "
-            f"Resize must hook from the parent frame (TabSession.frame), "
-            f"not the canvas — the canvas is the child whose size is "
-            f"derived from the frame, so a canvas-bound Configure either "
-            f"fires redundantly or feedback-loops with any future "
-            f"canvas.configure(width=, height=) in handle_resize."
-        )
-
-    def test_frame_has_configure_binding(self):
-        """Positive control: TabSession must bind <Configure> on
-        self.frame (the parent whose Configure tracks real window
-        resizes)."""
+    def test_tabsession_binds_configure_on_canvas(self):
+        """TabSession must bind <Configure> on self.canvas — the resize
+        handler triggers from canvas geometry changes."""
         import inspect
         from nbsterm import TabSession
         src = inspect.getsource(TabSession)
 
         import re
-        frame_configure_pattern = re.compile(
-            r'self\.frame\.bind\(\s*["\']<Configure>["\']'
+        canvas_configure_pattern = re.compile(
+            r'self\.canvas\.bind\(\s*["\']<Configure>["\']'
         )
         self.assertIsNotNone(
-            frame_configure_pattern.search(src),
-            "TabSession does not bind <Configure> on self.frame. The "
-            "resize handler must trigger from frame's Configure "
-            "(parent area changes track real window resizes); without "
-            "it, handle_resize never fires and the terminal does not "
-            "adapt to window size."
+            canvas_configure_pattern.search(src),
+            "TabSession does not bind <Configure> on self.canvas. "
+            "Without it, handle_resize never fires and the terminal "
+            "does not adapt to window size.",
+        )
+
+    def test_tabsession_no_frame_attribute(self):
+        """TabSession.frame was dropped in the architectural rewrite —
+        canvas is owned directly. Re-introducing self.frame would
+        re-introduce the nested-Frame layout chain that produced the
+        Bug C v3 lighter-slop perimeter."""
+        import inspect
+        from nbsterm import TabSession
+        src = inspect.getsource(TabSession)
+
+        import re
+        frame_attribute_pattern = re.compile(r'self\.frame\s*=')
+        match = frame_attribute_pattern.search(src)
+        self.assertIsNone(
+            match,
+            "REGRESSION: TabSession assigns self.frame (line containing "
+            f"{match.group(0) if match else None!r}). The architectural "
+            "rewrite dropped the wrapping tk.Frame; canvas is owned "
+            "directly. Re-introducing the frame stacks tk.Frame paint "
+            "surfaces and re-creates Bug C v3.",
+        )
+
+
+class TestCanvasFillsRoot(unittest.TestCase):
+    """Canvas-fill regression guard (post architectural rewrite).
+
+    Invariant: TabSession's canvas MUST be packed in TerminalApp._select_tab
+    with fill=tk.BOTH and expand=True. Per the rewrite, the canvas is the
+    sole geometry container for the active tab — it covers the entire
+    space below the tab strip. Without fill=BOTH expand=True the canvas
+    reverts to its natural size and the uncovered root area shows
+    around it.
+
+    Static-source assertion catches both shapes.
+    """
+
+    def test_select_tab_packs_canvas_fill_both_expand(self):
+        """TerminalApp._select_tab must pack the active tab's canvas
+        with fill=BOTH and expand=True."""
+        import inspect
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._select_tab)
+
+        import re
+        # Match canvas.pack(...) inside _select_tab.
+        pack_match = re.search(
+            r'\.canvas\.pack\(([^)]*)\)', src, re.DOTALL,
+        )
+        self.assertIsNotNone(
+            pack_match,
+            "TerminalApp._select_tab does not call <tab>.canvas.pack(...). "
+            "Tab content cannot become visible without it.",
+        )
+        args = pack_match.group(1)
+        self.assertRegex(
+            args,
+            r"fill\s*=\s*(tk\.BOTH|['\"]both['\"])",
+            f"REGRESSION: canvas.pack({args!r}) missing fill=tk.BOTH. "
+            "Canvas must fill its packing cell.",
+        )
+        self.assertRegex(
+            args,
+            r"expand\s*=\s*True",
+            f"REGRESSION: canvas.pack({args!r}) missing expand=True. "
+            "Canvas must claim any extra space below the tab strip.",
         )
 
 
