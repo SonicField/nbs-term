@@ -168,13 +168,15 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
-        """Centered text origin: ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2),
-        floored at PADDING so the border never collapses. Uses font.measure
-        for accurate text width on Mac (CoreText subadditivity)."""
-        text_w = max(f.measure("M" * cols) for f in self._font_cache.values())
+        """Centered text origin. text_w/text_h match what render_frame
+        actually draws (cols * char_width, rows * char_height — one cell
+        per char_width pixels, regardless of font.measure subadditivity
+        on Mac CoreText). No PADDING clamp needed: cols/rows are derived
+        as (canvas - 2*PADDING) // cell, so the remainder is always
+        >= 2*PADDING and origin is naturally >= PADDING."""
+        text_w = cols * self.char_width
         text_h = rows * self.char_height
-        return (max(PADDING, (canvas_w - text_w) // 2),
-                max(PADDING, (canvas_h - text_h) // 2))
+        return ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2)
 
     def _pixel_to_cell(self, x, y):
         """Convert pixel coordinates to (row, col) accounting for centered
