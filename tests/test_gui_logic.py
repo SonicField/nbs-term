@@ -1062,34 +1062,62 @@ class TestTabFocusFix(unittest.TestCase):
     behaviour itself is the falsifier alexie runs.
     """
 
-    def test_add_tab_button_has_takefocus_zero(self):
-        """TerminalApp._add_tab MUST construct its tk.Button with
-        takefocus=0. Default takefocus=1 makes the button a Tab-traversal
-        target AND lets Tk's Button class binding for <Key-space> /
-        <KeyPress-Return> fire button.invoke when focus is on the
-        button. Removing this kwarg re-introduces the focus-steal bug
-        alexie hit on 59ed176 (2026-04-28 17:05:45)."""
+    def test_add_tab_no_focus_stealing_button(self):
+        """The INVARIANT: TerminalApp._add_tab MUST NOT construct any
+        tk.Button that defaults to takefocus=1. Either no tk.Button at
+        all (e.g. the tk.Frame+tk.Label migration theologian 2026-04-28
+        17:55:42 specifies for Mac native-widget bg/height bugs), OR
+        every tk.Button in _add_tab carries an explicit takefocus=0/False.
+
+        Widget-agnostic per theologian 2026-04-28 18:02:33: encodes the
+        focus-steal contract, not the f80a896 implementation choice. A
+        Label-based tab strip satisfies trivially (Label has takefocus=0
+        default and no Space/Return class binding); the legacy
+        Button-based strip satisfies only with an explicit takefocus=0
+        kwarg."""
         import inspect
         from nbsterm import TerminalApp
         src = inspect.getsource(TerminalApp._add_tab)
 
         import re
-        # Match a tk.Button(...) call whose kwargs include takefocus=0.
-        # Allow 0 or False; reject 1 or True. DOTALL so the kwarg can
-        # be on any line within the multi-line constructor call.
-        pattern = re.compile(
-            r'tk\.Button\s*\([^)]*\btakefocus\s*=\s*(?:0|False)\b',
-            re.DOTALL,
-        )
-        self.assertIsNotNone(
-            pattern.search(src),
-            "REGRESSION: TerminalApp._add_tab does not pass takefocus=0 "
-            "(or False) to tk.Button. Default takefocus=1 makes Mac "
-            "click leave focus on the button and Tk's Button class "
-            "binds <Key-space>/<Return> to invoke — typing Space in the "
-            "text area re-selects the tab (alexie 2026-04-28 17:05:45 "
-            "focus-steal bug).",
-        )
+        # Find every tk.Button(...) call (paren-balanced extraction so
+        # multi-line constructors are captured whole) and verify each
+        # one has takefocus=0/False in its arg list. If no tk.Button
+        # appears (Label migration), the invariant is trivially held.
+        starts = [m.start() for m in re.finditer(r'tk\.Button\s*\(', src)]
+        for start in starts:
+            paren_open = src.index('(', start)
+            depth = 0
+            paren_close = None
+            for j in range(paren_open, len(src)):
+                if src[j] == '(':
+                    depth += 1
+                elif src[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        paren_close = j
+                        break
+            self.assertIsNotNone(
+                paren_close,
+                f"REGRESSION: unterminated tk.Button(... at offset {start} "
+                "in TerminalApp._add_tab — could not parse arg list.",
+            )
+            call_args = src[paren_open + 1:paren_close]
+            kwarg_pattern = re.compile(
+                r'\btakefocus\s*=\s*(?:0|False)\b'
+            )
+            self.assertIsNotNone(
+                kwarg_pattern.search(call_args),
+                "REGRESSION: TerminalApp._add_tab constructs a tk.Button "
+                "without takefocus=0 (or False). Default takefocus=1 "
+                "makes Mac click leave focus on the button, and Tk's "
+                "Button class binds <Key-space>/<KeyPress-Return> to "
+                "invoke — typing Space in the text area re-selects the "
+                "tab (alexie 2026-04-28 17:05:45 focus-steal bug). Add "
+                "takefocus=0, OR migrate to tk.Label which has neither "
+                "the focus-by-default nor the Space/Return class binding."
+                f"\n\nOffending call args:\n{call_args}",
+            )
 
     def test_select_tab_focuses_canvas(self):
         """TerminalApp._select_tab MUST call .focus_set() on the active
