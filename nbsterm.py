@@ -117,7 +117,12 @@ class TerminalWidget:
                 "font_bold_italic", family=font_family, size=font_size,
                 weight="bold", slant="italic"),
         }
-        self.char_width = self.font.measure("M")
+        # char_width: cold-start primitive uses an averaged sample across
+        # representative chars (M wide, i narrow, space, digit, etc) so the
+        # initial value is reasonable on platforms whose 'monospace' alias
+        # is not actually fixed-width (Windows). After first paint, _render
+        # self-corrects char_width from the actual rendered bbox.
+        self.char_width = max(1, self.font.measure("MiW 0x.") // 7)
         self.char_height = self.font.metrics("linespace")
 
         # Canvas — single widget, owned by TerminalWidget, packed by caller
@@ -443,6 +448,17 @@ class TerminalWidget:
             self._origin_x,
             self._origin_y,
         )
+        # bbox-calibration: derive effective per-cell width from what was
+        # actually painted, not from font.measure of a synthetic primitive.
+        # Self-corrects on Windows non-monospace + Mac CoreText subadditivity
+        # within 1-2 frames. 0.5px drift gate prevents jitter from rounding.
+        bb0 = self.canvas.bbox("buf_0")
+        bb1 = self.canvas.bbox("buf_1")
+        bb = bb0 if bb0 and (not bb1 or (bb0[2] - bb0[0]) >= (bb1[2] - bb1[0])) else bb1
+        if bb is not None and self.cols > 0:
+            effective_cw = (bb[2] - bb[0]) / self.cols
+            if effective_cw > 0 and abs(effective_cw - self.char_width) > 0.5:
+                self.char_width = max(1, int(round(effective_cw)))
 
         # Restart blink timer
         if self._cursor_blink and self._blink_id is None:
