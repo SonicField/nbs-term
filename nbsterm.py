@@ -207,16 +207,6 @@ class TerminalWidget:
         text_h = rows * self.char_height
         return ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2)
 
-    def _pixel_to_cell(self, x, y):
-        """Convert pixel coordinates to (row, col) accounting for centered
-        text origin. Uniform-grid math; correct only when
-        font.measure(c*N) == N*font.measure(c). macOS/CoreText violates that
-        (subadditivity), so this is preserved as a fallback only. Mouse handlers
-        use _pixel_to_cell_text_aware."""
-        return _nbsterm.pixel_to_cell(
-            x - self._origin_x, y - self._origin_y,
-            self.char_width, self.char_height, self.cols, self.rows)
-
     def _row_spans_for_visible(self, row):
         """Return spans for visible viewport row, mirroring C composite-scrollback
         logic at extension.c:3530-3559 (`scroll_off > 0 && !using_alt`).
@@ -261,7 +251,10 @@ class TerminalWidget:
         where CoreText subadditivity makes font.measure(c*N) != N*font.measure(c).
         Walks get_screen() spans (or scrollback composite when scrolled back),
         accumulates font.measure(prefix), and binary-searches for the cell x
-        falls in. Falls back to _pixel_to_cell if row spans unavailable.
+        falls in. Cold-start fallback (no spans available) uses uniform-grid
+        math via _nbsterm.pixel_to_cell with self.char_width — which is
+        bbox-calibrated post-first-paint, so the fallback is reasonably
+        accurate even on non-monospace fonts.
         """
         row = (y - self._origin_y) // self.char_height
         if row < 0:
@@ -271,7 +264,9 @@ class TerminalWidget:
 
         spans = self._row_spans_for_visible(row)
         if not spans:
-            return self._pixel_to_cell(x, y)
+            return _nbsterm.pixel_to_cell(
+                x - self._origin_x, y - self._origin_y,
+                self.char_width, self.char_height, self.cols, self.rows)
 
         cur_x = self._origin_x
         cur_col = 0
