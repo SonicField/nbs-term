@@ -1070,11 +1070,16 @@ class TabSession:
 class TerminalApp:
     """Main application with tabbed terminal sessions."""
 
-    # Tab strip visual styling
+    # Tab strip visual styling. _TAB_BORDER_ACTIVE is a Frame wrapper
+    # accent so the selected tab is distinguished by border + bg, not
+    # just text color (alexie 2026-04-28 17:05:45: white-on-light-grey
+    # unreadable on Mac). Inactive wrapper takes the strip's own bg,
+    # making the border invisible.
     _TAB_BG_INACTIVE = "#2a2a2a"
     _TAB_BG_ACTIVE = "#404040"
     _TAB_FG_INACTIVE = "#888888"
     _TAB_FG_ACTIVE = "#ffffff"
+    _TAB_BORDER_ACTIVE = "#888888"
 
     def __init__(self, host, port=None, username=None, config=None):
         self.root = tk.Tk()
@@ -1158,18 +1163,24 @@ class TerminalApp:
         tab = TabSession(self.root, host, port, username,
                          self._config, self)
         self.tabs.append(tab)
-        # Tab button for the strip; command bound in _refresh_tab_strip
-        # so indices stay correct across tab close.
-        btn = tk.Button(
-            self.tab_strip, text=tab.label,
-            relief=tk.FLAT, borderwidth=0,
-            highlightthickness=0, padx=12, pady=4,
+        # Tab is a tk.Frame wrapper around a tk.Label (NOT tk.Button).
+        # On macOS aqua tk.Button paints native NSButton chrome — bg/
+        # padding ignored, native min-height too tall, native bg shows
+        # through (alexie 2026-04-28 17:05:45). tk.Label respects bg/fg
+        # and has no class binding for <Key-space>/<Return>, so the
+        # focus-stealing class also disappears (theologian 17:55:42).
+        # Wrapper bg = active border accent when selected, strip bg
+        # (invisible) otherwise. <Button-1> click bound in
+        # _refresh_tab_strip so indices stay correct across tab close.
+        wrapper = tk.Frame(self.tab_strip, bg=self.tab_strip.cget("bg"))
+        label = tk.Label(
+            wrapper, text=tab.label,
             bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE,
-            activebackground=self._TAB_BG_ACTIVE,
-            activeforeground=self._TAB_FG_ACTIVE,
-            takefocus=0,
+            padx=12, pady=1,
         )
-        self._tab_buttons.append(btn)
+        label.pack(padx=2, pady=2)
+        wrapper._label = label
+        self._tab_buttons.append(wrapper)
         self._select_tab(len(self.tabs) - 1)
         return tab
 
@@ -1206,15 +1217,19 @@ class TerminalApp:
             if active_canvas is not None:
                 kwargs["before"] = active_canvas
             self.tab_strip.pack(**kwargs)
-        for i, btn in enumerate(self._tab_buttons):
-            btn.pack_forget()
-        for i, btn in enumerate(self._tab_buttons):
-            btn.config(command=lambda x=i: self._select_tab(x))
+        for wrapper in self._tab_buttons:
+            wrapper.pack_forget()
+        strip_bg = self.tab_strip.cget("bg")
+        for i, wrapper in enumerate(self._tab_buttons):
+            label = wrapper._label
+            label.bind("<Button-1>", lambda e, x=i: self._select_tab(x))
             if i == self._active_tab_idx:
-                btn.config(bg=self._TAB_BG_ACTIVE, fg=self._TAB_FG_ACTIVE)
+                wrapper.config(bg=self._TAB_BORDER_ACTIVE)
+                label.config(bg=self._TAB_BG_ACTIVE, fg=self._TAB_FG_ACTIVE)
             else:
-                btn.config(bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE)
-            btn.pack(side=tk.LEFT)
+                wrapper.config(bg=strip_bg)
+                label.config(bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE)
+            wrapper.pack(side=tk.LEFT)
 
     def _on_key(self, event):
         """Route keyboard to active tab."""
