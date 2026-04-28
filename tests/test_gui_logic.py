@@ -883,6 +883,166 @@ class TestCanvasFillsRoot(unittest.TestCase):
         )
 
 
+class TestResizeOrderingRaceFix(unittest.TestCase):
+    """Regression guards for Bug C v3 e4fe48e (resize-event ordering races).
+
+    Two ordering bugs alexie reported on 0a5ee56 (2026-04-28 09:42:18):
+      1. Maximize: handle_resize computed origin BEFORE term.resize, so
+         origin was derived from OLD spans while content reflowed wider.
+      2. Cmd-T new tab: _select_tab called widget._render() immediately
+         after canvas.pack(), before Tk had run layout — winfo_width()=1.
+
+    Fix (e4fe48e): origin is recomputed inside _render from FRESH canvas
+    dims + FRESH spans. handle_resize and _apply_config no longer compute
+    origin (eliminated the cache-staleness class). _select_tab defers
+    _render via root.after_idle so Tk completes layout first.
+
+    Fourth invariant (alexie 07:31:54 + supervisor 11:38:29): _render
+    rebuilds the bg_fill rect with self._bg every paint, so a runtime
+    text_bg config change paints through on the next render.
+
+    Static-source inspection — no Tk display needed.
+    """
+
+    def test_render_computes_origin(self):
+        """_render MUST call _compute_origin_for. The architectural
+        invariant (e4fe48e) is that origin is a function of CURRENT
+        state at paint time — never cached input."""
+        import inspect
+        from nbsterm import TerminalWidget
+        src = inspect.getsource(TerminalWidget._render)
+
+        import re
+        pattern = re.compile(r'_compute_origin_for\s*\(')
+        self.assertIsNotNone(
+            pattern.search(src),
+            "REGRESSION: TerminalWidget._render does not call "
+            "_compute_origin_for. The e4fe48e fix requires origin to "
+            "be recomputed each paint from fresh canvas dims + spans, "
+            "not read from a cache. Without this, the maximize and "
+            "Cmd-T ordering races re-emerge.",
+        )
+
+    def test_resize_paths_do_not_compute_origin(self):
+        """handle_resize AND _apply_config MUST NOT call
+        _compute_origin_for. Both ran before term.resize / before Tk
+        layout completed, so any origin computed there was against
+        stale state. Computing origin only inside _render eliminates
+        the entire ordering-race bug class."""
+        import inspect
+        from nbsterm import TerminalWidget, TerminalApp
+
+        import re
+        pattern = re.compile(r'_compute_origin_for\s*\(')
+
+        for name, fn in (
+            ("TerminalWidget.handle_resize", TerminalWidget.handle_resize),
+            ("TerminalApp._apply_config", TerminalApp._apply_config),
+        ):
+            with self.subTest(method=name):
+                src = inspect.getsource(fn)
+                match = pattern.search(src)
+                self.assertIsNone(
+                    match,
+                    f"REGRESSION: {name} calls _compute_origin_for. "
+                    "Origin compute must live ONLY in _render so it "
+                    "reads fresh canvas dims + spans. Computing origin "
+                    "here re-introduces the cache-staleness race "
+                    "alexie hit on 0a5ee56 (maximize off-to-one-side, "
+                    "Cmd-T text-area-doesn't-relayout).",
+                )
+
+    def test_select_tab_defers_render_via_after_idle(self):
+        """TerminalApp._select_tab MUST schedule widget._render via
+        root.after_idle, not call it synchronously. After canvas.pack()
+        Tk has not yet run layout — winfo_width() returns 1 (pre-layout)
+        and any origin/bbox-calibration computed against width=1 is
+        wrong. after_idle defers until Tk drains the layout queue."""
+        import inspect
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._select_tab)
+
+        import re
+        # Match after_idle(<anything>._render) or
+        # after_idle(<anything>.widget._render).
+        deferred_pattern = re.compile(
+            r'after_idle\s*\(\s*[^,)]*\._render\b'
+        )
+        self.assertIsNotNone(
+            deferred_pattern.search(src),
+            "REGRESSION: TerminalApp._select_tab does not defer "
+            "widget._render via root.after_idle. A synchronous _render "
+            "after canvas.pack() reads winfo_width()=1 (pre-layout), "
+            "computing origin against the wrong canvas size — alexie "
+            "saw this on 0a5ee56 as 'tabs draw but text area does not "
+            "relayout until manual window resize'.",
+        )
+
+        # And it must NOT call _render synchronously alongside the
+        # deferred one. (Double-paint would defeat the purpose and
+        # produce a flash of mis-laid-out text on every tab switch.)
+        sync_pattern = re.compile(
+            r'(?<!after_idle\()\s*[^.\s]+\.widget\._render\s*\(\s*\)'
+        )
+        self.assertIsNone(
+            sync_pattern.search(src),
+            "REGRESSION: TerminalApp._select_tab calls widget._render() "
+            "synchronously alongside the deferred after_idle. The "
+            "synchronous paint runs against pre-layout winfo_width()=1, "
+            "producing the wrong-origin flash that after_idle was added "
+            "to prevent.",
+        )
+
+    def test_render_rebuilds_bg_fill_with_self_bg(self):
+        """_render MUST delete and recreate the bg_fill rect every
+        paint, with fill=self._bg. Without this, runtime text_bg
+        config changes (alexie 07:31:54: bg-color reactivity) would
+        not paint through — the rect would carry the old bg until a
+        full canvas reset. Three sub-invariants:
+          (a) self.canvas.delete('bg_fill') in body
+          (b) self.canvas.create_rectangle with tags='bg_fill' in body
+          (c) the rectangle's fill arg references self._bg
+        """
+        import inspect
+        from nbsterm import TerminalWidget
+        src = inspect.getsource(TerminalWidget._render)
+
+        import re
+
+        delete_pattern = re.compile(
+            r'self\.canvas\.delete\(\s*["\']bg_fill["\']\s*\)'
+        )
+        self.assertIsNotNone(
+            delete_pattern.search(src),
+            "REGRESSION: _render does not delete the bg_fill rect. "
+            "Old bg color would persist on runtime text_bg change.",
+        )
+
+        create_pattern = re.compile(
+            r'self\.canvas\.create_rectangle\([^)]*tags\s*=\s*'
+            r'["\']bg_fill["\']',
+            re.DOTALL,
+        )
+        create_match = create_pattern.search(src)
+        self.assertIsNotNone(
+            create_match,
+            "REGRESSION: _render does not create_rectangle with "
+            "tags='bg_fill'. The bg layer would not be rebuilt.",
+        )
+
+        fill_pattern = re.compile(
+            r'self\.canvas\.create_rectangle\([^)]*'
+            r'fill\s*=\s*self\._bg',
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            fill_pattern.search(src),
+            "REGRESSION: _render's create_rectangle does not use "
+            "fill=self._bg. Runtime config bg change would not paint "
+            "through (alexie 07:31:54 named bg-color reactivity).",
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
