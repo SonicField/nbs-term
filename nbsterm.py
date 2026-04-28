@@ -94,6 +94,11 @@ class TerminalWidget:
         self._gamma = gamma
         self._fg = fg
         self._bg = bg
+        # Mirror C render_gamma (extension.phc:607) on Python-painted bg
+        # surfaces so canvas widget bg + bg_fill rect match per-cell bg
+        # pixels. Without this, gamma!=1.0 makes the slop look lighter
+        # than the text-area cells (Mac default gamma=1.2).
+        self._bg_render = gamma_correct(self._bg, self._gamma)
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
@@ -136,7 +141,7 @@ class TerminalWidget:
         height = self.rows * self.char_height + 2 * PADDING
         self.canvas = tk.Canvas(
             parent, width=width, height=height,
-            bg=self._bg, highlightthickness=0, borderwidth=0,
+            bg=self._bg_render, highlightthickness=0, borderwidth=0,
         )
         # Initial origin = PADDING; recomputed in handle_resize once the
         # canvas has its real geometry.
@@ -423,7 +428,7 @@ class TerminalWidget:
         self.canvas.delete("bg_fill")
         self.canvas.create_rectangle(
             0, 0, canvas_w, canvas_h,
-            fill=self._bg, outline="", tags="bg_fill")
+            fill=self._bg_render, outline="", tags="bg_fill")
         self.canvas.tag_lower("bg_fill")
         # Cursor style: 0=Block, 1=Underline, 2=Bar
         style_map = {"Block": 0, "Underline": 1, "Bar": 2}
@@ -1285,8 +1290,9 @@ class TerminalApp:
             w.char_height = w.font.metrics("linespace")
             w._fg = config.fg
             w._bg = config.bg
-            w.canvas.configure(bg=w._bg)
             w._gamma = config.gamma
+            w._bg_render = gamma_correct(w._bg, w._gamma)
+            w.canvas.configure(bg=w._bg_render)
             w._refresh_ms = max(1, 1000 // config.refresh_hz)
             w._cursor_style = config.cursor.style
             w._cursor_blink = config.cursor.blink
