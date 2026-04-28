@@ -409,13 +409,17 @@ class TerminalWidget:
 
     def _render(self):
         """Delegate rendering to C via Tcl. C manages double-buffering internally.
-        Text drawn at fixed (PADDING, PADDING) offset; a canvas-item rectangle
-        is painted under it covering the full canvas with bg color so that the
-        border region (where no per-character rect exists) shows clean bg.
-        Hypothesis-as-test for tk.Canvas widget-bg-attr aqua-tinting (alexie
-        2026-04-28 07:18:41 + supervisor 07:20:12)."""
+        Origin (text top-left) is recomputed here from CURRENT canvas dims +
+        CURRENT spans, so it always reflects the live state — no cache to go
+        stale across resize/tab-switch ordering races. self._origin_{x,y}
+        gets updated as a side effect so mouse handlers
+        (_pixel_to_cell_text_aware) see the same coordinates the renderer
+        used for the most recent paint.
+        bg_fill rect underneath covers canvas widget bg with text bg color."""
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
+        self._origin_x, self._origin_y = self._compute_origin_for(
+            self.cols, self.rows, canvas_w, canvas_h)
         self.canvas.delete("bg_fill")
         self.canvas.create_rectangle(
             0, 0, canvas_w, canvas_h,
@@ -469,13 +473,11 @@ class TerminalWidget:
 
     def handle_resize(self, event):
         """Handle window resize. event comes from the canvas's Configure
-        (event.width/height = canvas size). Recomputes text origin so the
-        grid stays centered, and recomputes cols/rows so the grid fits the
-        canvas with at least PADDING border on every side."""
+        (event.width/height = canvas size). Recomputes cols/rows; origin is
+        recomputed inside _render from fresh canvas dims + fresh spans, so
+        no ordering race here."""
         new_cols = max(1, (event.width - 2 * PADDING) // self.char_width)
         new_rows = max(1, (event.height - 2 * PADDING) // self.char_height)
-        self._origin_x, self._origin_y = self._compute_origin_for(
-            new_cols, new_rows, event.width, event.height)
         if new_cols != self.cols or new_rows != self.rows:
             self.cols = new_cols
             self.rows = new_rows
@@ -485,8 +487,6 @@ class TerminalWidget:
             self.term.render_reset()
             self._render()
             return (new_rows, new_cols)
-        # Origin shifted but grid dims unchanged — still need a redraw to
-        # move the text under the new origin.
         self.canvas.delete("buf_0")
         self.canvas.delete("buf_1")
         self.term.render_reset()
@@ -1161,7 +1161,9 @@ class TerminalApp:
         self.tabs[idx].canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._refresh_tab_strip()
         self.root.title(f"nbs-term — {self.tabs[idx].host}")
-        self.tabs[idx].widget._render()
+        # Defer render so Tk completes layout first; otherwise canvas
+        # winfo_width() returns 1 (pre-layout) and origin computes wrong.
+        self.root.after_idle(self.tabs[idx].widget._render)
 
     def _refresh_tab_strip(self):
         """Repack tab buttons + auto-hide the strip on single tab. Rebinds
@@ -1277,8 +1279,6 @@ class TerminalApp:
             canvas_h = w.canvas.winfo_height()
             new_cols = max(1, (canvas_w - 2 * PADDING) // w.char_width)
             new_rows = max(1, (canvas_h - 2 * PADDING) // w.char_height)
-            w._origin_x, w._origin_y = w._compute_origin_for(
-                new_cols, new_rows, canvas_w, canvas_h)
             if new_cols != w.cols or new_rows != w.rows:
                 w.cols = new_cols
                 w.rows = new_rows
