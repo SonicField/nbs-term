@@ -1167,6 +1167,7 @@ class TerminalApp:
             bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE,
             activebackground=self._TAB_BG_ACTIVE,
             activeforeground=self._TAB_FG_ACTIVE,
+            takefocus=0,
         )
         self._tab_buttons.append(btn)
         self._select_tab(len(self.tabs) - 1)
@@ -1180,6 +1181,13 @@ class TerminalApp:
             self.tabs[self._active_tab_idx].canvas.pack_forget()
         self._active_tab_idx = idx
         self.tabs[idx].canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Mac click leaves focus on the clicked tab button; Tk's Button
+        # class binds <Key-space>/<Return> to invoke. Without this,
+        # typing space in the text area re-fires the focused button's
+        # command (visible flicker / re-pack) before reaching root's
+        # <Key> handler. takefocus=0 alone removes Tab-traversal but not
+        # Mac click-focus — explicit focus_set restores canvas focus.
+        self.tabs[idx].canvas.focus_set()
         self._refresh_tab_strip()
         self.root.title(f"nbs-term — {self.tabs[idx].host}")
         # Defer render so Tk completes layout first; otherwise canvas
