@@ -449,15 +449,20 @@ class TerminalWidget:
             self._origin_y,
         )
         # bbox-calibration: derive effective per-cell width from what was
-        # actually painted, not from font.measure of a synthetic primitive.
-        # Self-corrects on Windows non-monospace + Mac CoreText subadditivity
-        # within 1-2 frames. 0.5px drift gate prevents jitter from rounding.
+        # actually painted. Asymmetric clamp — only WIDEN char_width, never
+        # shrink. Sparse content (mostly spaces) gives bbox/cols ≈ space
+        # width, which on non-monospace fonts (Windows 'monospace' alias)
+        # is much smaller than 'M' width. Letting char_width shrink to
+        # space width inflates cols, oversizes the SSH session, and
+        # overflows the canvas (alexie 2026-04-28 14:23:15: line wrap
+        # broken). Asymmetry preserves self-correction for under-estimated
+        # initial samples while preventing the cols-runaway.
         bb0 = self.canvas.bbox("buf_0")
         bb1 = self.canvas.bbox("buf_1")
         bb = bb0 if bb0 and (not bb1 or (bb0[2] - bb0[0]) >= (bb1[2] - bb1[0])) else bb1
         if bb is not None and self.cols > 0:
             effective_cw = (bb[2] - bb[0]) / self.cols
-            if effective_cw > 0 and abs(effective_cw - self.char_width) > 0.5:
+            if effective_cw > self.char_width + 0.5:
                 self.char_width = max(1, int(round(effective_cw)))
 
         # Restart blink timer
