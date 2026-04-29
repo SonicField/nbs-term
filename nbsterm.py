@@ -53,7 +53,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
-PADDING = 8  # minimum canvas-internal border. Text origin centers in the canvas via _compute_origin_for, but never closer than PADDING to any edge.
+PADDING = 4  # minimum canvas-internal border. Text origin centers in the canvas via _compute_origin_for, but never closer than PADDING to any edge. Halved from 8 → 4 (alexie 2026-04-29 15:05:07: slop area too wide, should be ~half).
 
 
 SCROLLBACK_LINES = 10000
