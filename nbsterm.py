@@ -1246,6 +1246,13 @@ class TerminalApp:
 
     def _on_close_tab(self, event=None):
         """Close the current tab."""
+        # DIAGNOSTIC (theologian 2026-04-29 14:57:30): probe whether
+        # macOS Cmd-W reaches this Tk binding, or is shadowed by the
+        # auto-installed menu accelerator that fires WM_DELETE_WINDOW
+        # → _on_close. Remove after fix lands.
+        sys.stderr.write(
+            f"[diag] _on_close_tab fired (tabs={len(self.tabs)})\n")
+        sys.stderr.flush()
         if not (0 <= self._active_tab_idx < len(self.tabs)):
             return "break"
         if len(self.tabs) > 1:
@@ -1342,6 +1349,12 @@ class TerminalApp:
 
     def _on_close(self):
         """Handle window close — stop all tabs."""
+        # DIAGNOSTIC (theologian 2026-04-29 14:57:30): probe whether
+        # macOS Cmd-W is reaching here via WM_DELETE_WINDOW (menu
+        # shadowing hypothesis). Remove after fix lands.
+        sys.stderr.write(
+            f"[diag] _on_close fired (tabs={len(self.tabs)})\n")
+        sys.stderr.flush()
         for tab in self.tabs:
             tab.stop()
         self.root.destroy()
