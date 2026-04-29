@@ -1348,6 +1348,208 @@ class TestGammaMirrorInvariant(unittest.TestCase):
         )
 
 
+class TestCloseTabIdxSemantics(unittest.TestCase):
+    """Regression guards for Bug C v3 4197557 (× close glyph + _close_tab(idx)
+    refactor). Covers the cross-tab idx-vs-active semantics that pythia
+    2026-04-29 15:23:39 #2 named load-bearing for both Cmd-W and × close
+    paths after the bundle.
+
+    Invariants locked here:
+      1. _close_tab(self, idx) signature — must accept any tab index.
+      2. _on_close_tab is a thin wrapper that delegates to
+         _close_tab(self._active_tab_idx) — Cmd-W and × converge on
+         the same code path.
+      3. _add_tab packs both wrapper._label AND wrapper._close — the
+         × glyph child Label exists and is stored on the wrapper.
+      4. _refresh_tab_strip binds <Button-1> on both ._label
+         (→ _select_tab) and ._close (→ _close_tab) — the × click is
+         actually wired, and indices stay correct across tab close
+         (the rebind-per-refresh pattern).
+      5. _close_tab body covers all three idx-vs-active branches:
+         (a) idx == active   → adjacent re-select with -1 sentinel
+         (b) idx <  active   → decrement self._active_tab_idx by 1
+         (c) idx >  active   → active unchanged
+         AND the len==1 short-circuit calls _on_close (window destroy).
+
+    Static-source inspection — no Tk display needed. Branch behaviour
+    is the falsifier alexie's bundled Mac smoke runs.
+    """
+
+    def test_close_tab_accepts_idx_parameter(self):
+        """_close_tab MUST be _close_tab(self, idx) — accepts any tab
+        index, not just self._active_tab_idx. The × glyph closes the
+        clicked tab regardless of which tab is active; locking the
+        signature prevents a regression that would silently revert to
+        active-only semantics and break × on inactive tabs."""
+        import inspect
+        from nbsterm import TerminalApp
+        sig = inspect.signature(TerminalApp._close_tab)
+        params = list(sig.parameters.keys())
+        self.assertEqual(
+            params, ['self', 'idx'],
+            "REGRESSION: TerminalApp._close_tab signature is "
+            f"{params}, expected ['self', 'idx']. The × glyph close "
+            "(theologian 2026-04-29 14:44:49) requires _close_tab to "
+            "accept ANY tab index, not just the active one. Reverting "
+            "to active-only semantics breaks × on inactive tabs.",
+        )
+
+    def test_on_close_tab_delegates_to_close_tab(self):
+        """_on_close_tab MUST delegate to _close_tab(self._active_tab_idx)
+        — both Cmd-W and × close paths share one implementation. A
+        regression that re-inlines close logic into _on_close_tab would
+        immediately diverge the two paths under any future change."""
+        import inspect
+        import re
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._on_close_tab)
+        pattern = re.compile(
+            r'self\._close_tab\s*\(\s*self\._active_tab_idx\s*\)'
+        )
+        self.assertIsNotNone(
+            pattern.search(src),
+            "REGRESSION: TerminalApp._on_close_tab does not delegate "
+            "to self._close_tab(self._active_tab_idx). Cmd-W and × "
+            "close paths must converge on a single implementation; "
+            "if they diverge, a fix to one will silently miss the "
+            "other (alexie 2026-04-29 14:43:48 + theologian 14:44:49).",
+        )
+
+    def test_add_tab_packs_label_and_close_glyph(self):
+        """_add_tab MUST create both wrapper._label (text) and
+        wrapper._close (× glyph) child Labels inside the wrapper Frame.
+        Without wrapper._close, the × is invisible and × is the entire
+        UI half of the close feature alexie asked for."""
+        import inspect
+        import re
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._add_tab)
+        # Must assign wrapper._label AND wrapper._close. Either order.
+        # Anchor to start-of-line (after indent) so a commented-out
+        # `# wrapper._close = …` does not satisfy the guard.
+        for attr in ('_label', '_close'):
+            pattern = re.compile(
+                rf'^\s*wrapper\.{attr}\s*=', re.MULTILINE,
+            )
+            self.assertIsNotNone(
+                pattern.search(src),
+                f"REGRESSION: TerminalApp._add_tab does not store "
+                f"wrapper.{attr}. The × close glyph (theologian "
+                "2026-04-29 14:44:49) requires both child Labels on "
+                "the wrapper so _refresh_tab_strip can rebind their "
+                "<Button-1> handlers per tab-index refresh.",
+            )
+
+    def test_refresh_tab_strip_binds_close_glyph(self):
+        """_refresh_tab_strip MUST bind <Button-1> on each wrapper's
+        _close Label, routing to self._close_tab(i). Without this bind
+        the × glyph is decorative — clicking it does nothing.
+
+        The lambda i-capture pattern (lambda e, x=i: …) is required so
+        indices stay correct across tab close; the existing
+        label._select_tab(i) bind already follows this pattern."""
+        import inspect
+        import re
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._refresh_tab_strip)
+        # Look for either close.bind('<Button-1>', …) or
+        # wrapper._close.bind(…) — accept either local binding style.
+        pattern = re.compile(
+            r'(?:close|wrapper\._close)\s*'
+            r'\.bind\s*\(\s*["\']<Button-1>["\']\s*,'
+            r'[^)]*self\._close_tab\s*\(',
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            pattern.search(src),
+            "REGRESSION: _refresh_tab_strip does not bind <Button-1> "
+            "on wrapper._close → self._close_tab(idx). The × glyph "
+            "would be decorative — alexie 2026-04-29 14:43:48 'I "
+            "cannot close a tab' would re-emerge with the × visible "
+            "but inert.",
+        )
+
+    def test_close_tab_handles_three_idx_branches(self):
+        """_close_tab MUST contain all three idx-vs-active branches AND
+        the len==1 short-circuit. Pythia 2026-04-29 15:23:39 #2: this
+        is load-bearing for both close paths; missing the
+        idx<active decrement would silently desynchronise the strip
+        when a leftward tab is closed via ×."""
+        import inspect
+        import re
+        from nbsterm import TerminalApp
+        src = inspect.getsource(TerminalApp._close_tab)
+
+        # (a) Active-tab close: re-select via -1 sentinel + min().
+        active_branch = re.compile(
+            r'idx\s*==\s*self\._active_tab_idx',
+        )
+        self.assertIsNotNone(
+            active_branch.search(src),
+            "REGRESSION: _close_tab missing 'idx == self._active_tab_idx' "
+            "branch. Closing the active tab requires the -1 sentinel + "
+            "min(idx, len-1) re-select pattern; without it Tk paints "
+            "into a destroyed canvas index.",
+        )
+        sentinel = re.compile(
+            r'self\._active_tab_idx\s*=\s*-\s*1',
+        )
+        self.assertIsNotNone(
+            sentinel.search(src),
+            "REGRESSION: _close_tab does not assign "
+            "self._active_tab_idx = -1 before the re-select. The -1 "
+            "sentinel is what makes _select_tab skip pack_forget on "
+            "the now-destroyed canvas index (4197557 commit body).",
+        )
+
+        # (b) idx < active: decrement self._active_tab_idx.
+        decrement_branch = re.compile(
+            r'idx\s*<\s*self\._active_tab_idx',
+        )
+        self.assertIsNotNone(
+            decrement_branch.search(src),
+            "REGRESSION: _close_tab missing 'idx < self._active_tab_idx' "
+            "branch. When closing a tab BEFORE the active one, "
+            "_active_tab_idx must shift down by 1 — otherwise the "
+            "active tab points at the wrong canvas (off-by-one strip "
+            "desync). Pythia 2026-04-29 15:23:39 #2 named this "
+            "load-bearing for the bundled smoke.",
+        )
+        decrement_op = re.compile(
+            r'self\._active_tab_idx\s*-=\s*1',
+        )
+        self.assertIsNotNone(
+            decrement_op.search(src),
+            "REGRESSION: _close_tab does not decrement "
+            "self._active_tab_idx. The 'idx < active' branch must "
+            "shift active down by 1 to track the now-shorter list.",
+        )
+
+        # (c) Last tab → window close. (idx > active is the implicit
+        # fall-through after (a) and (b); no explicit check needed —
+        # any active-stays case lands here.)
+        last_tab_branch = re.compile(
+            r'len\s*\(\s*self\.tabs\s*\)\s*==\s*1',
+        )
+        self.assertIsNotNone(
+            last_tab_branch.search(src),
+            "REGRESSION: _close_tab missing 'len(self.tabs) == 1' "
+            "short-circuit. Closing the last tab must invoke "
+            "_on_close (whole-window destroy); without this, popping "
+            "the only tab leaves an empty window with no terminal.",
+        )
+        on_close_call = re.compile(
+            r'self\._on_close\s*\(',
+        )
+        self.assertIsNotNone(
+            on_close_call.search(src),
+            "REGRESSION: _close_tab len==1 branch does not call "
+            "self._on_close(). The last-tab path must converge on "
+            "the same window-close logic that WM_DELETE_WINDOW uses, "
+            "or the two destroy paths drift apart.",
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
