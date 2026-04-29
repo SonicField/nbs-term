@@ -1126,13 +1126,18 @@ class TerminalApp:
             self.root.bind("<Command-v>", self._on_paste)
             self.root.bind("<Command-comma>", self._on_preferences)
             self.root.bind("<Command-t>", self._on_new_tab)
-            # Cmd-W: install via Tk menu, NOT root.bind. The OS auto-
-            # installed menubar binds Cmd-W → NSWindow performClose: →
-            # WM_DELETE_WINDOW → _on_close (kills whole process). A
-            # user-installed File > Close Tab menu accelerator overrides
-            # the auto-menu accelerator, routing Cmd-W to _on_close_tab
-            # instead. Theologian 2026-04-29 14:57:30; alexie 14:55:05
-            # 'Cmd+W kills the whole process'.
+            # Cmd-W on macOS: TWO mechanisms required, not one.
+            # The Tk menu install suppresses the OS auto-menu's default
+            # Cmd-W → NSWindow performClose: → WM_DELETE_WINDOW path
+            # (which would otherwise kill the whole process via _on_close,
+            # alexie 2026-04-28 14:55:05). The accelerator='Command+W'
+            # kwarg on add_command is DISPLAY-ONLY — it shows ⌘W in the
+            # File menu but does NOT bind the keystroke (theologian
+            # 2026-04-29 17:58:16 corrects 14:57:30). The actual keypress
+            # → _on_close_tab wiring still requires self.root.bind.
+            # Pre-fix: only auto-menu (kills process). 6b9d015 menu-only
+            # (silent — alexie 17:56:52 'Cmd-W does nothing'). This:
+            # menu + bind (closes active tab cleanly).
             menubar = tk.Menu(self.root)
             file_menu = tk.Menu(menubar, tearoff=0)
             menubar.add_cascade(label="File", menu=file_menu)
@@ -1140,6 +1145,7 @@ class TerminalApp:
                                   accelerator="Command+W",
                                   command=self._on_close_tab)
             self.root.config(menu=menubar)
+            self.root.bind("<Command-w>", self._on_close_tab)
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
             self.root.bind("<Control-Shift-V>", self._on_paste)
