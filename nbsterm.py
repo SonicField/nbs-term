@@ -99,6 +99,9 @@ class TerminalWidget:
         # pixels. Without this, gamma!=1.0 makes the slop look lighter
         # than the text-area cells (Mac default gamma=1.2).
         self._bg_render = gamma_correct(self._bg, self._gamma)
+        # One-shot diag flag for slop cap calibration (theologian + supervisor
+        # 2026-04-29 18:30). Removed once alexie smokes positive.
+        self._slop_diag_done = False
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
@@ -210,7 +213,22 @@ class TerminalWidget:
         if text_w == 0:
             return (PADDING, PADDING)
         text_h = rows * self.char_height
-        return ((canvas_w - text_w) // 2, (canvas_h - text_h) // 2)
+        # Cap origin_x at canvas_w//8 so sparse-content rows (prompt only,
+        # short commands) don't centre into the middle with huge slop.
+        # Theologian 2026-04-29 18:29:07; alexie 17:56:52 'slop is still
+        # very wide'. canvas_w//8 is font-independent — librarian 18:37:55
+        # confirmed novel pattern that dodges the D-1777362486 char_width-
+        # underreport axis 60a1291 fell into. Y unchanged: alexie flagged
+        # horizontal only.
+        origin_x = min((canvas_w - text_w) // 2, canvas_w // 8)
+        if not self._slop_diag_done:
+            sys.stderr.write(
+                f"[slop diag] char_width={self.char_width} "
+                f"canvas_w={canvas_w} text_w={text_w} "
+                f"origin_x={origin_x}\n")
+            sys.stderr.flush()
+            self._slop_diag_done = True
+        return (origin_x, (canvas_h - text_h) // 2)
 
     def _row_spans_for_visible(self, row):
         """Return spans for visible viewport row, mirroring C composite-scrollback
