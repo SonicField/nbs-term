@@ -1126,7 +1126,20 @@ class TerminalApp:
             self.root.bind("<Command-v>", self._on_paste)
             self.root.bind("<Command-comma>", self._on_preferences)
             self.root.bind("<Command-t>", self._on_new_tab)
-            self.root.bind("<Command-w>", self._on_close_tab)
+            # Cmd-W: install via Tk menu, NOT root.bind. The OS auto-
+            # installed menubar binds Cmd-W → NSWindow performClose: →
+            # WM_DELETE_WINDOW → _on_close (kills whole process). A
+            # user-installed File > Close Tab menu accelerator overrides
+            # the auto-menu accelerator, routing Cmd-W to _on_close_tab
+            # instead. Theologian 2026-04-29 14:57:30; alexie 14:55:05
+            # 'Cmd+W kills the whole process'.
+            menubar = tk.Menu(self.root)
+            file_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="File", menu=file_menu)
+            file_menu.add_command(label="Close Tab",
+                                  accelerator="Command+W",
+                                  command=self._on_close_tab)
+            self.root.config(menu=menubar)
         else:
             self.root.bind("<Control-Shift-C>", self._on_copy)
             self.root.bind("<Control-Shift-V>", self._on_paste)
@@ -1246,13 +1259,6 @@ class TerminalApp:
 
     def _on_close_tab(self, event=None):
         """Close the current tab."""
-        # DIAGNOSTIC (theologian 2026-04-29 14:57:30): probe whether
-        # macOS Cmd-W reaches this Tk binding, or is shadowed by the
-        # auto-installed menu accelerator that fires WM_DELETE_WINDOW
-        # → _on_close. Remove after fix lands.
-        sys.stderr.write(
-            f"[diag] _on_close_tab fired (tabs={len(self.tabs)})\n")
-        sys.stderr.flush()
         if not (0 <= self._active_tab_idx < len(self.tabs)):
             return "break"
         if len(self.tabs) > 1:
@@ -1349,12 +1355,6 @@ class TerminalApp:
 
     def _on_close(self):
         """Handle window close — stop all tabs."""
-        # DIAGNOSTIC (theologian 2026-04-29 14:57:30): probe whether
-        # macOS Cmd-W is reaching here via WM_DELETE_WINDOW (menu
-        # shadowing hypothesis). Remove after fix lands.
-        sys.stderr.write(
-            f"[diag] _on_close fired (tabs={len(self.tabs)})\n")
-        sys.stderr.flush()
         for tab in self.tabs:
             tab.stop()
         self.root.destroy()
