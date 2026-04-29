@@ -1550,6 +1550,137 @@ class TestCloseTabIdxSemantics(unittest.TestCase):
         )
 
 
+class TestMacMenuInstall(unittest.TestCase):
+    """Regression guard for Bug C v3 6b9d015 (Cmd-W menu accelerator
+    overrides OS auto-menubar on macOS).
+
+    Per supervisor 2026-04-29 16:38:19 + theologian 16:38:31 spec, after
+    pythia 2026-04-29 16:37:58 #3 missing-validation: the Mac menu
+    install path is the entire Cmd-W fix, and Xvfb cannot reproduce
+    OS menu shadowing — there is no functional CI for it. A future
+    refactor that consolidates keyboard wiring or rides a Tk upgrade
+    can silently re-introduce alexie's 14:55:05 bug ('Cmd+W kills the
+    whole process'), with code reading as if the binding suffices.
+
+    INVARIANT: the sys.platform == 'darwin' branch of
+    TerminalApp.__init__ MUST install a tk.Menu with an entry binding
+    Command+W (or Cmd+W) to a callable that closes the active tab
+    (i.e. _on_close_tab), NOT one that closes the window
+    (_on_close). Without this menu install, the OS-installed
+    Cmd-W → NSWindow performClose: → WM_DELETE_WINDOW → _on_close
+    path runs unhindered.
+
+    Static-source inspection — no Tk display needed. OS menu
+    shadowing behaviour is the falsifier alexie's Mac smoke runs.
+    """
+
+    @staticmethod
+    def _extract_darwin_branch(src):
+        """Extract the body of the `if sys.platform == "darwin":`
+        branch from src. Returns the substring of source inside that
+        branch (everything from the `if` line up to the matching
+        `else:` or end-of-method-at-same-indent).
+
+        Uses indentation tracking — the branch body lives one indent
+        level deeper than the `if`."""
+        lines = src.splitlines()
+        if_idx = None
+        if_indent = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('if ') and 'sys.platform' in stripped \
+                    and '"darwin"' in stripped:
+                if_idx = i
+                if_indent = len(line) - len(line.lstrip())
+                break
+        if if_idx is None:
+            return None
+        body = []
+        body_indent = if_indent + 4  # standard 4-space body indent
+        for line in lines[if_idx + 1:]:
+            stripped = line.strip()
+            if not stripped:
+                body.append(line)
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= if_indent:
+                # Hit the `else:` (or anything at the if's level) —
+                # darwin branch ended.
+                break
+            body.append(line)
+        return '\n'.join(body)
+
+    def test_darwin_branch_installs_menu_with_close_tab_command(self):
+        """The darwin branch MUST construct a tk.Menu, register an
+        add_command entry with a Command+W (or Cmd+W) accelerator,
+        and bind that entry's command to self._on_close_tab. All
+        three pieces are load-bearing.
+
+        Falsifier verified for each piece; see this commit's body."""
+        import inspect
+        import re
+        from nbsterm import TerminalApp
+
+        full_src = inspect.getsource(TerminalApp.__init__)
+        darwin_src = self._extract_darwin_branch(full_src)
+        self.assertIsNotNone(
+            darwin_src,
+            "REGRESSION: Cannot locate `if sys.platform == \"darwin\":` "
+            "branch in TerminalApp.__init__. The Mac-only Cmd-W menu "
+            "install (theologian 2026-04-29 14:57:30; alexie 14:55:05 "
+            "'Cmd+W kills the whole process') lives inside this "
+            "branch — its absence means the entire fix is gone.",
+        )
+
+        # (a) tk.Menu(...) construction inside the branch.
+        menu_pattern = re.compile(r'\btk\.Menu\s*\(')
+        self.assertIsNotNone(
+            menu_pattern.search(darwin_src),
+            "REGRESSION: TerminalApp.__init__ darwin branch does not "
+            "construct a tk.Menu. Without a user-installed menu, the "
+            "OS auto-menubar's Cmd-W → NSWindow performClose: path "
+            "kills the process on close (alexie 2026-04-29 14:55:05).",
+        )
+
+        # (b) An add_command with accelerator matching Command+W or
+        # Cmd+W (case-insensitive). Tk gives user-menu accelerators
+        # precedence over the auto-menu accelerator on aqua, so this
+        # is the override mechanism.
+        accel_pattern = re.compile(
+            r'add_command\s*\([^)]*accelerator\s*=\s*'
+            r'["\'](?:command|cmd)\s*\+\s*w["\']',
+            re.DOTALL | re.IGNORECASE,
+        )
+        self.assertIsNotNone(
+            accel_pattern.search(darwin_src),
+            "REGRESSION: TerminalApp.__init__ darwin branch does not "
+            "register an add_command with accelerator='Command+W' (or "
+            "'Cmd+W'). The accelerator is what tells Tk to override "
+            "the OS auto-menu Cmd-W binding — without it the menu "
+            "exists but Cmd-W still kills the process.",
+        )
+
+        # (c) The add_command's command kwarg references _on_close_tab,
+        # NOT _on_close. Closing the tab is the user-visible intent;
+        # closing the window would re-introduce the original bug under
+        # a different code path.
+        cmd_pattern = re.compile(
+            r'add_command\s*\([^)]*command\s*=\s*'
+            r'(?:self\.)?_on_close_tab\b',
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            cmd_pattern.search(darwin_src),
+            "REGRESSION: TerminalApp.__init__ darwin branch's "
+            "add_command does not bind command=self._on_close_tab. "
+            "Cmd-W must close the active tab (alexie 2026-04-29 "
+            "14:43:48 'I cannot close a tab' — the Cmd-W keyboard "
+            "side of the close-tab feature). Binding to _on_close "
+            "instead would close the window — the original bug under "
+            "a different name.",
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
