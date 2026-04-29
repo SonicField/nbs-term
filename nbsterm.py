@@ -1098,7 +1098,8 @@ class TerminalApp:
         # canvases on tab change). No nested Frames, no manual centering math
         # — alexie 2026-04-28 06:59:16 architectural reset, theologian spec
         # 07:00:17.
-        self.tab_strip = tk.Frame(self.root, bg=self._config.bg,
+        self.tab_strip = tk.Frame(self.root,
+                                  bg=gamma_correct(self._config.bg, self._config.gamma),
                                   highlightthickness=0, borderwidth=0)
 
         # Create first tab
