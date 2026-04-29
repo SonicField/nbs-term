@@ -1192,8 +1192,19 @@ class TerminalApp:
             bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE,
             padx=12, pady=1,
         )
-        label.pack(padx=2, pady=2)
+        label.pack(side=tk.LEFT, padx=(2, 0), pady=2)
+        # × close glyph as sibling Label inside the same wrapper. Click
+        # on × → _close_tab(idx) regardless of active state (alexie
+        # 2026-04-29 14:43:48; theologian 14:44:49). Bound in
+        # _refresh_tab_strip so indices stay correct across tab close.
+        close = tk.Label(
+            wrapper, text="×",
+            bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE,
+            padx=6, pady=1,
+        )
+        close.pack(side=tk.LEFT, padx=(0, 2), pady=2)
         wrapper._label = label
+        wrapper._close = close
         self._tab_buttons.append(wrapper)
         self._select_tab(len(self.tabs) - 1)
         return tab
@@ -1236,13 +1247,17 @@ class TerminalApp:
         strip_bg = self.tab_strip.cget("bg")
         for i, wrapper in enumerate(self._tab_buttons):
             label = wrapper._label
+            close = wrapper._close
             label.bind("<Button-1>", lambda e, x=i: self._select_tab(x))
+            close.bind("<Button-1>", lambda e, x=i: self._close_tab(x))
             if i == self._active_tab_idx:
                 wrapper.config(bg=self._TAB_BORDER_ACTIVE)
                 label.config(bg=self._TAB_BG_ACTIVE, fg=self._TAB_FG_ACTIVE)
+                close.config(bg=self._TAB_BG_ACTIVE, fg=self._TAB_FG_ACTIVE)
             else:
                 wrapper.config(bg=strip_bg)
                 label.config(bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE)
+                close.config(bg=self._TAB_BG_INACTIVE, fg=self._TAB_FG_INACTIVE)
             wrapper.pack(side=tk.LEFT)
 
     def _on_key(self, event):
@@ -1257,26 +1272,38 @@ class TerminalApp:
         tab.start()
         return "break"
 
-    def _on_close_tab(self, event=None):
-        """Close the current tab."""
-        if not (0 <= self._active_tab_idx < len(self.tabs)):
+    def _close_tab(self, idx):
+        """Close the tab at idx (any tab, not just active). Used by × glyph
+        per-tab and by _on_close_tab (Cmd-W). Last tab closes the window."""
+        if not (0 <= idx < len(self.tabs)):
             return "break"
-        if len(self.tabs) > 1:
-            idx = self._active_tab_idx
-            tab = self.tabs.pop(idx)
-            tab.stop()
-            tab.canvas.destroy()
-            btn = self._tab_buttons.pop(idx)
-            btn.destroy()
+        if len(self.tabs) == 1:
+            self._on_close()
+            return "break"
+        tab = self.tabs.pop(idx)
+        tab.stop()
+        tab.canvas.destroy()
+        wrapper = self._tab_buttons.pop(idx)
+        wrapper.destroy()
+        if idx == self._active_tab_idx:
+            # Closed the active tab — pick adjacent and re-select. The
+            # -1 sentinel skips _select_tab's pack_forget on the now-
+            # destroyed canvas index.
             new_idx = min(idx, len(self.tabs) - 1)
-            # Force _select_tab to repack (skip the pack_forget on the old idx
-            # which no longer exists).
             self._active_tab_idx = -1
             self._select_tab(new_idx)
-        elif len(self.tabs) == 1:
-            # Last tab — close window
-            self._on_close()
+        else:
+            if idx < self._active_tab_idx:
+                # Closed tab is before active; active shifts down by 1.
+                self._active_tab_idx -= 1
+            # idx > active: active stays, no shift needed.
+            self._refresh_tab_strip()
         return "break"
+
+    def _on_close_tab(self, event=None):
+        """Close the active tab (Cmd-W keyboard shortcut). Thin wrapper
+        around _close_tab — × glyph and Cmd-W converge on the same logic."""
+        return self._close_tab(self._active_tab_idx)
 
     def _on_next_tab(self, event=None):
         """Switch to next tab."""
