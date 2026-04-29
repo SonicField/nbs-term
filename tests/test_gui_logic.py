@@ -1164,6 +1164,190 @@ class TestTabFocusFix(unittest.TestCase):
         )
 
 
+class TestGammaMirrorInvariant(unittest.TestCase):
+    """Gamma-mirror invariant guard for Python-painted bg surfaces.
+
+    Per supervisor 2026-04-29 14:47:13 + theologian 14:47:01 + pythia
+    14:46:19 second-order risk: 59ed176 patched three TerminalWidget
+    bg-paint sites to use gamma_correct, but the invariant lived only
+    in commit messages. d538b3f added new tk.Frame/tk.Label widgets;
+    theologian's F' branch immediately found a fresh raw-_bg path
+    (tab_strip:1101) — proving the pattern alive before the slop fix
+    had finished smoke-testing. 41ec2fc cleared that one site.
+
+    INVARIANT: every Python widget construction or .config(bg=)/
+    .configure(bg=) call inside TerminalWidget or TerminalApp that
+    carries a bg= argument MUST use one of:
+      - self._bg_render or w._bg_render (cached gamma-corrected value)
+      - gamma_correct(...) inline call
+      - a hex-string literal like "#404040" (fixed UI chrome)
+      - one of the _TAB_* class constants (also fixed hex literals)
+      - self.tab_strip.cget("bg") or strip_bg (inherited from a
+        gamma-corrected parent — strip_bg is assigned exactly that
+        in _refresh_tab_strip)
+
+    Anything else — most importantly self._config.bg, self._bg, or
+    w._bg — is a regression: the next widget added in these classes
+    would silently re-introduce the gamma differential alexie hit on
+    Mac (2026-04-28 14:33:25, slop lighter than text-area cells).
+
+    Dialogs (ColorPicker256, PreferencesDialog) are explicitly out of
+    scope: their swatches and previews show user-picked raw colours
+    and gamma correction would distort what the user sees.
+
+    Static-source inspection — no Tk display needed.
+    """
+
+    # Methods on TerminalWidget that paint or configure backgrounds.
+    # Deliberately enumerated rather than walked-by-source because
+    # adding a new bg-painting method should also add deliberate
+    # gamma handling — the enumeration forces the reviewer to think.
+    _TARGET_METHODS = {
+        "TerminalWidget": ["__init__", "_render"],
+        "TerminalApp": ["__init__", "_add_tab", "_refresh_tab_strip",
+                        "_apply_config"],
+    }
+
+    @staticmethod
+    def _split_top_level_args(call_args):
+        """Split call_args (the contents of a function-call's parens)
+        on top-level commas, ignoring commas inside nested parens or
+        brackets. Returns a list of arg strings."""
+        parts = []
+        depth = 0
+        start = 0
+        for i, ch in enumerate(call_args):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                parts.append(call_args[start:i].strip())
+                start = i + 1
+        tail = call_args[start:].strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    @classmethod
+    def _extract_calls(cls, src, callable_pattern):
+        """Yield (call_name, raw_arg_string) for every call matching
+        callable_pattern (a compiled regex matching e.g. r'\\btk\\.Frame\\s*\\(').
+        Uses paren-balanced extraction so multi-line calls are captured
+        whole."""
+        for m in callable_pattern.finditer(src):
+            paren_open = src.index('(', m.start())
+            depth = 0
+            paren_close = None
+            for j in range(paren_open, len(src)):
+                if src[j] == '(':
+                    depth += 1
+                elif src[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        paren_close = j
+                        break
+            assert paren_close is not None, (
+                f"unterminated call at offset {m.start()}: {src[m.start():m.start()+40]}"
+            )
+            yield m.group(0), src[paren_open + 1:paren_close]
+
+    @classmethod
+    def _extract_bg_values(cls, src):
+        """Yield every bg= value passed to a tk.Frame/tk.Label/tk.Canvas
+        construction OR a .config(bg=...) / .configure(bg=...) call
+        anywhere in src. Returns (kind, bg_value_string) per match.
+
+        Skips kwargs whose value isn't a bg keyword arg — only matches
+        bg=<expr> at top level of a tk.Widget(...) call or a
+        .config*(...) call."""
+        import re
+        widget_pattern = re.compile(
+            r'\btk\.(?:Frame|Label|Canvas)\s*\('
+        )
+        config_pattern = re.compile(
+            r'\.config(?:ure)?\s*\('
+        )
+
+        def grab_bg(call_args):
+            for arg in cls._split_top_level_args(call_args):
+                m = re.match(r'^bg\s*=\s*(.+)$', arg, re.DOTALL)
+                if m:
+                    return m.group(1).strip()
+            return None
+
+        for kind, args in cls._extract_calls(src, widget_pattern):
+            bg = grab_bg(args)
+            if bg is not None:
+                yield ('widget', bg)
+        for kind, args in cls._extract_calls(src, config_pattern):
+            bg = grab_bg(args)
+            if bg is not None:
+                yield ('config', bg)
+
+    # Allowed bg expression patterns. Each pattern matches a bg value
+    # that does NOT need to be gamma-corrected here — either it ALREADY
+    # is, or it's a fixed UI chrome colour the gamma rule doesn't apply
+    # to.
+    _ALLOWED_BG_PATTERNS = [
+        # Cached gamma-corrected attr on TerminalWidget; w._bg_render
+        # used in TerminalApp._apply_config which iterates widgets.
+        r'^self\._bg_render$',
+        r'^w\._bg_render$',
+        # Inline gamma_correct(...) — the TerminalApp.tab_strip pattern
+        # (41ec2fc); init-order means we can't cache _bg_render here.
+        r'^gamma_correct\s*\(',
+        # Fixed hex literal — UI chrome that should never gamma-shift.
+        r'^"#[0-9a-fA-F]{6}"$',
+        r"^'#[0-9a-fA-F]{6}'$",
+        # _TAB_* class constants — all fixed hex literals defined at
+        # nbsterm.py:1075-1080.
+        r'^self\._TAB_(?:BG|FG|BORDER)_(?:INACTIVE|ACTIVE)$',
+        # Inherit-from-parent: tab_strip's bg IS gamma-corrected (per
+        # 41ec2fc) so anything that copies it stays consistent.
+        r'^self\.tab_strip\.cget\(\s*["\']bg["\']\s*\)$',
+        r'^strip_bg$',  # Local alias for tab_strip.cget("bg") in _refresh_tab_strip.
+    ]
+
+    def test_widget_bg_uses_gamma_corrected_value(self):
+        """Every bg= argument in TerminalWidget+TerminalApp methods
+        listed in _TARGET_METHODS must match an _ALLOWED_BG_PATTERNS
+        entry. Failure means a new widget paints a raw-bg surface that
+        will look lighter on Mac (gamma=1.2) than the gamma-corrected
+        cells the C extension paints."""
+        import inspect
+        import re
+        import nbsterm
+
+        compiled_allow = [re.compile(p) for p in self._ALLOWED_BG_PATTERNS]
+
+        violations = []
+        for class_name, method_names in self._TARGET_METHODS.items():
+            cls = getattr(nbsterm, class_name)
+            for method_name in method_names:
+                method = getattr(cls, method_name)
+                src = inspect.getsource(method)
+                for kind, bg_value in self._extract_bg_values(src):
+                    if not any(p.search(bg_value) for p in compiled_allow):
+                        violations.append(
+                            f"  {class_name}.{method_name} ({kind}): "
+                            f"bg={bg_value}"
+                        )
+
+        self.assertEqual(
+            violations, [],
+            "REGRESSION: gamma-mirror invariant violated. Every "
+            "Python-painted bg surface in TerminalWidget+TerminalApp "
+            "must use _bg_render, gamma_correct(...), a hex literal, "
+            "a _TAB_* constant, or a tab_strip-inherited value. "
+            "Raw self._config.bg / self._bg / w._bg here will paint "
+            "lighter than the C-rendered cells on Mac (gamma=1.2). "
+            "Add the value to _ALLOWED_BG_PATTERNS only if it is "
+            "DEMONSTRABLY already gamma-corrected.\n\nViolations:\n"
+            + "\n".join(violations),
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
