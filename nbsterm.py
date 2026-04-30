@@ -221,7 +221,12 @@ class TerminalWidget:
         # underreport axis 60a1291 fell into. Y unchanged: alexie flagged
         # horizontal only.
         origin_x = min((canvas_w - text_w) // 2, canvas_w // 8)
-        if not self._slop_diag_done:
+        # Gate the diag on canvas_w > 10*char_width so it fires after Tk
+        # has actually laid the canvas out, not on the cold-start frame
+        # where winfo_width() returns 1 (alexie 2026-04-30 06:21:44 diag
+        # came back with canvas_w=1 origin_x=-384, useless for tuning).
+        # Theologian 2026-04-30 06:22:20 + supervisor 06:22:47.
+        if not self._slop_diag_done and canvas_w > 10 * self.char_width:
             sys.stderr.write(
                 f"[slop diag] char_width={self.char_width} "
                 f"canvas_w={canvas_w} text_w={text_w} "
