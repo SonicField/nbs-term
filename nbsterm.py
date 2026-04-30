@@ -53,7 +53,7 @@ DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
-PADDING = 4  # minimum canvas-internal border. Text origin centers in the canvas via _compute_origin_for, but never closer than PADDING to any edge. Halved from 8 → 4 (alexie 2026-04-29 15:05:07: slop area too wide, should be ~half).
+PADDING = 4  # canvas-internal border. Text origin is left-anchored at (PADDING, PADDING) by _compute_origin_for — same on every platform, no centering math (theologian + alexie 2026-04-30 06:43:33 architectural reset, replacing the earlier centered-on-painted-text-w cap-and-tune machinery).
 
 
 SCROLLBACK_LINES = 10000
@@ -99,9 +99,6 @@ class TerminalWidget:
         # pixels. Without this, gamma!=1.0 makes the slop look lighter
         # than the text-area cells (Mac default gamma=1.2).
         self._bg_render = gamma_correct(self._bg, self._gamma)
-        # One-shot diag flag for slop cap calibration (theologian + supervisor
-        # 2026-04-29 18:30). Removed once alexie smokes positive.
-        self._slop_diag_done = False
         self.cols = cols
         self._cursor_style = cursor_style
         self._cursor_blink = cursor_blink
@@ -181,59 +178,25 @@ class TerminalWidget:
         self._write_callback = cb
 
     def _compute_origin_for(self, cols, rows, canvas_w, canvas_h):
-        """Centered text origin via the same per-span font.measure machinery
-        the mouse-selection fix uses (_pixel_to_cell_text_aware). Walks
-        _row_spans_for_visible(r) for each row, sums font.measure(span_text)
-        with the per-span font (bold/italic/etc keyed on attrs & 0x05);
-        takes the max row width as text_w. Pixel-accurate on Mac CoreText
-        because Tcl 'font measure' (used by both render_frame and
-        Python tkfont.Font.measure) is the same call on the same text.
+        """Left-anchored text origin at (PADDING, PADDING). Same on every
+        platform — no centering math, no painted-span measurement, no cap
+        tuning, no slop diagnostics. Right side has whatever empty cells
+        the painted content leaves, exactly like every other terminal Tk
+        coexists with (gnome-terminal, Mac Terminal, Windows Terminal).
 
-        Vertical: rows * char_height — line metric is uniform, no
-        subadditivity in the y direction.
+        Replaces the earlier centered-on-painted-text-w machinery. That
+        approach generated a recurring 'slop' problem (sparse content
+        centered into the middle of a wide canvas, large symmetric empty
+        margins) that we kept patching with caps, divisor tuning, and
+        magnitude diagnostics. The Tk-native primitive is left-anchor;
+        centering was the unusual choice. Theologian + alexie 2026-04-30
+        06:43:33 / 06:44:44 architectural reset; alexie 06:41:32 'solve
+        for Tk, not for the Mac'.
 
-        Cold start (no spans yet, all rows return None or empty): origin
-        = (PADDING, PADDING) so the first paint lands at a defined spot."""
-        text_w = 0
-        for r in range(rows):
-            spans = self._row_spans_for_visible(r)
-            if not spans:
-                continue
-            row_w = 0
-            for span in spans:
-                text_bytes, _fg, _bg, attrs, _col_widths = span
-                text = (text_bytes if isinstance(text_bytes, str)
-                        else text_bytes.decode("utf-8", "replace"))
-                if not text:
-                    continue
-                font = self._font_cache.get(attrs & 0x05, self.font)
-                row_w += font.measure(text)
-            if row_w > text_w:
-                text_w = row_w
-        if text_w == 0:
-            return (PADDING, PADDING)
-        text_h = rows * self.char_height
-        # Cap origin_x at canvas_w//8 so sparse-content rows (prompt only,
-        # short commands) don't centre into the middle with huge slop.
-        # Theologian 2026-04-29 18:29:07; alexie 17:56:52 'slop is still
-        # very wide'. canvas_w//8 is font-independent — librarian 18:37:55
-        # confirmed novel pattern that dodges the D-1777362486 char_width-
-        # underreport axis 60a1291 fell into. Y unchanged: alexie flagged
-        # horizontal only.
-        origin_x = min((canvas_w - text_w) // 2, canvas_w // 8)
-        # Gate the diag on canvas_w > 10*char_width so it fires after Tk
-        # has actually laid the canvas out, not on the cold-start frame
-        # where winfo_width() returns 1 (alexie 2026-04-30 06:21:44 diag
-        # came back with canvas_w=1 origin_x=-384, useless for tuning).
-        # Theologian 2026-04-30 06:22:20 + supervisor 06:22:47.
-        if not self._slop_diag_done and canvas_w > 10 * self.char_width:
-            sys.stderr.write(
-                f"[slop diag] char_width={self.char_width} "
-                f"canvas_w={canvas_w} text_w={text_w} "
-                f"origin_x={origin_x}\n")
-            sys.stderr.flush()
-            self._slop_diag_done = True
-        return (origin_x, (canvas_h - text_h) // 2)
+        cols/rows/canvas_w/canvas_h kept in the signature for the existing
+        callers (test_render_origin_called and resize-ordering guards
+        e4fe48e) — they don't influence the origin under left-anchor."""
+        return (PADDING, PADDING)
 
     def _row_spans_for_visible(self, row):
         """Return spans for visible viewport row, mirroring C composite-scrollback
