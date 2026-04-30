@@ -444,7 +444,17 @@ class TerminalWidget:
         (_pixel_to_cell_text_aware) see the same coordinates the renderer
         used for the most recent paint.
         bg_fill rect underneath covers canvas widget bg with text bg color."""
-        canvas_w = self.canvas.winfo_width()
+        try:
+            canvas_w = self.canvas.winfo_width()
+        except tk.TclError:
+            # Canvas was destroyed while a blink/flush after() callback was
+            # still pending (e.g., Cmd-W close-tab during auth → tab.canvas
+            # .destroy() at _close_tab:1314, then 530ms blink fires →
+            # winfo_width on '.!canvas2' raises 'bad window path name').
+            # Drop the frame; the blink chain stops naturally because the
+            # reschedule at line 493 only happens if _render completes.
+            # Alexie 2026-04-30 06:26:00 traceback.
+            return
         canvas_h = self.canvas.winfo_height()
         self._origin_x, self._origin_y = self._compute_origin_for(
             self.cols, self.rows, canvas_w, canvas_h)
