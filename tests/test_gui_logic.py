@@ -1681,6 +1681,125 @@ class TestMacMenuInstall(unittest.TestCase):
         )
 
 
+class TestRenderTclErrorGuard(unittest.TestCase):
+    """Regression guard for Bug C v3 38cb3dc (Cmd-W during auth ->
+    _render TclError on destroyed canvas).
+
+    Per pythia 2026-04-30 08:44:09 #26 R3 + supervisor 08:45:26: the
+    fix shipped without a static-source guard. A future _render
+    refactor that moves the canvas.winfo_width call outside the
+    try-block — or removes the except — silently re-surfaces
+    alexie's 06:26:00 traceback ('bad window path name .!canvas2'
+    when Cmd-W destroys the canvas while a blink/flush after()
+    callback is still pending).
+
+    INVARIANT: TerminalWidget._render MUST wrap the first
+    canvas.winfo_* call in a try/except tk.TclError that returns
+    early. Without the wrap, deferred callbacks after _close_tab's
+    canvas.destroy() raise instead of dropping the frame.
+
+    Static-source inspection — no Tk display needed (Xvfb cannot
+    reproduce the destroy-mid-callback race).
+    """
+
+    def test_render_wraps_winfo_in_tclerror_guard(self):
+        """The first canvas.winfo_* call in TerminalWidget._render MUST
+        be inside a try-block whose except clause catches tk.TclError
+        and returns. Three sub-assertions:
+          (a) the body contains both `try:` and `except tk.TclError`
+          (b) `canvas.winfo_width()` (or `.winfo_height()`) appears
+              between them — the call that races the destroy
+          (c) the except handler contains a `return` statement —
+              dropping the frame is the documented behaviour
+        """
+        import inspect
+        import re
+        from nbsterm import TerminalWidget
+        src = inspect.getsource(TerminalWidget._render)
+
+        # (a) try / except tk.TclError pair anywhere in the body.
+        try_pattern = re.compile(r'^\s*try\s*:\s*$', re.MULTILINE)
+        except_pattern = re.compile(
+            r'^\s*except\s+tk\.TclError\b', re.MULTILINE,
+        )
+        try_match = try_pattern.search(src)
+        except_match = except_pattern.search(src)
+        self.assertIsNotNone(
+            try_match,
+            "REGRESSION: TerminalWidget._render contains no `try:` "
+            "block. The destroyed-canvas guard from 38cb3dc requires "
+            "wrapping the first canvas.winfo_* call so a "
+            "tk.TclError ('bad window path name') from a deferred "
+            "blink/flush after() callback drops the frame instead "
+            "of raising (alexie 2026-04-30 06:26:00 traceback).",
+        )
+        self.assertIsNotNone(
+            except_match,
+            "REGRESSION: TerminalWidget._render has no `except "
+            "tk.TclError` clause. Without it, a deferred blink/flush "
+            "callback firing after _close_tab destroys the canvas "
+            "raises 'bad window path name' instead of being dropped.",
+        )
+        self.assertLess(
+            try_match.start(), except_match.start(),
+            "REGRESSION: `except tk.TclError` precedes `try:` in "
+            "_render — they must form a wrapping pair.",
+        )
+
+        # (b) canvas.winfo_width or .winfo_height inside the try
+        # block (between `try:` and `except`).
+        try_body = src[try_match.end():except_match.start()]
+        winfo_pattern = re.compile(
+            r'self\.canvas\.winfo_(?:width|height)\s*\(\s*\)'
+        )
+        self.assertIsNotNone(
+            winfo_pattern.search(try_body),
+            "REGRESSION: TerminalWidget._render's try-block does not "
+            "wrap a canvas.winfo_width() / winfo_height() call. The "
+            "guard is only effective if it sits around the first call "
+            "that touches Tk's widget path (the one that raises "
+            "'bad window path name' on a destroyed canvas — alexie "
+            "2026-04-30 06:26:00 hit this at line 442 winfo_width). "
+            "If you reorder _render to call winfo_height first, move "
+            "the try-block with it.",
+        )
+
+        # (c) the except handler returns early. Look for `return`
+        # within the indented block immediately after `except
+        # tk.TclError`. Find the indentation of the except line and
+        # treat any line indented further as part of its body until
+        # we hit a line at or below that indent.
+        lines = src[except_match.start():].splitlines()
+        except_line = lines[0]
+        except_indent = len(except_line) - len(except_line.lstrip())
+        body_indent = None
+        body_lines = []
+        for line in lines[1:]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            indent = len(line) - len(line.lstrip())
+            if body_indent is None:
+                if indent <= except_indent:
+                    break
+                body_indent = indent
+            if indent < body_indent:
+                break
+            body_lines.append(line)
+        body_text = '\n'.join(body_lines)
+        return_pattern = re.compile(r'^\s*return\b', re.MULTILINE)
+        self.assertIsNotNone(
+            return_pattern.search(body_text),
+            "REGRESSION: TerminalWidget._render's `except tk.TclError` "
+            "handler does not `return`. The intent (38cb3dc commit "
+            "body) is to drop the frame silently when the canvas was "
+            "destroyed mid-callback. Without the return, control "
+            "falls through to canvas_h = self.canvas.winfo_height() "
+            "which raises the same TclError — the guard would be "
+            "ineffective.",
+        )
+
+
 if __name__ == '__main__':
     result = unittest.main(verbosity=2, exit=False)
     total = result.result.testsRun
