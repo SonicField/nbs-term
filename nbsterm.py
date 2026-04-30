@@ -220,7 +220,7 @@ class TerminalWidget:
         # confirmed novel pattern that dodges the D-1777362486 char_width-
         # underreport axis 60a1291 fell into. Y unchanged: alexie flagged
         # horizontal only.
-        origin_x = min((canvas_w - text_w) // 2, canvas_w // 8)
+        origin_x = min((canvas_w - text_w) // 2, 2 * self.char_width)
         # Gate the diag on canvas_w > 10*char_width so it fires after Tk
         # has actually laid the canvas out, not on the cold-start frame
         # where winfo_width() returns 1 (alexie 2026-04-30 06:21:44 diag
