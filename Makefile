@@ -155,7 +155,7 @@ test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 # Per testkeeper 2026-05-01 12:26:44 ack of pythia D-1777639528 + D-1777639551.
 
 # (1) No Python linkage on any phc binary. ldd must show zero python entries.
-PHC_BINARIES := $(BUILDDIR)/p1_hello $(BUILDDIR)/p1_5_notebook $(BUILDDIR)/p2_render
+PHC_BINARIES := $(BUILDDIR)/p1_hello $(BUILDDIR)/p1_5_notebook $(BUILDDIR)/p2_render $(BUILDDIR)/p3_pty
 
 verify-no-python-link: $(PHC_BINARIES)
 	@fail=0; \
