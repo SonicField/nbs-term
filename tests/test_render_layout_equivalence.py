@@ -41,7 +41,7 @@ import tkinter.font as tkfont
 
 import _nbsterm
 from nbsterm import (
-    DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, PADDING, TerminalWidget,
+    DEFAULT_FONT_SIZE, PADDING, TerminalWidget, default_font_family,
 )
 
 
@@ -76,6 +76,7 @@ else:
     # withdraw() puts the root in iconified state without realising the
     # platform-window structure showRootWindow walks.
     _root.withdraw()
+    _FONT_FAMILY = default_font_family()
     # Module-level named fonts so both test classes (and any TerminalWidget
     # instantiated in TestScrollbackCompositeEquivalence) share the same Tcl
     # font registry. Re-creating named fonts in per-class setUp causes TclError
@@ -84,16 +85,16 @@ else:
     # them at module scope sidesteps both issues.
     _FONTS = {
         0x00: tkfont.Font(
-            root=_root, family=DEFAULT_FONT_FAMILY,
+            root=_root, family=_FONT_FAMILY,
             size=DEFAULT_FONT_SIZE, name="font_normal"),
         0x01: tkfont.Font(
-            root=_root, family=DEFAULT_FONT_FAMILY,
+            root=_root, family=_FONT_FAMILY,
             size=DEFAULT_FONT_SIZE, weight="bold", name="font_bold"),
         0x04: tkfont.Font(
-            root=_root, family=DEFAULT_FONT_FAMILY,
+            root=_root, family=_FONT_FAMILY,
             size=DEFAULT_FONT_SIZE, slant="italic", name="font_italic"),
         0x05: tkfont.Font(
-            root=_root, family=DEFAULT_FONT_FAMILY,
+            root=_root, family=_FONT_FAMILY,
             size=DEFAULT_FONT_SIZE, weight="bold", slant="italic",
             name="font_bold_italic"),
     }

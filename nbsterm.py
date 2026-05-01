@@ -49,8 +49,19 @@ log = logging.getLogger("nbs-term")
 
 DEFAULT_ROWS = 24
 DEFAULT_COLS = 80
-DEFAULT_FONT_FAMILY = "Menlo" if sys.platform == "darwin" else "monospace"
 DEFAULT_FONT_SIZE = 14
+
+
+def default_font_family():
+    """Tk's platform-default fixed-width font family.
+
+    Resolves the standard TkFixedFont named font; Tk maps it to the
+    correct monospace family per platform internally (Menlo on darwin,
+    Courier New on win32, DejaVu Sans Mono / similar on linux).
+    Requires an active Tk interpreter."""
+    return tkfont.nametofont("TkFixedFont").actual("family")
+
+
 DEFAULT_FG = "#d0d0d0"
 DEFAULT_BG = "#1a1a1a"
 PADDING = 4  # minimum canvas-internal border. Text origin centers in the canvas via _compute_origin_for, but never closer than PADDING to any edge. Halved from 8 → 4 (alexie 2026-04-29 15:05:07: slop area too wide, should be ~half).
@@ -85,9 +96,11 @@ class TerminalWidget:
     }
 
     def __init__(self, parent, rows=DEFAULT_ROWS, cols=DEFAULT_COLS,
-                 font_family=DEFAULT_FONT_FAMILY, font_size=DEFAULT_FONT_SIZE,
+                 font_family=None, font_size=DEFAULT_FONT_SIZE,
                  cursor_style="Block", cursor_blink=True, cursor_color=None,
                  gamma=1.0, fg=DEFAULT_FG, bg=DEFAULT_BG, refresh_hz=60):
+        if not font_family:
+            font_family = default_font_family()
         self.parent = parent
         self._refresh_ms = max(1, 1000 // refresh_hz)
         self.rows = rows

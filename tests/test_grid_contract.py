@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tkinter
 import tkinter.font as tkfont
 
-from nbsterm import DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE
+from nbsterm import DEFAULT_FONT_SIZE, default_font_family
 
 
 def _try_make_root():
@@ -105,28 +105,6 @@ _xfail_on_darwin = pytest.mark.xfail(
            "= Apple fixed CoreText, or font default changed — re-evaluate.",
 )
 
-# Per D-1777379876 (deferred 2026-04-28, GO 2026-05-01 supervisor 10:35:18 on
-# alexie aead30f Windows pull repeating D-1777379787): on win32, Tk resolves
-# DEFAULT_FONT_FAMILY="monospace" (nbsterm.py:52) to a proportional fallback.
-# alexie aead30f run measured i=6, M=23, W=28, space=8, 0=16, x=13 — single-
-# glyph widths diverge, so test_all_glyphs_share_M_width fails. The c×N tests
-# above still pass on win32 because per-char widths add linearly (no Win
-# equivalent of CoreText subadditivity), so this marker applies only to the
-# all-glyphs test, not the c×N suite. Click->cell mapping compensated by the
-# same Bug A path (_pixel_to_cell_text_aware); rendering side may still
-# misalign. Unexpected pass = DEFAULT_FONT_FAMILY changed to a real Windows
-# monospace font (e.g. Consolas, Lucida Console) — re-evaluate.
-_xfail_on_win32 = pytest.mark.xfail(
-    sys.platform == "win32",
-    strict=True,
-    reason="Win Tk resolves family 'monospace' to a proportional fallback; "
-           "single-glyph widths diverge (alexie aead30f: i=6, M=23, W=28). "
-           "Compensated for click->cell by Bug A's _pixel_to_cell_text_aware. "
-           "Unexpected pass = DEFAULT_FONT_FAMILY (nbsterm.py:52) changed to "
-           "a real Win monospace font — re-evaluate. See D-1777379876.",
-)
-
-
 @unittest.skipIf(_root is None, "no display available (font.measure needs Tk)")
 class TestGridContract(unittest.TestCase):
     """Falsify the uniform-grid assumption that mouse selection depends on.
@@ -139,8 +117,9 @@ class TestGridContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.font_family = default_font_family()
         cls.font = tkfont.Font(
-            root=_root, family=DEFAULT_FONT_FAMILY, size=DEFAULT_FONT_SIZE
+            root=_root, family=cls.font_family, size=DEFAULT_FONT_SIZE
         )
 
     @classmethod
@@ -155,7 +134,7 @@ class TestGridContract(unittest.TestCase):
             repeated,
             n * single,
             f"Grid contract violated for {char!r} x {n} on font "
-            f"{DEFAULT_FONT_FAMILY!r}: font.measure({char!r}*{n})={repeated} "
+            f"{self.font_family!r}: font.measure({char!r}*{n})={repeated} "
             f"!= {n}*font.measure({char!r})={n * single}. "
             f"Click->cell mapping divides event.x by font.measure('M')={single} "
             f"but text renders at the per-text advance, so visual click and "
@@ -193,11 +172,6 @@ class TestGridContract(unittest.TestCase):
     # bug A path doesn't break this invariant, so this test should continue
     # to pass on darwin too. If it ever fails on darwin, the font defaulting
     # changed (e.g. Menlo replaced by a proportional font), not Bug A.
-    #
-    # WIN32: this test DOES carry the win32 xfail mark — Tk's "monospace"
-    # alias resolves to a proportional fallback (alexie 2026-05-01 aead30f),
-    # so single-glyph widths diverge. See _xfail_on_win32 reason above.
-    @_xfail_on_win32
     def test_all_glyphs_share_M_width(self):
         """In a true monospace font, every glyph occupies the same cell width.
 
@@ -205,11 +179,6 @@ class TestGridContract(unittest.TestCase):
         will land on the right cell for `M`-widths but be off for narrower or
         wider glyphs.
         """
-        # Single assertion (not self.subTest) so the @_xfail_on_win32 marker
-        # actually mutes failures: pytest-subtests reports each subTest as a
-        # separate test item, and method-level xfail does not propagate to
-        # those items (verified 2026-05-01 falsifier — forcing condition True
-        # produced 6 SUBFAILED + 1 FAILED, not 1 XFAILED).
         m = self.font.measure("M")
         widths = {c: self.font.measure(c) for c in ("i", "W", " ", "0", "x", ".")}
         mismatches = {c: w for c, w in widths.items() if w != m}
@@ -217,7 +186,7 @@ class TestGridContract(unittest.TestCase):
             mismatches,
             {},
             f"Glyphs differ from 'M' width ({m}) on font "
-            f"{DEFAULT_FONT_FAMILY!r}: {mismatches}. Single-glyph monospace "
+            f"{self.font_family!r}: {mismatches}. Single-glyph monospace "
             f"assumption is false; click->cell mapping is unreliable.",
         )
 
