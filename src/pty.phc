@@ -114,8 +114,8 @@ struct PTYHandle {
     HANDLE out_write;      /* given to ConPTY; close on parent side */
     PROCESS_INFORMATION proc;
     HANDLE io_thread;
-    HANDLE shutdown_evt;
     SRWLOCK ring_lock;
+    CONDITION_VARIABLE ring_drained;  /* consumer signals; producer waits */
     uint8_t ring[PTY_RING_CAP];
     volatile size_t head;  /* read cursor, advanced by main thread */
     volatile size_t tail;  /* write cursor, advanced by io thread */
@@ -138,7 +138,9 @@ static DWORD WINAPI win32_io_thread(LPVOID arg) {
     PTYHandle *h = (PTYHandle *)arg;
     uint8_t buf[4096];
     DWORD got = 0;
-    while (1) {
+    while (!h->closed) {
+        /* CancelIoEx from pty_free wakes ReadFile with ERROR_OPERATION_ABORTED;
+         * h->closed is observed on next iteration and the loop exits. */
         BOOL ok = ReadFile(h->out_read, buf, sizeof buf, &got, NULL);
         if (!ok || got == 0) {
             h->eof = 1;
@@ -147,14 +149,22 @@ static DWORD WINAPI win32_io_thread(LPVOID arg) {
         }
         AcquireSRWLockExclusive(&h->ring_lock);
         for (DWORD i = 0; i < got; i++) {
-            size_t next = (h->tail + 1) & (PTY_RING_CAP - 1);
-            if (next == h->head) {
-                /* Ring full — drop oldest byte (renderer should keep up;
-                 * a true overflow signals a stuck Tcl event loop). */
-                h->head = (h->head + 1) & (PTY_RING_CAP - 1);
+            /* Backpressure: when the ring is full, sleep on the condition
+             * variable until the consumer drains. POSIX-equivalent — VT
+             * stream byte-preservation invariant holds; bursty output
+             * (cat/htop/verbose builds) cannot desync the parser. */
+            while (!h->closed) {
+                size_t next = (h->tail + 1) & (PTY_RING_CAP - 1);
+                if (next != h->head) break;  /* room available */
+                SleepConditionVariableSRW(&h->ring_drained, &h->ring_lock,
+                                          INFINITE, 0);
+            }
+            if (h->closed) {
+                ReleaseSRWLockExclusive(&h->ring_lock);
+                return 0;
             }
             h->ring[h->tail] = buf[i];
-            h->tail = next;
+            h->tail = (h->tail + 1) & (PTY_RING_CAP - 1);
         }
         ReleaseSRWLockExclusive(&h->ring_lock);
         if (h->async) Tcl_AsyncMark(h->async);
@@ -260,87 +270,157 @@ static int pty_install_tcl_handler(PTYHandle *h, Tcl_Interp *interp,
 
 #else  /* _WIN32 */
 
+/* Quote one CreateProcess argv element per Microsoft's parsing rules
+ * (see <https://learn.microsoft.com/en-us/cpp/cpp/main-function-command-line-args>).
+ * Backslash sequences preceding a quote (or the closing quote of the arg)
+ * are doubled; literal " is escaped as \". The arg is wrapped in quotes
+ * if it contains whitespace, an embedded quote, or is empty. Output is
+ * advanced and capped at outsz - 1; returns bytes written. */
+static size_t win32_quote_arg(const char *arg, char *out, size_t outsz) {
+    size_t o = 0;
+    if (outsz == 0) return 0;
+    int needs_quote = (*arg == 0);
+    for (const char *p = arg; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '"' || *p == '\n' || *p == '\v') {
+            needs_quote = 1; break;
+        }
+    }
+    if (needs_quote && o + 1 < outsz) out[o++] = '"';
+    int backslashes = 0;
+    for (const char *p = arg; *p; p++) {
+        if (*p == '\\') {
+            backslashes++;
+        } else if (*p == '"') {
+            for (int i = 0; i < 2 * backslashes + 1 && o + 1 < outsz; i++) {
+                out[o++] = '\\';
+            }
+            if (o + 1 < outsz) out[o++] = '"';
+            backslashes = 0;
+        } else {
+            for (int i = 0; i < backslashes && o + 1 < outsz; i++) {
+                out[o++] = '\\';
+            }
+            backslashes = 0;
+            if (o + 1 < outsz) out[o++] = *p;
+        }
+    }
+    if (needs_quote) {
+        for (int i = 0; i < 2 * backslashes && o + 1 < outsz; i++) {
+            out[o++] = '\\';
+        }
+        if (o + 1 < outsz) out[o++] = '"';
+    } else {
+        for (int i = 0; i < backslashes && o + 1 < outsz; i++) {
+            out[o++] = '\\';
+        }
+    }
+    out[o] = 0;
+    return o;
+}
+
 static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
     PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
     if (!h) return NULL;
     InitializeSRWLock(&h->ring_lock);
+    InitializeConditionVariable(&h->ring_drained);
 
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
-    if (!CreatePipe(&h->in_read, &h->in_write, &sa, 0) ||
-        !CreatePipe(&h->out_read, &h->out_write, &sa, 0)) {
-        fprintf(stderr, "CreatePipe failed: 0x%lx\n", GetLastError());
-        free(h); return NULL;
+    HPCON hPC = NULL;
+    LPPROC_THREAD_ATTRIBUTE_LIST attr = NULL;
+    char *cmd = NULL;
+
+    /* Each pipe is rolled back individually so a partial-failure leaves
+     * no dangling handles to leak. Order: in, out, then ConPTY which
+     * takes ownership of in_read + out_write. */
+    if (!CreatePipe(&h->in_read, &h->in_write, &sa, 0)) {
+        fprintf(stderr, "CreatePipe(in): 0x%lx\n", GetLastError());
+        goto fail;
+    }
+    if (!CreatePipe(&h->out_read, &h->out_write, &sa, 0)) {
+        fprintf(stderr, "CreatePipe(out): 0x%lx\n", GetLastError());
+        goto fail;
     }
 
-    HPCON hPC = NULL;
     COORD size; size.X = (SHORT)cols; size.Y = (SHORT)rows;
     HRESULT hr = CreatePseudoConsole(size, h->in_read, h->out_write, 0, &hPC);
     if (FAILED(hr)) {
         fprintf(stderr, "CreatePseudoConsole: 0x%lx\n", (unsigned long)hr);
-        CloseHandle(h->in_read);  CloseHandle(h->in_write);
-        CloseHandle(h->out_read); CloseHandle(h->out_write);
-        free(h); return NULL;
+        goto fail;
     }
     h->pty = (HANDLE)hPC;
 
-    /* Build a STARTUPINFOEX with the pseudoconsole attribute. */
     STARTUPINFOEXA sie; ZeroMemory(&sie, sizeof sie);
     sie.StartupInfo.cb = sizeof sie;
     SIZE_T attr_sz = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attr_sz);
-    sie.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(
-        GetProcessHeap(), 0, attr_sz);
-    if (!sie.lpAttributeList ||
-        !InitializeProcThreadAttributeList(sie.lpAttributeList, 1, 0, &attr_sz) ||
-        !UpdateProcThreadAttribute(sie.lpAttributeList, 0,
+    attr = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attr_sz);
+    if (!attr ||
+        !InitializeProcThreadAttributeList(attr, 1, 0, &attr_sz) ||
+        !UpdateProcThreadAttribute(attr, 0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPC, sizeof hPC, NULL, NULL)) {
         fprintf(stderr, "ProcThreadAttribute: 0x%lx\n", GetLastError());
-        ClosePseudoConsole(hPC);
-        free(h); return NULL;
+        goto fail;
     }
+    sie.lpAttributeList = attr;
 
-    /* Flatten argv into a single CreateProcess command line. */
-    size_t cmdlen = 1;
-    for (int i = 0; argv[i]; i++) cmdlen += strlen(argv[i]) + 3;
-    char *cmd = (char *)malloc(cmdlen);
+    /* Flatten argv into a CreateProcess command line with proper quoting
+     * (gatekeeper 12:49:22 #3): worst-case each char becomes \\ + " so
+     * reserve 2x + quotes + space. */
+    size_t cmdcap = 1;
+    for (int i = 0; argv[i]; i++) cmdcap += 2 * strlen(argv[i]) + 4;
+    cmd = (char *)malloc(cmdcap);
+    if (!cmd) goto fail;
     cmd[0] = 0;
+    size_t cmdlen = 0;
     for (int i = 0; argv[i]; i++) {
-        if (i) strcat(cmd, " ");
-        strcat(cmd, "\"");
-        strcat(cmd, argv[i]);
-        strcat(cmd, "\"");
+        if (i && cmdlen + 1 < cmdcap) cmd[cmdlen++] = ' ';
+        cmdlen += win32_quote_arg(argv[i], cmd + cmdlen, cmdcap - cmdlen);
     }
+    cmd[cmdlen] = 0;
     BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
                              EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
                              &sie.StartupInfo, &h->proc);
-    free(cmd);
-    DeleteProcThreadAttributeList(sie.lpAttributeList);
-    HeapFree(GetProcessHeap(), 0, sie.lpAttributeList);
     if (!ok) {
         fprintf(stderr, "CreateProcess: 0x%lx\n", GetLastError());
-        ClosePseudoConsole(hPC);
-        free(h); return NULL;
+        goto fail;
     }
+    free(cmd); cmd = NULL;
+    DeleteProcThreadAttributeList(attr);
+    HeapFree(GetProcessHeap(), 0, attr);
     /* Parent doesn't need the child-side ends. */
-    CloseHandle(h->in_read);  h->in_read  = NULL;
+    CloseHandle(h->in_read);   h->in_read  = NULL;
     CloseHandle(h->out_write); h->out_write = NULL;
     return h;
+
+fail:
+    if (cmd) free(cmd);
+    if (attr) {
+        DeleteProcThreadAttributeList(attr);
+        HeapFree(GetProcessHeap(), 0, attr);
+    }
+    if (hPC) ClosePseudoConsole(hPC);
+    if (h->in_read)  CloseHandle(h->in_read);
+    if (h->in_write) CloseHandle(h->in_write);
+    if (h->out_read) CloseHandle(h->out_read);
+    if (h->out_write) CloseHandle(h->out_write);
+    free(h);
+    return NULL;
 }
 
 static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
     if (!h) return -1;
     AcquireSRWLockExclusive(&h->ring_lock);
+    /* Producer never makes the ring full when consumer can be running
+     * (it sleeps on ring_drained instead — see win32_io_thread). So
+     * head == tail unambiguously means empty here. */
     size_t avail = (h->tail - h->head) & (PTY_RING_CAP - 1);
-    /* Tricky: head==tail can mean empty OR full. Empty is the only case
-     * the io thread allows to re-occur after a drain — full is bridged
-     * via head-advance in the writer. So head==tail here is empty. */
-    if (h->tail == h->head) avail = 0;
     if (avail > len) avail = len;
     for (size_t i = 0; i < avail; i++) {
         buf[i] = h->ring[(h->head + i) & (PTY_RING_CAP - 1)];
     }
     h->head = (h->head + avail) & (PTY_RING_CAP - 1);
     ReleaseSRWLockExclusive(&h->ring_lock);
+    if (avail > 0) WakeConditionVariable(&h->ring_drained);
     if (avail == 0 && h->eof) return 0;
     if (avail == 0) return -1;
     return (pty_ssize_t)avail;
@@ -368,16 +448,20 @@ static void pty_kill(PTYHandle *h) {
 
 static void pty_free(PTYHandle *h) {
     if (!h) return;
+    /* Wake the I/O thread so it observes h->closed and exits cleanly.
+     * CancelIoEx breaks any blocked ReadFile; WakeAllConditionVariable
+     * breaks any backpressure wait inside the ring loop. */
     h->closed = 1;
-    if (h->shutdown_evt) SetEvent(h->shutdown_evt);
+    if (h->out_read) CancelIoEx(h->out_read, NULL);
+    WakeAllConditionVariable(&h->ring_drained);
     if (h->io_thread) {
         WaitForSingleObject(h->io_thread, 1000);
         CloseHandle(h->io_thread);
+        h->io_thread = NULL;
     }
-    if (h->shutdown_evt) CloseHandle(h->shutdown_evt);
-    if (h->pty) ClosePseudoConsole((HPCON)h->pty);
-    if (h->in_write) CloseHandle(h->in_write);
-    if (h->out_read) CloseHandle(h->out_read);
+    if (h->pty) { ClosePseudoConsole((HPCON)h->pty); h->pty = NULL; }
+    if (h->in_write)  { CloseHandle(h->in_write);  h->in_write = NULL; }
+    if (h->out_read)  { CloseHandle(h->out_read);  h->out_read = NULL; }
     if (h->proc.hProcess) {
         TerminateProcess(h->proc.hProcess, 0);
         WaitForSingleObject(h->proc.hProcess, 1000);
@@ -395,7 +479,6 @@ static int pty_install_tcl_handler(PTYHandle *h, Tcl_Interp *interp,
     h->cb = cb;
     h->cd = cd;
     h->async = Tcl_AsyncCreate(win32_async_proc, h);
-    h->shutdown_evt = CreateEvent(NULL, TRUE, FALSE, NULL);
     h->io_thread = CreateThread(NULL, 0, win32_io_thread, h, 0, NULL);
     if (!h->io_thread) {
         fprintf(stderr, "CreateThread: 0x%lx\n", GetLastError());
