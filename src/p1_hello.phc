@@ -1,0 +1,71 @@
+/*
+ * p1_hello.phc — P1 calibration: Tcl/Tk C-API round-trip hello-world.
+ *
+ * Strict pure-phc binary. No Python, no nbs-ssh. Links libtcl/libtk + libc.
+ * Exercises the same C-API shape used by P5 (ttk::notebook) and P6a (Tk
+ * dialogs): widget creation via Tcl_Eval, callback registration via
+ * Tcl_CreateObjCommand, round-trip from Tcl event loop into C and back.
+ *
+ * Bar: full functional LOC (excluding blanks/braces/comments) <= ~30.
+ * Result feeds the ~750 LOC scale assumption for P5/P6a.
+ *
+ * Build: make build/p1_hello && build/p1_hello
+ */
+#include <tcl.h>
+#include <tk.h>
+#include <string.h>
+
+/* Round-trip command: invoked from Tcl when the user clicks Submit.
+ * Reads the entry text (passed as objv[1]) and writes it onto the canvas
+ * as a text item. Demonstrates Tcl -> C -> Tcl round-trip. */
+static int OnSubmit(ClientData cd, Tcl_Interp *interp, int objc,
+                    Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "text");
+        return TCL_ERROR;
+    }
+    const char *text = Tcl_GetString(objv[1]);
+    Tcl_Obj *cmd = Tcl_ObjPrintf(
+        ".c delete labels;"
+        ".c create text 150 80 -text {Got: %s} -fill black -tags labels",
+        text);
+    Tcl_IncrRefCount(cmd);
+    int rc = Tcl_EvalObjEx(interp, cmd, 0);
+    Tcl_DecrRefCount(cmd);
+    return rc;
+}
+
+int main(int argc, char *argv[]) {
+    Tcl_FindExecutable(argv[0]);
+    Tcl_Interp *interp = Tcl_CreateInterp();
+    if (Tcl_Init(interp) != TCL_OK || Tk_Init(interp) != TCL_OK) {
+        fprintf(stderr, "init failed: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    Tcl_CreateObjCommand(interp, "on_submit", OnSubmit, NULL, NULL);
+    int rc = Tcl_Eval(interp,
+        "wm title . {phc P1 hello}\n"
+        "canvas .c -width 300 -height 160 -bg white\n"
+        "entry .e\n"
+        "button .b -text Submit -command {on_submit [.e get]}\n"
+        "pack .c .e .b -padx 8 -pady 4\n"
+        "focus .e\n");
+    if (rc != TCL_OK) {
+        fprintf(stderr, "ui setup failed: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    /* Self-test the round-trip on startup so build/p1_hello -test exits
+     * non-zero if the C<->Tcl wiring is broken. The real interactive
+     * round-trip happens on the Submit button. */
+    if (Tcl_Eval(interp, "on_submit phc_round_trip_ok") != TCL_OK) {
+        fprintf(stderr, "round-trip self-test failed: %s\n",
+                Tcl_GetStringResult(interp));
+        return 2;
+    }
+    if (argc > 1 && strcmp(argv[1], "-test") == 0) {
+        return 0;  /* round-trip verified, exit before main loop */
+    }
+    Tk_MainLoop();
+    return 0;
+}

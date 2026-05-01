@@ -76,6 +76,21 @@ $(BUILDDIR)/extension.o: $(BUILDDIR)/extension.c
 $(EXTENSION_SO): $(BUILDDIR)/extension.o
 	$(CC) $(LDFLAGS) $< -o $@
 
+# --- P1 calibration: standalone phc binary, no Python ---
+# Tcl/Tk C-API hello-world. Builds a native executable directly from .phc;
+# zero Python linkage. Bar: see src/p1_hello.phc header.
+TCLTK_CFLAGS := $(shell pkg-config --cflags tk 2>/dev/null)
+TCLTK_LIBS := $(shell pkg-config --libs tk 2>/dev/null || echo "-ltk8.6 -ltcl8.6")
+P1_CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function
+
+$(BUILDDIR)/p1_hello.c: $(SRCDIR)/p1_hello.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/p1_hello: $(BUILDDIR)/p1_hello.c
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
+
+p1_hello: $(BUILDDIR)/p1_hello
+
 # --- Test targets ---
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
