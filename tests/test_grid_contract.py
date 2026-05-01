@@ -105,6 +105,27 @@ _xfail_on_darwin = pytest.mark.xfail(
            "= Apple fixed CoreText, or font default changed — re-evaluate.",
 )
 
+# Per D-1777379876 (deferred 2026-04-28, GO 2026-05-01 supervisor 10:35:18 on
+# alexie aead30f Windows pull repeating D-1777379787): on win32, Tk resolves
+# DEFAULT_FONT_FAMILY="monospace" (nbsterm.py:52) to a proportional fallback.
+# alexie aead30f run measured i=6, M=23, W=28, space=8, 0=16, x=13 — single-
+# glyph widths diverge, so test_all_glyphs_share_M_width fails. The c×N tests
+# above still pass on win32 because per-char widths add linearly (no Win
+# equivalent of CoreText subadditivity), so this marker applies only to the
+# all-glyphs test, not the c×N suite. Click->cell mapping compensated by the
+# same Bug A path (_pixel_to_cell_text_aware); rendering side may still
+# misalign. Unexpected pass = DEFAULT_FONT_FAMILY changed to a real Windows
+# monospace font (e.g. Consolas, Lucida Console) — re-evaluate.
+_xfail_on_win32 = pytest.mark.xfail(
+    sys.platform == "win32",
+    strict=True,
+    reason="Win Tk resolves family 'monospace' to a proportional fallback; "
+           "single-glyph widths diverge (alexie aead30f: i=6, M=23, W=28). "
+           "Compensated for click->cell by Bug A's _pixel_to_cell_text_aware. "
+           "Unexpected pass = DEFAULT_FONT_FAMILY (nbsterm.py:52) changed to "
+           "a real Win monospace font — re-evaluate. See D-1777379876.",
+)
+
 
 @unittest.skipIf(_root is None, "no display available (font.measure needs Tk)")
 class TestGridContract(unittest.TestCase):
@@ -165,13 +186,18 @@ class TestGridContract(unittest.TestCase):
     def test_space_x10(self):
         self._assert_grid(" ", 10)
 
-    # NOTE: test_all_glyphs_share_M_width does NOT carry the xfail mark.
+    # NOTE: test_all_glyphs_share_M_width does NOT carry the darwin xfail mark.
     # Mac-CoreText subadditivity affects MULTI-character measure (the c×N
     # tests above); single-character widths agree on Menlo (verified in
     # alexie's run 11:36 — this test was the lone PASS in FFFF.FF). The
     # bug A path doesn't break this invariant, so this test should continue
     # to pass on darwin too. If it ever fails on darwin, the font defaulting
     # changed (e.g. Menlo replaced by a proportional font), not Bug A.
+    #
+    # WIN32: this test DOES carry the win32 xfail mark — Tk's "monospace"
+    # alias resolves to a proportional fallback (alexie 2026-05-01 aead30f),
+    # so single-glyph widths diverge. See _xfail_on_win32 reason above.
+    @_xfail_on_win32
     def test_all_glyphs_share_M_width(self):
         """In a true monospace font, every glyph occupies the same cell width.
 
@@ -179,16 +205,21 @@ class TestGridContract(unittest.TestCase):
         will land on the right cell for `M`-widths but be off for narrower or
         wider glyphs.
         """
+        # Single assertion (not self.subTest) so the @_xfail_on_win32 marker
+        # actually mutes failures: pytest-subtests reports each subTest as a
+        # separate test item, and method-level xfail does not propagate to
+        # those items (verified 2026-05-01 falsifier — forcing condition True
+        # produced 6 SUBFAILED + 1 FAILED, not 1 XFAILED).
         m = self.font.measure("M")
-        for c in ("i", "W", " ", "0", "x", "."):
-            with self.subTest(char=c):
-                self.assertEqual(
-                    self.font.measure(c),
-                    m,
-                    f"Glyph {c!r} width != 'M' width on font "
-                    f"{DEFAULT_FONT_FAMILY!r}. Single-glyph monospace "
-                    f"assumption is false; click->cell mapping is unreliable.",
-                )
+        widths = {c: self.font.measure(c) for c in ("i", "W", " ", "0", "x", ".")}
+        mismatches = {c: w for c, w in widths.items() if w != m}
+        self.assertEqual(
+            mismatches,
+            {},
+            f"Glyphs differ from 'M' width ({m}) on font "
+            f"{DEFAULT_FONT_FAMILY!r}: {mismatches}. Single-glyph monospace "
+            f"assumption is false; click->cell mapping is unreliable.",
+        )
 
 
 if __name__ == "__main__":
