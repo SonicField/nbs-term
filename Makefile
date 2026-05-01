@@ -41,7 +41,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-phc-invariants
 
 all: $(EXTENSION_SO)
 
@@ -139,6 +139,47 @@ test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	echo ""; \
 	if [ $$exit_code -eq 0 ]; then echo "Gate: OPEN"; else echo "Gate: BLOCKED"; fi; \
 	exit $$exit_code
+
+# --- pure-phc invariant guards (testkeeper, per pythia #36) ---
+# Static-source assertions enforcing the B-shape doctrine on pure-phc-master.
+# Per testkeeper 2026-05-01 12:26:44 ack of pythia D-1777639528 + D-1777639551.
+
+# (1) No Python linkage on any phc binary. ldd must show zero python entries.
+PHC_BINARIES := $(BUILDDIR)/p1_hello $(BUILDDIR)/p1_5_notebook $(BUILDDIR)/p2_render
+
+verify-no-python-link: $(PHC_BINARIES)
+	@fail=0; \
+	for b in $(PHC_BINARIES); do \
+	  if [ -x "$$b" ]; then \
+	    if ldd "$$b" 2>/dev/null | grep -qi python; then \
+	      echo "FAIL: $$b links Python (B-shape requires zero Python linkage at runtime)"; \
+	      ldd "$$b" | grep -i python; \
+	      fail=1; \
+	    fi; \
+	  else \
+	    echo "SKIP: $$b not built"; \
+	  fi; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "PASS: phc binaries have zero Python linkage"; else exit 1; fi
+
+# (2) No Tcl_EvalObjEx in production .phc. Use Tcl_EvalObjv + Tcl_NewStringObj
+# per theologian 2026-05-01 12:09:51 + refinement 12:27:27 (ban EvalObjEx
+# entirely, not the printf+EvalObjEx pair). Allowlist: P1/P1.5 calibration
+# scaffolds (won't ship per theologian 12:11:13 throwaway disposition).
+EVAL_OBJEX_ALLOWLIST := p1_hello\.phc|p1_5_notebook\.phc
+
+verify-no-eval-objex:
+	@hits=$$(grep -l 'Tcl_EvalObjEx' $(SRCDIR)/*.phc 2>/dev/null | grep -vE '$(EVAL_OBJEX_ALLOWLIST)' || true); \
+	if [ -n "$$hits" ]; then \
+	  echo "FAIL: Tcl_EvalObjEx found in production .phc (allowlist: P1/P1.5 scaffolds only)"; \
+	  echo "$$hits" | while read f; do grep -nH 'Tcl_EvalObjEx' "$$f"; done; \
+	  echo "Use Tcl_EvalObjv + Tcl_NewStringObj-constructed argv instead."; \
+	  exit 1; \
+	fi; \
+	echo "PASS: no Tcl_EvalObjEx in production .phc"
+
+# Roll-up: run both invariant guards.
+verify-phc-invariants: verify-no-python-link verify-no-eval-objex
 
 test-asan: CC := clang
 test-asan: CFLAGS += $(ASAN_FLAGS)
