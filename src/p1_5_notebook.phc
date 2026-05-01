@@ -1,0 +1,117 @@
+/*
+ * p1_5_notebook.phc — P1.5 calibration: ttk::notebook + tabs + shared state
+ *
+ * Strict pure-phc binary. Exercises the C-API shape that P5 (multi-tab UI)
+ * will hit: ttk::notebook creation, per-tab widget hierarchy, virtual event
+ * (<<NotebookTabChanged>>) callback, dynamic tab destruction, shared state
+ * visible across tabs via Tcl variable linkage.
+ *
+ * Bar (theologian 2026-05-01 12:07:14): full functional LOC <= ~100. If P1.5
+ * stays compact, P5 ~250 LOC migration estimate stands; if 200+, replan.
+ *
+ * Build: make build/p1_5_notebook && build/p1_5_notebook
+ * Self-test: build/p1_5_notebook -test  (exits 0 on round-trip success)
+ */
+#include <tcl.h>
+#include <tk.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Shared state visible across tabs via the Tcl variable "::counter".
+ * Labels in both tab frames use -textvariable counter so any C-side
+ * Tcl_SetVar update propagates to both displays automatically. */
+static int g_counter = 0;
+static int g_tab_changes = 0;
+static int g_closes = 0;
+
+static void publish_counter(Tcl_Interp *interp) {
+    Tcl_Obj *val = Tcl_NewIntObj(g_counter);
+    Tcl_SetVar2Ex(interp, "counter", NULL, val, TCL_GLOBAL_ONLY);
+}
+
+static int Increment(ClientData cd, Tcl_Interp *interp, int objc,
+                     Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    g_counter++;
+    publish_counter(interp);
+    return TCL_OK;
+}
+
+/* on_tab_changed receives the current tab path (e.g. ".nb.t1") so the C
+ * side can react to tab focus shifts — what P5's terminal-tab swap will
+ * use to wire input to the active widget. */
+static int OnTabChanged(ClientData cd, Tcl_Interp *interp, int objc,
+                        Tcl_Obj *const objv[]) {
+    (void)cd; (void)interp;
+    if (objc != 2) return TCL_ERROR;
+    g_tab_changes++;
+    fprintf(stderr, "tab_changed: %s (total %d)\n",
+            Tcl_GetString(objv[1]), g_tab_changes);
+    return TCL_OK;
+}
+
+/* CloseTab destroys the frame backing a tab; ttk::notebook auto-removes
+ * the tab on child destruction. Drives the cleanup pattern P5 needs for
+ * Cmd-W lifecycle. */
+static int CloseTab(ClientData cd, Tcl_Interp *interp, int objc,
+                    Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) return TCL_ERROR;
+    g_closes++;
+    Tcl_Obj *cmd = Tcl_ObjPrintf("destroy %s", Tcl_GetString(objv[1]));
+    Tcl_IncrRefCount(cmd);
+    int rc = Tcl_EvalObjEx(interp, cmd, 0);
+    Tcl_DecrRefCount(cmd);
+    return rc;
+}
+
+int main(int argc, char *argv[]) {
+    Tcl_FindExecutable(argv[0]);
+    Tcl_Interp *interp = Tcl_CreateInterp();
+    if (Tcl_Init(interp) != TCL_OK || Tk_Init(interp) != TCL_OK) {
+        fprintf(stderr, "init failed: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    Tcl_CreateObjCommand(interp, "increment",      Increment,    NULL, NULL);
+    Tcl_CreateObjCommand(interp, "on_tab_changed", OnTabChanged, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "close_tab",      CloseTab,     NULL, NULL);
+    publish_counter(interp);
+
+    int rc = Tcl_Eval(interp,
+        "wm title . {phc P1.5 notebook}\n"
+        "ttk::notebook .nb\n"
+        "foreach {tab name} {.nb.t1 {Tab 1} .nb.t2 {Tab 2}} {\n"
+        "  frame $tab\n"
+        "  label  $tab.lbl -textvariable counter -font {TkDefaultFont 24}\n"
+        "  button $tab.inc -text {Increment} -command increment\n"
+        "  button $tab.cls -text {Close this tab} -command [list close_tab $tab]\n"
+        "  pack $tab.lbl $tab.inc $tab.cls -padx 8 -pady 4\n"
+        "  .nb add $tab -text $name\n"
+        "}\n"
+        "bind .nb <<NotebookTabChanged>> {on_tab_changed [.nb select]}\n"
+        "pack .nb -fill both -expand 1\n");
+    if (rc != TCL_OK) {
+        fprintf(stderr, "ui setup failed: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    /* Round-trip self-test: drive the three C callbacks from Tcl, observe
+     * shared-state propagation, and confirm tab destruction works. */
+    if (Tcl_Eval(interp,
+            "increment; increment;"
+            "if {$counter != 2} {error \"counter $counter != 2\"};"
+            "event generate .nb <<NotebookTabChanged>>;"
+            "close_tab .nb.t2;"
+            "if {[llength [.nb tabs]] != 1} {error \"close failed\"}"
+        ) != TCL_OK) {
+        fprintf(stderr, "round-trip self-test failed: %s\n",
+                Tcl_GetStringResult(interp));
+        return 2;
+    }
+    if (argc > 1 && strcmp(argv[1], "-test") == 0) {
+        fprintf(stderr, "self-test ok: counter=%d tab_changes=%d closes=%d\n",
+                g_counter, g_tab_changes, g_closes);
+        return 0;
+    }
+    Tk_MainLoop();
+    return 0;
+}

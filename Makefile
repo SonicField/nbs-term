@@ -91,6 +91,14 @@ $(BUILDDIR)/p1_hello: $(BUILDDIR)/p1_hello.c
 
 p1_hello: $(BUILDDIR)/p1_hello
 
+$(BUILDDIR)/p1_5_notebook.c: $(SRCDIR)/p1_5_notebook.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/p1_5_notebook: $(BUILDDIR)/p1_5_notebook.c
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
+
+p1_5_notebook: $(BUILDDIR)/p1_5_notebook
+
 # --- Test targets ---
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
