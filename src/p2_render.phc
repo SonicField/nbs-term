@@ -1,0 +1,267 @@
+/*
+ * p2_render.phc — P2: standalone phc TerminalWidget renderer
+ *
+ * Strict pure-phc binary. No Python. Composes the existing screen +
+ * vt_parser engines with a Tk canvas via the C-API. Bytes come from a
+ * recorded buffer (no PTY yet — P3 wires forkpty / ConPTY).
+ *
+ * Goal.md falsifier (supervisor 2026-05-01 12:17:55): render a known
+ * terminal byte sequence and visually match expected glyph layout.
+ *
+ * Build: make build/p2_render && build/p2_render
+ * Self-test: build/p2_render -test  (exits 0 on render-shape success)
+ */
+#include <tcl.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+/* phc trust-level macros mirror what the regenerate-target preamble in
+ * Makefile emits for the Python C extension build. Defined here so the
+ * standalone phc binary doesn't depend on the Python build pipeline. */
+#define phc_require(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "REQUIRE FAILED %s:%d: %s\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#define phc_check(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "CHECK FAILED %s:%d: %s\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#define phc_invariant(expr, msg) do { if (!(expr)) { \
+    fprintf(stderr, "INVARIANT FAILED %s:%d: %s\n", __FILE__, __LINE__, msg); \
+    abort(); }} while(0)
+#define phc_free(pp) do { free(*(pp)); *(pp) = NULL; } while(0)
+
+#include "vt_parser.phc"   /* pulls in sgr.phc + screen.phc transitively */
+/* tk.h intentionally NOT included: X11's Cursor typedef collides with
+ * screen.phc's Cursor struct. Tk surfaces are accessed via Tcl_Eval
+ * ("package require Tk", widget commands), avoiding the C-level header. */
+
+/* Cell pixel grid. Real character metrics come from font.measure later;
+ * fixed grid here keeps the calibration's render geometry deterministic. */
+#define CELL_W 9
+#define CELL_H 16
+#define DEFAULT_FG "#d0d0d0"
+#define DEFAULT_BG "#1a1a1a"
+
+/* eval_argv: safe-quoting Tcl invocation. Each argument enters as a
+ * Tcl_Obj built from a string literal or untrusted byte sequence; Tcl
+ * never re-parses element contents. Forward standard for all P2+ widget
+ * I/O per theologian 2026-05-01 12:09:51. Always invoke through the
+ * EVAL_ARGV macro so the count comes from sizeof — manual objc passing
+ * masks off-by-one bugs as garbage-pointer crashes inside Tcl_NewStringObj. */
+static int eval_argv(Tcl_Interp *interp, int objc, const char *argv[]) {
+    Tcl_Obj **objv = (Tcl_Obj **)Tcl_Alloc(sizeof(Tcl_Obj *) * objc);
+    for (int i = 0; i < objc; i++) {
+        objv[i] = Tcl_NewStringObj(argv[i], -1);
+        Tcl_IncrRefCount(objv[i]);
+    }
+    int rc = Tcl_EvalObjv(interp, objc, objv, 0);
+    for (int i = 0; i < objc; i++) Tcl_DecrRefCount(objv[i]);
+    Tcl_Free((char *)objv);
+    return rc;
+}
+#define EVAL_ARGV(interp, argv) \
+    eval_argv((interp), (int)(sizeof(argv) / sizeof((argv)[0])), (argv))
+
+/* True iff the color carries no per-cell value (renderer can skip the
+ * background swatch and let the canvas widget bg show through). */
+static int color_is_default(Color c) {
+    int is_def = 0;
+    phc_match(Color, c) {
+        case Default: { is_def = 1; } break;
+        case Indexed(index): { (void)index; is_def = 0; } break;
+        case RGB(r, g, b): { (void)r; (void)g; (void)b; is_def = 0; } break;
+    }
+    return is_def;
+}
+
+/* Color -> Tk #rrggbb. Pure computation, no Python (cf. render.phc which
+ * is Python-coupled and skipped wholesale for the pure-phc binary). */
+static void color_to_hex(Color c, const char *defcol, char *out, int outsz) {
+    phc_match(Color, c) {
+        case Default: {
+            snprintf(out, (size_t)outsz, "%s", defcol);
+        } break;
+        case Indexed(index): {
+            static const char *ansi[] = {
+                "#000000", "#cd0000", "#00cd00", "#cdcd00",
+                "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+                "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+                "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+            };
+            if (index < 16) {
+                snprintf(out, (size_t)outsz, "%s", ansi[index]);
+            } else if (index < 232) {
+                int ci = index - 16;
+                int r = ci / 36, g = (ci / 6) % 6, b = ci % 6;
+                snprintf(out, (size_t)outsz, "#%02x%02x%02x",
+                         r ? r * 40 + 55 : 0,
+                         g ? g * 40 + 55 : 0,
+                         b ? b * 40 + 55 : 0);
+            } else {
+                int v = (index - 232) * 10 + 8;
+                snprintf(out, (size_t)outsz, "#%02x%02x%02x", v, v, v);
+            }
+        } break;
+        case RGB(r, g, b): {
+            snprintf(out, (size_t)outsz, "#%02x%02x%02x", r, g, b);
+        } break;
+    }
+}
+
+/* UTF-8 encode a codepoint. Returns bytes written (0 on overflow). */
+static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
+    if (cp < 0x80 && bufsz >= 1) {
+        buf[0] = (char)cp; return 1;
+    }
+    if (cp < 0x800 && bufsz >= 2) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000 && bufsz >= 3) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (bufsz >= 4) {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+    return 0;
+}
+
+/* Render the active screen buffer onto the canvas. One Tk text item per
+ * row (tagged "row{N}") for a coarse first cut; per-cell colour overlays
+ * land via background rectangles (tagged "bg{N}_{C}"). Both layers use
+ * the safe eval_argv pattern — codepoint bytes flow through Tcl_Obj
+ * args, never interpolated into a script string. */
+static int render_screen(Tcl_Interp *interp, const char *canvas,
+                         const Terminal *term) {
+    const ScreenBuffer *scr = term->active;
+    /* Wipe previous frame. */
+    const char *clear[] = {canvas, "delete", "all"};
+    if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
+
+    char rowbuf[4096];
+    char xs[16], ys[16], x2s[16], y2s[16], tag[32], fg[16], bg[16];
+
+    for (int r = 0; r < scr->rows; r++) {
+        int rowlen = 0;
+        for (int c = 0; c < scr->cols && rowlen < (int)sizeof(rowbuf) - 4; c++) {
+            const Cell *cell = screen_cell_const(scr, r, c);
+            if (cell->wide_cont) continue;
+            uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+            rowlen += utf8_emit(cp, rowbuf + rowlen,
+                                (int)sizeof(rowbuf) - rowlen);
+            /* Per-cell background swatch — only when non-default so the
+             * canvas isn't littered with redundant rects. */
+            if (color_is_default(cell->bg)) continue;
+            color_to_hex(cell->bg, DEFAULT_BG, bg, sizeof bg);
+            snprintf(xs,  sizeof xs,  "%d", c * CELL_W);
+            snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
+            snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
+            snprintf(y2s, sizeof y2s, "%d", (r + 1) * CELL_H);
+            snprintf(tag, sizeof tag, "bg%d_%d", r, c);
+            const char *rect[] = {canvas, "create", "rectangle",
+                                  xs, ys, x2s, y2s,
+                                  "-fill", bg, "-outline", "",
+                                  "-tags", tag};
+            if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+        }
+        rowbuf[rowlen] = 0;
+        /* Foreground colour: take the first cell's fg as the row colour.
+         * Mixed-fg rows get the first colour for the calibration; per-span
+         * fg fidelity is a P2.5 follow-up if alexie smoke flags it. */
+        color_to_hex(screen_cell_const(scr, r, 0)->fg, DEFAULT_FG,
+                     fg, sizeof fg);
+        snprintf(xs,  sizeof xs,  "%d", 0);
+        snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
+        snprintf(tag, sizeof tag, "row%d", r);
+        const char *text[] = {canvas, "create", "text", xs, ys,
+                              "-anchor", "nw", "-text", rowbuf,
+                              "-fill", fg, "-font", "TkFixedFont",
+                              "-tags", tag};
+        if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
+    }
+    return TCL_OK;
+}
+
+/* Recorded byte sequence: the smallest input that exercises plain text,
+ * CR/LF cursor moves, an SGR colour change, and SGR reset. P2 scope. */
+static const char SAMPLE[] =
+    "Hello\r\n"
+    "\x1b[31mRED text\x1b[0m\r\n"
+    "\x1b[1mBOLD\x1b[0m and plain";
+
+int main(int argc, char *argv[]) {
+    Tcl_FindExecutable(argv[0]);
+    Tcl_Interp *interp = Tcl_CreateInterp();
+    if (Tcl_Init(interp) != TCL_OK ||
+        Tcl_Eval(interp, "package require Tk") != TCL_OK) {
+        fprintf(stderr, "init failed: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    /* Terminal + parser — pure phc, zero Python. */
+    Terminal *term = terminal_new(10, 40);
+    if (!term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
+    VTParser *parser = vt_parser_new(term);
+    if (!parser) {
+        terminal_free(term);
+        fprintf(stderr, "parser failed\n");
+        return 1;
+    }
+    vt_parser_feed(parser, (const uint8_t *)SAMPLE, (int)sizeof(SAMPLE) - 1);
+
+    /* Tk surface. Width / height sized to the screen grid. */
+    char wstr[16], hstr[16];
+    snprintf(wstr, sizeof wstr, "%d", 40 * CELL_W);
+    snprintf(hstr, sizeof hstr, "%d", 10 * CELL_H);
+    const char *canvas[] = {"canvas", ".c",
+                            "-width", wstr, "-height", hstr,
+                            "-bg", DEFAULT_BG, "-highlightthickness", "0"};
+    if (EVAL_ARGV(interp, canvas) != TCL_OK) {
+        fprintf(stderr, "canvas: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    const char *pack[] = {"pack", ".c"};
+    if (EVAL_ARGV(interp, pack) != TCL_OK) {
+        fprintf(stderr, "pack: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    if (render_screen(interp, ".c", term) != TCL_OK) {
+        fprintf(stderr, "render: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+
+    /* Self-test: query the canvas for the rendered text items and verify
+     * expected glyph layout from the recorded byte sequence. */
+    if (Tcl_Eval(interp,
+            "set ok 1;"
+            "if {[.c itemcget [.c find withtag row0] -text] ne \"Hello"
+            "                                   \"} { set ok 0 };"
+            "if {[.c itemcget [.c find withtag row1] -text] ne \"RED text"
+            "                                \"} { set ok 0 };"
+            "if {[.c itemcget [.c find withtag row2] -text] ne \"BOLD and plain"
+            "                          \"} { set ok 0 };"
+            "if {!$ok} {error \"glyph layout mismatch\"}"
+        ) != TCL_OK) {
+        fprintf(stderr, "self-test failed: %s\n", Tcl_GetStringResult(interp));
+        terminal_free(term);
+        return 2;
+    }
+    if (argc > 1 && strcmp(argv[1], "-test") == 0) {
+        fprintf(stderr, "self-test ok: 3 rows rendered with expected text\n");
+        terminal_free(term);
+        return 0;
+    }
+    /* Pure Tcl event loop — vwait blocks until variable :forever:: is set,
+     * which never happens; window-manager close kills the process. */
+    Tcl_Eval(interp, "vwait forever");
+    terminal_free(term);
+    return 0;
+}

@@ -99,6 +99,15 @@ $(BUILDDIR)/p1_5_notebook: $(BUILDDIR)/p1_5_notebook.c
 
 p1_5_notebook: $(BUILDDIR)/p1_5_notebook
 
+# P2: standalone phc TerminalWidget renderer (includes vt_parser+screen+sgr)
+$(BUILDDIR)/p2_render.c: $(SRCDIR)/p2_render.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/p2_render: $(BUILDDIR)/p2_render.c
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
+
+p2_render: $(BUILDDIR)/p2_render
+
 # --- Test targets ---
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
