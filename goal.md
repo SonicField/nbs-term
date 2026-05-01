@@ -1,26 +1,31 @@
 # nbs-term: Cross-Platform Terminal Emulator
 
-A C-based terminal emulator embedded as a Tk widget, connected to remote systems via SSH (nbs-ssh). All terminal semantics in C. Python transports bytes.
+A standalone Phoenics (phc) terminal emulator. All terminal semantics, display, and orchestration in phc. SSH (and any other transport) is an external program, invoked via `--ssh <argv>`, with bytes pumped through a PTY proxy.
 
 **Language:** Phoenics (phc) — a superset of C11 with discriminated unions, exhaustive matching, pattern destructuring, and automatic cleanup. Non-negotiable.
+
+**No Python at runtime.** No Python C extension. nbs-term is a phc-built native executable that links Tcl/Tk + libc directly.
 
 ## Architecture
 
 ```
-User input → Tk → C extension encodes → SSH.write(bytes)
-SSH.read(bytes) → C extension parses/renders → Tk canvas
-Window resize → C extension recalculates → SSH.resize(cols, rows)
+User input  → Tk (C-API) → phc encodes → write(pty_master, bytes)
+read(pty_master, bytes)  → phc parses/renders → Tk canvas (C-API)
+Window resize → phc recomputes → ioctl(pty_master, TIOCSWINSZ, ...)
 ```
 
-Three components, strict separation:
+Two components, strict separation:
 
-| Component | Language | Owns | Does NOT own |
-|-----------|----------|------|-------------|
-| Terminal emulator | C (phc) | VT parsing, screen buffer, cursor, scrollback, rendering, input encoding | SSH, UI events |
-| SSH transport | Python (nbs-ssh) | Connection, PTY, byte stream, resize propagation | Terminal semantics |
-| Orchestration | Python | Lifecycle, threading, wiring bytes between terminal and SSH | Anything else |
+| Component | Owns | Does NOT own |
+|-----------|------|-------------|
+| nbs-term (phc binary) | VT parsing, screen buffer, cursor, scrollback, rendering, input encoding, Tk display, tab/settings UI, PTY master, --ssh subprocess lifecycle | Network, authentication, key management |
+| External --ssh program (e.g. `ssh user@host`) | Connection, authentication (kbdint, certs, ProxyJump), wire protocol, byte stream | Terminal semantics, UI |
 
-**Critical invariant:** All terminal semantics live in the C extension. Python must not interpret escape sequences.
+**Critical invariant:** All terminal semantics live in phc. The --ssh program is opaque — nbs-term treats its stdout/stdin as raw bytes, surfaces its stdin prompts (e.g. password, kbdint) as ordinary terminal input, and never interprets or re-encodes them.
+
+**--ssh interface:** PTY proxy. nbs-term opens a PTY (forkpty on unix, ConPTY on Windows), execs the --ssh argv into the child, and treats the master fd as the byte stream. Window resize propagates via TIOCSWINSZ on the master. This is the standard xterm/alacritty/kitty pattern.
+
+**Authentication:** Delegated entirely to the external --ssh program. kbdint (Duo 2FA) prompts appear in the terminal as ordinary tty I/O. No in-process auth dialog.
 
 ## Where Phoenics Helps
 
@@ -56,7 +61,7 @@ phc_match(VTState, parser->state) {
 
 ### Color Representation
 
-SGR attributes use three color models. Without phc, this is a tagged union with manual tag checks scattered across the renderer. With phc:
+SGR attributes use three color models. With phc:
 
 ```c
 phc_descr Color {
@@ -65,7 +70,6 @@ phc_descr Color {
     RGB { int r; int g; int b; }
 };
 
-// Renderer knows it handles every case:
 phc_match(Color, cell.fg) {
     case Default: { use_default_fg(); } break;
     case Indexed(index): { set_palette_color(index); } break;
@@ -88,7 +92,7 @@ phc_descr InputEvent {
 
 ### Resource Cleanup
 
-The C extension manages screen buffers, scrollback, decode state. `phc_defer` ensures cleanup on every exit path:
+`phc_defer` ensures cleanup on every exit path:
 
 ```c
 ScreenBuffer *buf = screen_buffer_alloc(cols, rows);
@@ -96,50 +100,30 @@ phc_defer { screen_buffer_free(buf); }
 
 char *line = parse_osc_title(data, len);
 phc_defer { free(line); }
-
-// ... use buf and line ...
-// Cleanup fires automatically at every return
 ```
 
 ## Build Pipeline
 
 ```
-source.phc  →  cc -E (preprocess)  →  phc (transform)  →  cc -c (compile)
+source.phc  →  cc -E (preprocess)  →  phc (transform)  →  cc -c (compile)  →  ld → nbs-term executable
 ```
 
-phc runs AFTER the C preprocessor. This means:
-- `#include` is expanded — phc sees full header content (handled efficiently via island parsing)
-- Macros are resolved — `Py_RETURN_NONE` expands to `return Py_None;` before phc sees it
-- `phc_defer` correctly intercepts returns inside expanded macros (this is a feature — cleanup fires before Python API returns)
-- `#ifdef` conditionals are resolved — conditional phc_descr variants work
+phc runs AFTER the C preprocessor. `#include` is expanded, macros are resolved, conditional `#ifdef` works.
 
-Makefile pattern for Python C extensions:
+The build links against:
+- `libtcl` + `libtk` (Tcl/Tk C library, version 8.6+)
+- `libc` (forkpty, ioctl, signal, etc.)
+- No Python.
 
-```makefile
-PHC := path/to/phc
-PYTHON_CFLAGS := $(shell python3-config --cflags)
-TK_CFLAGS := $(shell pkg-config --cflags tk)
-
-# Preprocess with Python/Tk headers, transform with phc, compile
-%.c: %.phc $(PHC)
-	$(CC) $(PYTHON_CFLAGS) $(TK_CFLAGS) -E $< | $(PHC) > $@
-
-# Multi-file rule (generates type manifest for cross-file matching)
-%.c %.phc-types: %.phc $(PHC)
-	$(CC) $(PYTHON_CFLAGS) $(TK_CFLAGS) -E $< | $(PHC) --emit-types=$*.phc-types > $@
-
-# Cross-file matching (consumer includes manifest)
-render.c: render.phc types.phc-types $(PHC)
-	$(CC) $(PYTHON_CFLAGS) $(TK_CFLAGS) -E $< | $(PHC) --type-manifest=types.phc-types > $@
-```
-
-**Pitfall:** Python.h must be included first in every .phc file (Python requirement). phc passes it through unchanged.
+Cross-platform PTY:
+- Unix: `forkpty(3)` from `<util.h>` (Linux) or `<libutil.h>` (BSD/macOS)
+- Windows: ConPTY APIs (`CreatePseudoConsole`, `ResizePseudoConsole`) — Win10 1809+
 
 ## Terminal Emulation Scope
 
 **Target:** `TERM=xterm-256color`. Enough to run tmux, vim, htop, less correctly.
 
-### Tier 1 — Mandatory (Phase 1)
+### Tier 1 — Mandatory
 
 - UTF-8 encoding
 - Cursor movement (CSI)
@@ -154,7 +138,7 @@ render.c: render.phc types.phc-types $(PHC)
 - Window resize handling
 - Scrollback buffer
 
-### Tier 2 — Phase 2
+### Tier 2
 
 - Mouse reporting (modes 1000, 1002)
 - Focus in/out reporting
@@ -172,6 +156,12 @@ render.c: render.phc types.phc-types $(PHC)
 
 Sixel graphics, pixel-addressable rendering, full DEC terminal set, GPU acceleration.
 
+## UI Surfaces
+
+**Multi-tab:** kept. Reimplemented in phc via Tcl/Tk C-API, driving the standard `ttk::notebook` widget. Tab create/close/switch keybindings preserved.
+
+**Settings UI:** kept. Font / cursor / color dialogs reimplemented in phc as Tk toplevels driven through the Tcl/Tk C-API. Persistence via a config file written/read by phc (`config.phc`); no Python config layer.
+
 ## Validation
 
 The emulator is sufficient when these work correctly:
@@ -186,14 +176,16 @@ Tested via recorded session replay and deterministic I/O verification, not visua
 
 ### Testing Strategy
 
-1. **Unit tests** (C, run with `make test`): VT parser state transitions, screen buffer operations, SGR attribute handling. Use phc_descr types directly — construct a VTState, feed bytes, assert resulting state.
+1. **Unit tests** (phc, run with `make test`): VT parser state transitions, screen buffer operations, SGR attribute handling. Use phc_descr types directly.
 2. **Session replay** (recorded byte streams): Capture real terminal sessions (`script -t` or `ttyrec`). Feed recorded output bytes through the parser, compare screen buffer state against known-good snapshots.
-3. **Application integration** (manual + CI): Launch real apps (vim, tmux, htop) over SSH, verify correct rendering. Automate where possible via `expect`-style scripting.
-4. **ASan/UBSan gate**: All C code compiled and tested with AddressSanitizer and UndefinedBehaviorSanitizer. Zero leaks, zero memory errors.
+3. **Application integration** (manual + CI): Launch real apps (vim, tmux, htop) via `--ssh ssh user@host` (or `--ssh /bin/sh` for local), verify correct rendering. Automate where possible via `expect`-style scripting.
+4. **ASan/UBSan gate**: All phc code compiled and tested with AddressSanitizer and UndefinedBehaviorSanitizer. Zero leaks, zero memory errors.
+
+Test driver: subprocess invocation of the nbs-term binary (replaces the prior Python C-extension introspection model).
 
 ### Error Handling
 
-Use phc_descr for error propagation within the C extension:
+Use phc_descr for error propagation:
 
 ```c
 phc_descr ParseResult {
@@ -202,15 +194,12 @@ phc_descr ParseResult {
 };
 ```
 
-Python-facing functions return standard Python error conventions (NULL + PyErr_SetString). phc_defer ensures reference counts are correct on every exit path — this is where phc_defer earns its keep in Python C extensions.
-
 ### Threading
 
-- Tk owns the main thread
-- SSH data arrives on a background thread
-- `term.feed(bytes)` must marshal to the Tk thread via `Tk_ThreadQueueEvent` or Python's `root.after(0, ...)`
-- The C extension releases the GIL during parsing (`Py_BEGIN_ALLOW_THREADS` / `Py_END_ALLOW_THREADS`) to avoid blocking Python
+- Tcl event loop owns the main thread
+- PTY master fd is registered via `Tcl_CreateFileHandler`; bytes arrive in the Tcl event loop
 - All Tk rendering happens on the main thread — no concurrent canvas access
+- No background threads; no asyncio
 
 ## File Structure
 
@@ -222,7 +211,13 @@ nbs-term/
 │   ├── sgr.phc             # SGR attributes, Color type
 │   ├── input.phc           # Input event encoding (phc_descr InputEvent)
 │   ├── render.phc          # Tk canvas rendering
-│   └── extension.phc       # Python C extension entry points
+│   ├── tk_render.phc       # Tcl/Tk C-API binding for canvas draw
+│   ├── pty.phc             # forkpty / ConPTY abstraction; --ssh subprocess lifecycle
+│   ├── tabs.phc            # ttk::notebook driver
+│   ├── settings.phc        # Tk dialogs (font / cursor / color)
+│   ├── config.phc          # config-file parse/serialize
+│   ├── app.phc             # Application bootstrap, Tcl event loop
+│   └── main.phc            # main(), argv parse, --ssh dispatch
 ├── tests/
 │   ├── test_parser.c       # VT parser unit tests
 │   ├── test_screen.c       # Screen buffer tests
@@ -237,17 +232,20 @@ nbs-term/
 - Pixel-perfect compatibility with all terminal emulators
 - GPU-accelerated rendering
 - General-purpose GUI framework
-- Arbitrary shell embedding beyond SSH/local PTY
+- Built-in SSH client (use `--ssh <argv>`)
+- Built-in authentication (the --ssh program handles its own)
 
 ## Security
 
-- SSH handled entirely by nbs-ssh
-- Terminal must not execute local commands
+- Authentication and connection security delegated to the --ssh program
+- Terminal must not execute local commands (the --ssh argv is the only spawn point; user-controlled at launch, not at runtime)
 - Clipboard via bracketed paste (prevents injection)
 
 ## Dependencies
 
-- Python runtime + Tk
 - C11 compiler (clang or gcc)
 - phc (Phoenics preprocessor)
-- nbs-ssh (Python SSH transport module)
+- Tcl/Tk 8.6+ (libtcl + libtk)
+- POSIX libc (forkpty) on unix; Windows 10 1809+ for ConPTY
+
+No Python. No nbs-ssh. No asyncssh.
