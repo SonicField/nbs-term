@@ -108,6 +108,16 @@ $(BUILDDIR)/p2_render: $(BUILDDIR)/p2_render.c
 
 p2_render: $(BUILDDIR)/p2_render
 
+# P3: PTY-driven live terminal. -lutil for forkpty (Linux); macOS pulls
+# forkpty from libSystem, the -lutil is harmless / no-op there.
+$(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/p3_pty: $(BUILDDIR)/p3_pty.c
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
+
+p3_pty: $(BUILDDIR)/p3_pty
+
 # --- Test targets ---
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
