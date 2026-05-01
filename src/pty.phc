@@ -1,0 +1,409 @@
+/*
+ * pty.phc — cross-platform PTY abstraction
+ *
+ * Per goal.md (B-shape doctrine): nbs-term opens a PTY (forkpty on unix,
+ * ConPTY on Windows), execs the --ssh argv into the child, treats the
+ * master fd / output handle as a raw byte stream. Window resize via
+ * TIOCSWINSZ (unix) or ResizePseudoConsole (win32).
+ *
+ * API: PTYHandle is opaque. Read returns byte counts; -1 on EAGAIN/EOF
+ * (caller checks pty_eof for reason). Write is best-effort; partials
+ * surface as a short return.
+ *
+ * Tcl integration: pty_install_tcl_handler wires the PTY into the Tcl
+ * event loop so a `cb(cd)` is invoked when bytes are (likely) readable.
+ *   POSIX: Tcl_CreateFileHandler(fd, TCL_READABLE, ...).
+ *   Win32: I/O thread does blocking ReadFile, posts into a ring buffer,
+ *          calls Tcl_AsyncMark; the async handler queues a Tcl_DoWhenIdle
+ *          on the main thread; cb runs in the main thread context where
+ *          pty_read drains the ring buffer.
+ *
+ * Status:
+ *   POSIX: tested on Linux/Xvfb (P3 self-test exit 0).
+ *   Win32: written from MSDN ConPTY reference; UNTESTED from this Linux
+ *          dev box (no MinGW + tk-win cross-compile yet). alexie's
+ *          Windows interactive smoke is the falsifier.
+ */
+#ifndef NBSTERM_PTY_H
+#define NBSTERM_PTY_H
+
+/* POSIX feature-test must precede every system include in this TU.
+ * Defines forkpty (BSD), kill, nanosleep visibility under -std=c11. */
+#if !defined(_WIN32)
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#endif
+
+#include <tcl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#  include <windows.h>
+typedef SSIZE_T pty_ssize_t;
+#else
+#  include <unistd.h>
+#  include <fcntl.h>
+#  include <errno.h>
+#  include <signal.h>
+#  include <sys/types.h>
+#  include <sys/ioctl.h>
+#  include <sys/wait.h>
+#  include <termios.h>
+#  if defined(__APPLE__)
+#    include <util.h>
+#  else
+#    include <pty.h>
+#  endif
+typedef ssize_t pty_ssize_t;
+#endif
+
+/* ---- Opaque handle ---- */
+
+typedef struct PTYHandle PTYHandle;
+
+/* ---- POSIX state ---- */
+
+#if !defined(_WIN32)
+struct PTYHandle {
+    int  master_fd;
+    pid_t child;
+    int  closed;
+    int  eof;
+    /* Tcl integration */
+    Tcl_Interp *interp;
+    void (*cb)(void *);
+    void *cd;
+};
+
+static void posix_install_handler(struct PTYHandle *h);
+
+static void posix_on_readable(ClientData cd, int mask) {
+    (void)mask;
+    PTYHandle *h = (PTYHandle *)cd;
+    if (h && h->cb) h->cb(h->cd);
+}
+
+static void posix_install_handler(PTYHandle *h) {
+    Tcl_CreateFileHandler(h->master_fd, TCL_READABLE, posix_on_readable, h);
+}
+
+#else  /* _WIN32 */
+
+/* Windows ConPTY: a HANDLE pair (in/out) + the HPCON (pseudo-console
+ * handle), plus an I/O thread that drains the output pipe into a ring
+ * buffer and posts an async event so the main thread can consume.
+ *
+ * Concurrency model: the I/O thread is the SOLE writer to the ring;
+ * the main thread is the SOLE reader. SRWLOCK protects ring head/tail
+ * indices against the main-thread reader observing a torn buffer state. */
+
+#define PTY_RING_CAP 65536  /* power of two; head/tail wrap by mask */
+
+struct PTYHandle {
+    HANDLE pty;            /* HPCON cast to HANDLE for opaque storage */
+    HANDLE in_write;       /* parent -> child stdin */
+    HANDLE out_read;       /* child stdout -> parent */
+    HANDLE in_read;        /* given to ConPTY; close on parent side */
+    HANDLE out_write;      /* given to ConPTY; close on parent side */
+    PROCESS_INFORMATION proc;
+    HANDLE io_thread;
+    HANDLE shutdown_evt;
+    SRWLOCK ring_lock;
+    uint8_t ring[PTY_RING_CAP];
+    volatile size_t head;  /* read cursor, advanced by main thread */
+    volatile size_t tail;  /* write cursor, advanced by io thread */
+    int  closed;
+    int  eof;
+    Tcl_AsyncHandler async;
+    Tcl_Interp *interp;
+    void (*cb)(void *);
+    void *cd;
+};
+
+static int win32_async_proc(ClientData cd, Tcl_Interp *interp, int code) {
+    (void)interp;
+    PTYHandle *h = (PTYHandle *)cd;
+    if (h && h->cb) h->cb(h->cd);
+    return code;
+}
+
+static DWORD WINAPI win32_io_thread(LPVOID arg) {
+    PTYHandle *h = (PTYHandle *)arg;
+    uint8_t buf[4096];
+    DWORD got = 0;
+    while (1) {
+        BOOL ok = ReadFile(h->out_read, buf, sizeof buf, &got, NULL);
+        if (!ok || got == 0) {
+            h->eof = 1;
+            if (h->async) Tcl_AsyncMark(h->async);
+            break;
+        }
+        AcquireSRWLockExclusive(&h->ring_lock);
+        for (DWORD i = 0; i < got; i++) {
+            size_t next = (h->tail + 1) & (PTY_RING_CAP - 1);
+            if (next == h->head) {
+                /* Ring full — drop oldest byte (renderer should keep up;
+                 * a true overflow signals a stuck Tcl event loop). */
+                h->head = (h->head + 1) & (PTY_RING_CAP - 1);
+            }
+            h->ring[h->tail] = buf[i];
+            h->tail = next;
+        }
+        ReleaseSRWLockExclusive(&h->ring_lock);
+        if (h->async) Tcl_AsyncMark(h->async);
+    }
+    return 0;
+}
+
+#endif  /* _WIN32 */
+
+/* ---- Public API ---- */
+
+#if !defined(_WIN32)
+static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
+    PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
+    if (!h) return NULL;
+    int master = -1;
+    pid_t pid = forkpty(&master, NULL, NULL, NULL);
+    if (pid < 0) {
+        fprintf(stderr, "forkpty: %s\n", strerror(errno));
+        free(h); return NULL;
+    }
+    if (pid == 0) {
+        struct winsize ws = {0};
+        ws.ws_row = (unsigned short)rows;
+        ws.ws_col = (unsigned short)cols;
+        ioctl(STDIN_FILENO, TIOCSWINSZ, &ws);
+        execvp(argv[0], argv);
+        fprintf(stderr, "exec %s: %s\n", argv[0], strerror(errno));
+        _exit(127);
+    }
+    int fl = fcntl(master, F_GETFL, 0);
+    fcntl(master, F_SETFL, fl | O_NONBLOCK);
+    struct winsize ws = {0};
+    ws.ws_row = (unsigned short)rows;
+    ws.ws_col = (unsigned short)cols;
+    ioctl(master, TIOCSWINSZ, &ws);
+    h->master_fd = master;
+    h->child = pid;
+    return h;
+}
+
+static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
+    if (!h || h->closed) return -1;
+    pty_ssize_t n = read(h->master_fd, buf, len);
+    if (n == 0) { h->eof = 1; return 0; }
+    if (n < 0 && (errno == EAGAIN || errno == EINTR)) return -1;
+    if (n < 0) { h->eof = 1; return 0; }
+    return n;
+}
+
+static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
+    if (!h || h->closed || h->master_fd < 0) return -1;
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        pty_ssize_t w = write(h->master_fd, p + off, len - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        off += (size_t)w;
+    }
+    return (pty_ssize_t)off;
+}
+
+static void pty_resize(PTYHandle *h, int rows, int cols) {
+    if (!h || h->master_fd < 0) return;
+    struct winsize ws = {0};
+    ws.ws_row = (unsigned short)rows;
+    ws.ws_col = (unsigned short)cols;
+    ioctl(h->master_fd, TIOCSWINSZ, &ws);
+}
+
+static int pty_eof(PTYHandle *h) { return h && h->eof; }
+
+static void pty_kill(PTYHandle *h) {
+    if (!h || h->child <= 0) return;
+    kill(h->child, SIGTERM);
+}
+
+static void pty_free(PTYHandle *h) {
+    if (!h) return;
+    if (h->master_fd >= 0) {
+        Tcl_DeleteFileHandler(h->master_fd);
+        close(h->master_fd);
+    }
+    if (h->child > 0) {
+        kill(h->child, SIGKILL);
+        waitpid(h->child, NULL, 0);
+    }
+    free(h);
+}
+
+static int pty_install_tcl_handler(PTYHandle *h, Tcl_Interp *interp,
+                                   void (*cb)(void *), void *cd) {
+    if (!h) return TCL_ERROR;
+    h->interp = interp;
+    h->cb = cb;
+    h->cd = cd;
+    posix_install_handler(h);
+    return TCL_OK;
+}
+
+#else  /* _WIN32 */
+
+static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
+    PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
+    if (!h) return NULL;
+    InitializeSRWLock(&h->ring_lock);
+
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    if (!CreatePipe(&h->in_read, &h->in_write, &sa, 0) ||
+        !CreatePipe(&h->out_read, &h->out_write, &sa, 0)) {
+        fprintf(stderr, "CreatePipe failed: 0x%lx\n", GetLastError());
+        free(h); return NULL;
+    }
+
+    HPCON hPC = NULL;
+    COORD size; size.X = (SHORT)cols; size.Y = (SHORT)rows;
+    HRESULT hr = CreatePseudoConsole(size, h->in_read, h->out_write, 0, &hPC);
+    if (FAILED(hr)) {
+        fprintf(stderr, "CreatePseudoConsole: 0x%lx\n", (unsigned long)hr);
+        CloseHandle(h->in_read);  CloseHandle(h->in_write);
+        CloseHandle(h->out_read); CloseHandle(h->out_write);
+        free(h); return NULL;
+    }
+    h->pty = (HANDLE)hPC;
+
+    /* Build a STARTUPINFOEX with the pseudoconsole attribute. */
+    STARTUPINFOEXA sie; ZeroMemory(&sie, sizeof sie);
+    sie.StartupInfo.cb = sizeof sie;
+    SIZE_T attr_sz = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attr_sz);
+    sie.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(
+        GetProcessHeap(), 0, attr_sz);
+    if (!sie.lpAttributeList ||
+        !InitializeProcThreadAttributeList(sie.lpAttributeList, 1, 0, &attr_sz) ||
+        !UpdateProcThreadAttribute(sie.lpAttributeList, 0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPC, sizeof hPC, NULL, NULL)) {
+        fprintf(stderr, "ProcThreadAttribute: 0x%lx\n", GetLastError());
+        ClosePseudoConsole(hPC);
+        free(h); return NULL;
+    }
+
+    /* Flatten argv into a single CreateProcess command line. */
+    size_t cmdlen = 1;
+    for (int i = 0; argv[i]; i++) cmdlen += strlen(argv[i]) + 3;
+    char *cmd = (char *)malloc(cmdlen);
+    cmd[0] = 0;
+    for (int i = 0; argv[i]; i++) {
+        if (i) strcat(cmd, " ");
+        strcat(cmd, "\"");
+        strcat(cmd, argv[i]);
+        strcat(cmd, "\"");
+    }
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
+                             EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                             &sie.StartupInfo, &h->proc);
+    free(cmd);
+    DeleteProcThreadAttributeList(sie.lpAttributeList);
+    HeapFree(GetProcessHeap(), 0, sie.lpAttributeList);
+    if (!ok) {
+        fprintf(stderr, "CreateProcess: 0x%lx\n", GetLastError());
+        ClosePseudoConsole(hPC);
+        free(h); return NULL;
+    }
+    /* Parent doesn't need the child-side ends. */
+    CloseHandle(h->in_read);  h->in_read  = NULL;
+    CloseHandle(h->out_write); h->out_write = NULL;
+    return h;
+}
+
+static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
+    if (!h) return -1;
+    AcquireSRWLockExclusive(&h->ring_lock);
+    size_t avail = (h->tail - h->head) & (PTY_RING_CAP - 1);
+    /* Tricky: head==tail can mean empty OR full. Empty is the only case
+     * the io thread allows to re-occur after a drain — full is bridged
+     * via head-advance in the writer. So head==tail here is empty. */
+    if (h->tail == h->head) avail = 0;
+    if (avail > len) avail = len;
+    for (size_t i = 0; i < avail; i++) {
+        buf[i] = h->ring[(h->head + i) & (PTY_RING_CAP - 1)];
+    }
+    h->head = (h->head + avail) & (PTY_RING_CAP - 1);
+    ReleaseSRWLockExclusive(&h->ring_lock);
+    if (avail == 0 && h->eof) return 0;
+    if (avail == 0) return -1;
+    return (pty_ssize_t)avail;
+}
+
+static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
+    if (!h || !h->in_write) return -1;
+    DWORD written = 0;
+    if (!WriteFile(h->in_write, buf, (DWORD)len, &written, NULL)) return -1;
+    return (pty_ssize_t)written;
+}
+
+static void pty_resize(PTYHandle *h, int rows, int cols) {
+    if (!h || !h->pty) return;
+    COORD size; size.X = (SHORT)cols; size.Y = (SHORT)rows;
+    ResizePseudoConsole((HPCON)h->pty, size);
+}
+
+static int pty_eof(PTYHandle *h) { return h && h->eof; }
+
+static void pty_kill(PTYHandle *h) {
+    if (!h) return;
+    if (h->proc.hProcess) TerminateProcess(h->proc.hProcess, 0);
+}
+
+static void pty_free(PTYHandle *h) {
+    if (!h) return;
+    h->closed = 1;
+    if (h->shutdown_evt) SetEvent(h->shutdown_evt);
+    if (h->io_thread) {
+        WaitForSingleObject(h->io_thread, 1000);
+        CloseHandle(h->io_thread);
+    }
+    if (h->shutdown_evt) CloseHandle(h->shutdown_evt);
+    if (h->pty) ClosePseudoConsole((HPCON)h->pty);
+    if (h->in_write) CloseHandle(h->in_write);
+    if (h->out_read) CloseHandle(h->out_read);
+    if (h->proc.hProcess) {
+        TerminateProcess(h->proc.hProcess, 0);
+        WaitForSingleObject(h->proc.hProcess, 1000);
+        CloseHandle(h->proc.hProcess);
+    }
+    if (h->proc.hThread) CloseHandle(h->proc.hThread);
+    if (h->async) Tcl_AsyncDelete(h->async);
+    free(h);
+}
+
+static int pty_install_tcl_handler(PTYHandle *h, Tcl_Interp *interp,
+                                   void (*cb)(void *), void *cd) {
+    if (!h) return TCL_ERROR;
+    h->interp = interp;
+    h->cb = cb;
+    h->cd = cd;
+    h->async = Tcl_AsyncCreate(win32_async_proc, h);
+    h->shutdown_evt = CreateEvent(NULL, TRUE, FALSE, NULL);
+    h->io_thread = CreateThread(NULL, 0, win32_io_thread, h, 0, NULL);
+    if (!h->io_thread) {
+        fprintf(stderr, "CreateThread: 0x%lx\n", GetLastError());
+        return TCL_ERROR;
+    }
+    return TCL_OK;
+}
+
+#endif  /* _WIN32 */
+
+#endif  /* NBSTERM_PTY_H */

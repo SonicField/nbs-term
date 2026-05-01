@@ -108,9 +108,10 @@ $(BUILDDIR)/p2_render: $(BUILDDIR)/p2_render.c
 
 p2_render: $(BUILDDIR)/p2_render
 
-# P3: PTY-driven live terminal. -lutil for forkpty (Linux); macOS pulls
-# forkpty from libSystem, the -lutil is harmless / no-op there.
-$(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
+# P3+P4: PTY-driven live terminal. Cross-platform via pty.phc (forkpty on
+# POSIX, ConPTY on Win32). -lutil for forkpty (Linux); macOS pulls forkpty
+# from libSystem, the -lutil is a harmless no-op there.
+$(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
 $(BUILDDIR)/p3_pty: $(BUILDDIR)/p3_pty.c

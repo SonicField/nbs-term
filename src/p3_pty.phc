@@ -1,43 +1,41 @@
 /*
- * p3_pty.phc — P3: live PTY-driven terminal
+ * p3_pty.phc — live PTY-driven terminal (cross-platform; P3 + P4)
  *
- * Strict pure-phc binary. Spawns a child via forkpty + execvp (the --ssh
- * argv if given, else $SHELL or /bin/sh), wires the master fd into the
- * Tcl event loop with Tcl_CreateFileHandler, feeds incoming bytes through
- * vt_parser into the screen, renders via the same Tk canvas pattern as
- * P2, sends keypresses back to the child, and propagates window resizes
- * with TIOCSWINSZ.
+ * Strict pure-phc binary. Spawns a child via the pty.phc abstraction
+ * (forkpty + execvp on POSIX, CreatePseudoConsole + CreateProcess on
+ * Win32), wires the resulting PTYHandle into the Tcl event loop via
+ * pty_install_tcl_handler, feeds incoming bytes through vt_parser into
+ * the screen, renders via the same Tk canvas pattern as P2, sends
+ * keypresses back to the child via pty_write, and propagates window
+ * resizes via pty_resize (TIOCSWINSZ on POSIX, ResizePseudoConsole on
+ * Win32).
  *
- * Per supervisor 2026-05-01 12:31:35 + theologian phase plan 11:45:55.
- *
- * Linux first; macOS reuses forkpty via <util.h>. Windows ConPTY is P4.
+ * Binary name retains p3_ prefix for branch-history continuity; the
+ * Win32 expansion (per supervisor 2026-05-01 12:39:05 P4 GO) lands here
+ * via pty.phc rather than as a separate binary so alexie's smoke target
+ * stays at one path.
  *
  * Build: make build/p3_pty && build/p3_pty               (local shell)
  *        build/p3_pty --ssh ssh user@host                 (live SSH)
  * Self-test: build/p3_pty -test                          (PTY + render + EOF)
  */
-/* Feature-test: forkpty (BSD), kill, nanosleep — POSIX 2008 + BSD ext.
- * Must precede all system #includes. */
-#define _DEFAULT_SOURCE 1
-#define _POSIX_C_SOURCE 200809L
+#if !defined(_WIN32)
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#endif
 
 #include <tcl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
-#include <termios.h>
-#include <signal.h>
-#include <time.h>
-#if defined(__APPLE__)
-#  include <util.h>
-#else
-#  include <pty.h>
+#if !defined(_WIN32)
+#  include <unistd.h>
+#  include <time.h>
 #endif
 
 #define phc_require(expr, msg) do { if (!(expr)) { \
@@ -52,6 +50,7 @@
 #define phc_free(pp) do { free(*(pp)); *(pp) = NULL; } while(0)
 
 #include "vt_parser.phc"   /* pulls sgr.phc + screen.phc */
+#include "pty.phc"          /* cross-platform PTY abstraction */
 
 /* Cell pixel grid — fixed for first cut; P5/P6a wires real font metrics. */
 #define CELL_W 9
@@ -64,11 +63,11 @@
 /* Globals so the Tcl file handler / command callbacks can find the engine
  * without ClientData plumbing for every registration. P5 will likely
  * pass a per-tab context via ClientData when multiple TerminalWidgets
- * coexist; for P3 single-window scope, globals are honest. */
+ * coexist; for P3/P4 single-window scope, globals are honest. */
 static Tcl_Interp *g_interp = NULL;
 static Terminal   *g_term   = NULL;
 static VTParser   *g_parser = NULL;
-static int         g_master_fd = -1;
+static PTYHandle  *g_pty    = NULL;
 static int         g_dirty = 0;     /* render scheduled flag */
 static int         g_child_alive = 1;
 
@@ -196,68 +195,27 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
     return TCL_OK;
 }
 
-/* ---- PTY plumbing ---- */
-
-static void pty_set_winsize(int fd, int rows, int cols) {
-    struct winsize ws;
-    memset(&ws, 0, sizeof ws);
-    ws.ws_row = (unsigned short)rows;
-    ws.ws_col = (unsigned short)cols;
-    ws.ws_xpixel = (unsigned short)(cols * CELL_W);
-    ws.ws_ypixel = (unsigned short)(rows * CELL_H);
-    if (ioctl(fd, TIOCSWINSZ, &ws) < 0) {
-        fprintf(stderr, "TIOCSWINSZ: %s\n", strerror(errno));
-    }
-}
-
-/* Spawn a child under a new PTY. Parent receives the master fd; child
- * execvp's the requested argv. Returns child pid, or -1 on failure with
- * *master_fd_out untouched. */
-static pid_t pty_spawn(char *const argv[], int rows, int cols, int *master_fd_out) {
-    int master = -1;
-    pid_t pid = forkpty(&master, NULL, NULL, NULL);
-    if (pid < 0) {
-        fprintf(stderr, "forkpty: %s\n", strerror(errno));
-        return -1;
-    }
-    if (pid == 0) {
-        /* Child. Set initial size then exec; if exec fails, _exit so the
-         * parent's renderer doesn't show a zombie shell. */
-        struct winsize ws = {0};
-        ws.ws_row = (unsigned short)rows;
-        ws.ws_col = (unsigned short)cols;
-        ioctl(STDIN_FILENO, TIOCSWINSZ, &ws);
-        execvp(argv[0], argv);
-        fprintf(stderr, "exec %s: %s\n", argv[0], strerror(errno));
-        _exit(127);
-    }
-    pty_set_winsize(master, rows, cols);
-    *master_fd_out = master;
-    return pid;
-}
+/* ---- PTY plumbing (delegated to pty.phc) ---- */
 
 static void schedule_render(void);
 
-/* Tcl file handler: master fd readable. Drains as much as the read
- * returns in one go (Tcl re-fires while the fd stays readable), pushes
- * bytes through vt_parser, schedules a render. EOF (read==0) or hard
- * read error tears down the file handler and signals exit. */
-static void on_pty_readable(ClientData cd, int mask) {
-    (void)cd; (void)mask;
+/* pty.phc data callback. Drains as much as pty_read returns in one go,
+ * pushes bytes through vt_parser, schedules a render. EOF tears down
+ * the handler and signals the main loop to exit. The pty.phc layer
+ * abstracts over POSIX (Tcl_CreateFileHandler on master fd) and Win32
+ * (I/O thread + Tcl_AsyncMark) — same callback shape on both. */
+static void on_pty_data(void *cd) {
+    (void)cd;
     uint8_t buf[8192];
-    ssize_t n = read(g_master_fd, buf, sizeof buf);
+    pty_ssize_t n = pty_read(g_pty, buf, sizeof buf);
     if (n > 0) {
         vt_parser_feed(g_parser, buf, (int)n);
         schedule_render();
         return;
     }
-    if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
-    /* EOF or fatal error — child died or PTY closed. */
-    Tcl_DeleteFileHandler(g_master_fd);
-    close(g_master_fd);
-    g_master_fd = -1;
+    if (n < 0) return;  /* EAGAIN / no data this wakeup */
+    /* n == 0 = EOF: child died or PTY closed. */
     g_child_alive = 0;
-    /* Break vwait by setting the sentinel variable. */
     Tcl_SetVar2Ex(g_interp, "child_done", NULL, Tcl_NewIntObj(1),
                   TCL_GLOBAL_ONLY);
 }
@@ -280,10 +238,10 @@ static void schedule_render(void) {
 }
 
 /* Tcl command: pty_write <bytes>. Bytes are the raw payload to push to
- * the child's stdin via the master fd. Bound via `bind . <Key> {pty_write
- * %A}` — Tk's %A substitution is the Unicode character; we transmit its
- * UTF-8 form. Special keys (arrows, function keys) need an additional
- * keymap path through input.phc; out of P3 scope, comes in P3.5. */
+ * the child's stdin. Bound via `bind .c <Key> {pty_write %A}` — Tk's %A
+ * substitution is the Unicode character; we transmit its UTF-8 form.
+ * Special keys (arrows, function keys) need a keymap path through
+ * input.phc; out of P3/P4 scope, comes in P3.5. */
 static int PtyWrite(ClientData cd, Tcl_Interp *interp, int objc,
                     Tcl_Obj *const objv[]) {
     (void)cd;
@@ -291,19 +249,12 @@ static int PtyWrite(ClientData cd, Tcl_Interp *interp, int objc,
         Tcl_WrongNumArgs(interp, 1, objv, "bytes");
         return TCL_ERROR;
     }
-    if (g_master_fd < 0) return TCL_OK;  /* child gone, drop silently */
     int len = 0;
     const char *s = Tcl_GetStringFromObj(objv[1], &len);
     if (len <= 0) return TCL_OK;
-    ssize_t off = 0;
-    while (off < len) {
-        ssize_t w = write(g_master_fd, s + off, (size_t)(len - off));
-        if (w < 0) {
-            if (errno == EINTR) continue;
-            fprintf(stderr, "pty write: %s\n", strerror(errno));
-            return TCL_ERROR;
-        }
-        off += w;
+    if (pty_write(g_pty, s, (size_t)len) < 0) {
+        fprintf(stderr, "pty_write failed\n");
+        return TCL_ERROR;
     }
     return TCL_OK;
 }
@@ -329,14 +280,14 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
         return TCL_OK;
     }
     terminal_resize(g_term, rows, cols);
-    if (g_master_fd >= 0) pty_set_winsize(g_master_fd, rows, cols);
+    pty_resize(g_pty, rows, cols);
     schedule_render();
     return TCL_OK;
 }
 
 /* Build the argv vector for the child. If --ssh is the first user arg,
  * the rest of argv becomes the child argv; otherwise spawn $SHELL (or
- * /bin/sh) as a login shell calibration. */
+ * /bin/sh on POSIX, cmd.exe on Win32) as a login shell calibration. */
 static char **build_child_argv(int argc, char *argv[]) {
     int i = 1;
     while (i < argc && strcmp(argv[i], "-test") == 0) i++;  /* skip self-test flag */
@@ -351,7 +302,13 @@ static char **build_child_argv(int argc, char *argv[]) {
         return out;
     }
     const char *shell = getenv("SHELL");
-    if (!shell || !*shell) shell = "/bin/sh";
+    if (!shell || !*shell) {
+#if defined(_WIN32)
+        shell = "cmd.exe";
+#else
+        shell = "/bin/sh";
+#endif
+    }
     char **out = (char **)calloc(2, sizeof(char *));
     out[0] = (char *)shell;
     out[1] = NULL;
@@ -374,15 +331,12 @@ int main(int argc, char *argv[]) {
 
     char **child_argv = build_child_argv(argc, argv);
     if (!child_argv) return 1;
-    pid_t child = pty_spawn(child_argv, INITIAL_ROWS, INITIAL_COLS, &g_master_fd);
-    if (child < 0) return 1;
-    /* Non-blocking master so a partial read doesn't stall the event loop. */
-    int fl = fcntl(g_master_fd, F_GETFL, 0);
-    fcntl(g_master_fd, F_SETFL, fl | O_NONBLOCK);
+    g_pty = pty_open(child_argv, INITIAL_ROWS, INITIAL_COLS);
+    if (!g_pty) return 1;
 
     Tcl_CreateObjCommand(g_interp, "pty_write",  PtyWrite,  NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "pty_resize", PtyResize, NULL, NULL);
-    Tcl_CreateFileHandler(g_master_fd, TCL_READABLE, on_pty_readable, NULL);
+    pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     char wstr[16], hstr[16];
     snprintf(wstr, sizeof wstr, "%d", INITIAL_COLS * CELL_W);
@@ -408,7 +362,7 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-test") == 0) {
             const char *probe = "echo phc_p3_round_trip_ok\n";
-            (void)write(g_master_fd, probe, strlen(probe));
+            (void)pty_write(g_pty, probe, strlen(probe));
             /* Pump events until either child writes or 2s timeout. */
             for (int loops = 0; loops < 200 && g_child_alive; loops++) {
                 Tcl_DoOneEvent(TCL_DONT_WAIT | TCL_FILE_EVENTS | TCL_IDLE_EVENTS);
@@ -426,21 +380,22 @@ int main(int argc, char *argv[]) {
                     "set found");
                 if (atoi(Tcl_GetStringResult(g_interp)) > 0) {
                     fprintf(stderr, "self-test ok: PTY echo -> render round-trip\n");
-                    if (g_master_fd >= 0) {
-                        Tcl_DeleteFileHandler(g_master_fd);
-                        close(g_master_fd);
-                    }
-                    kill(child, 9);
-                    waitpid(child, NULL, 0);
+                    pty_kill(g_pty);
+                    pty_free(g_pty);
                     free(child_argv);
                     terminal_free(g_term);
                     return 0;
                 }
+#if defined(_WIN32)
+                Sleep(10);
+#else
                 struct timespec ts = {0, 10 * 1000 * 1000};  /* 10ms */
                 nanosleep(&ts, NULL);
+#endif
             }
             fprintf(stderr, "self-test failed: marker not seen\n");
-            kill(child, 9);
+            pty_kill(g_pty);
+            pty_free(g_pty);
             return 2;
         }
     }
@@ -448,10 +403,8 @@ int main(int argc, char *argv[]) {
     /* Normal interactive run. vwait dispatches both fd events and idle
      * renders until child_done is set (PTY EOF or window close). */
     Tcl_Eval(g_interp, "vwait child_done");
-    if (child > 0) {
-        kill(child, 15);
-        waitpid(child, NULL, 0);
-    }
+    pty_kill(g_pty);
+    pty_free(g_pty);
     free(child_argv);
     terminal_free(g_term);
     return 0;
