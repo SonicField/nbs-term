@@ -46,6 +46,17 @@ extern int strcmp(const char *, const char *);
  */
 
 
+/* Windows <wingdi.h> (pulled in transitively via <tcl.h> -> <tk.h> ->
+ * <windows.h> on Win32) defines RGB(r,g,b) as a COLORREF macro. That
+ * collides with our phc_descr Color::RGB variant name and breaks both
+ * the descriptor definition below AND every `case RGB(...)` match
+ * pattern downstream (cl /EP substitutes the macro before phc parses).
+ * Defang here so all consumers see the bare identifier. No-op on
+ * Linux/Mac where RGB is not a preprocessor macro. */
+#ifdef RGB
+#  undef RGB
+#endif
+
 /* --- Color representation --- */
 
 typedef enum {
@@ -114,7 +125,7 @@ static inline Color_RGB_t Color_as_RGB(Color v) {
     if (v.tag != Color_RGB) abort();
     return v.RGB;
 }
-#line 16
+#line 27
 
 /* --- Cell attributes (bitmask) --- */
 
@@ -185,7 +196,7 @@ static inline const char *CellAttr_to_string(CellAttr p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 29
+#line 40
 
 /* --- Pen state: current SGR attributes for new characters --- */
 
@@ -289,7 +300,7 @@ static inline int color_equal(Color a, Color other) {
         } break; }
     default: break;
 }
-#line 131
+#line 142
     return 0;
 }
 
@@ -993,7 +1004,7 @@ static inline VTState_DCS_t VTState_as_DCS(VTState v) {
     if (v.tag != VTState_DCS) abort();
     return v.DCS;
 }
-#line 719
+#line 730
 
 /* --- UTF-8 decoder state --- */
 
@@ -1582,7 +1593,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1312
+#line 1323
 
     return VTState_mk_Ground();
 }
@@ -1647,7 +1658,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1338
+#line 1349
 
 /* --- Input event types --- */
 
@@ -1740,7 +1751,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1347
+#line 1358
 
 /* --- UTF-8 encoding --- */
 
@@ -1893,7 +1904,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1434
+#line 1445
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -2027,7 +2038,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1566
+#line 1577
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2366,7 +2377,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1887
+#line 1898
 
 /* Config structs — mirrors Python dataclasses */
 
