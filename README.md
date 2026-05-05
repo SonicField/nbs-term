@@ -4,6 +4,8 @@ A terminal emulator with a Phoenics-powered VT parser, embedded as a Tk widget a
 
 All terminal semantics live in C. Python transports bytes.
 
+[![Pure-phc Build & Test](https://github.com/SonicField/nbs-term/actions/workflows/build-test.yml/badge.svg?branch=pure-phc-master)](https://github.com/SonicField/nbs-term/actions/workflows/build-test.yml)
+
 ## Install
 
 Requires Python 3.12+ with Tk, a C compiler, and Tcl development headers.

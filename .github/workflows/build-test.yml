@@ -1,0 +1,109 @@
+# nbs-term pure-phc CI
+#
+# Builds and self-tests the standalone phc binary on Linux, macOS, and Windows.
+# Empirically catches per-platform regressions (e.g. the RGB-macro collision
+# that previously surfaced only on alexie's manual Win smoke).
+#
+# Per supervisor 2026-05-05 16:50:00 (alexie 16:49:07: "we should be able to
+# make GH actions which to build and test on windows, mac and linux").
+
+name: Pure-phc Build & Test
+
+on:
+  push:
+    branches: [pure-phc-master]
+  pull_request:
+    branches: [pure-phc-master]
+
+jobs:
+  linux-build:
+    name: Linux (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host build deps (xvfb for headless Tk)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential xvfb
+
+      - name: Cache vendored Tcl/Tk build
+        id: tcl-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/tcl-build
+          key: tcl-tk-build-linux-${{ hashFiles('deps/tcl/unix/configure', 'deps/tcl/generic/tcl.h', 'deps/tk/unix/configure', 'deps/tk/generic/tk.h') }}
+
+      - name: Build vendored Tcl/Tk
+        if: steps.tcl-cache.outputs.cache-hit != 'true'
+        run: make tcl-tk
+
+      - name: Build phc compiler
+        run: make phc
+
+      - name: Build pure-phc binaries
+        run: make p3_pty
+
+      - name: Verify pure-phc invariants
+        run: make verify-phc-invariants
+
+      - name: Self-test (xvfb-run build/p3_pty -test)
+        run: xvfb-run -a build/p3_pty -test
+
+  mac-build:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache vendored Tcl/Tk build
+        id: tcl-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/tcl-build
+          key: tcl-tk-build-mac-${{ hashFiles('deps/tcl/unix/configure', 'deps/tcl/generic/tcl.h', 'deps/tk/unix/configure', 'deps/tk/generic/tk.h') }}
+
+      - name: Build vendored Tcl/Tk
+        if: steps.tcl-cache.outputs.cache-hit != 'true'
+        run: make tcl-tk
+
+      - name: Build phc compiler
+        run: make phc
+
+      - name: Build pure-phc binaries
+        run: make p3_pty
+
+      - name: Verify pure-phc invariants
+        run: make verify-phc-invariants
+
+      - name: Self-test (build/p3_pty -test)
+        run: build/p3_pty -test
+
+  win-build:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache vendored Tcl/Tk build
+        id: tcl-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/tcl-build
+          key: tcl-tk-build-win-${{ hashFiles('deps/tcl/win/makefile.vc', 'deps/tcl/generic/tcl.h', 'deps/tk/win/makefile.vc', 'deps/tk/generic/tk.h') }}
+
+      - name: Run windows-setup-phc.ps1
+        # Single script does MSVC import + vendored Tcl/Tk build (cache-aware via
+        # tcl86.lib markers) + phc compiler + p3_pty.exe + self-test +
+        # zero-Python-linkage check. Equivalent to make tcl-tk + make p3_pty +
+        # verify-no-python-link + p3_pty -test on POSIX, in one script.
+        run: .\scripts\windows-setup-phc.ps1
