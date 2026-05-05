@@ -24,10 +24,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install host build deps (xvfb for headless Tk)
+      - name: Install host build deps (X11 for Tk + xvfb for headless run)
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential xvfb
+          sudo apt-get install -y build-essential xvfb \
+            libx11-dev libxext-dev libxss-dev libxft-dev \
+            libfontconfig-dev libfreetype-dev
 
       - name: Cache vendored Tcl/Tk build
         id: tcl-cache

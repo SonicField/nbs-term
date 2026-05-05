@@ -83,12 +83,15 @@ if [ ! -f "$TCL_BUILD_DIR/lib/libtk8.6.dylib" ]; then
     echo "Building vendored Tk 8.6.15 -> $TCL_BUILD_DIR ..."
     (
         cd "$TK_SRC_DIR/unix"
+        # --enable-aqua: build native Cocoa Tk on Mac, not X11 (which would need
+        # X11/Xlib.h and friends — not part of macOS).
         ./configure --prefix="$TCL_BUILD_DIR" --enable-shared --enable-threads \
+            --enable-aqua \
             --with-tcl="$TCL_SRC_DIR/unix"
         make -j
         make install
     )
-    echo "Built Tk 8.6.15."
+    echo "Built Tk 8.6.15 (Aqua)."
 else
     echo "Vendored Tk 8.6.15 already built."
 fi

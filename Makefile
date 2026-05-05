@@ -111,7 +111,7 @@ $(TCL_VENDOR_LIB):
 
 $(TK_VENDOR_LIB): $(TCL_VENDOR_LIB)
 	@echo "Building vendored Tk 8.6.15 -> $(TCL_BUILD_DIR) ..."
-	cd deps/tk/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads --with-tcl=$(abspath deps/tcl/unix)
+	cd deps/tk/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads $(if $(filter Darwin,$(UNAME_S)),--enable-aqua,) --with-tcl=$(abspath deps/tcl/unix)
 	$(MAKE) -C deps/tk/unix
 	$(MAKE) -C deps/tk/unix install
 
