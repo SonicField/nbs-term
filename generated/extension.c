@@ -46,23 +46,12 @@ extern int strcmp(const char *, const char *);
  */
 
 
-/* Windows <wingdi.h> (pulled in transitively via <tcl.h> -> <tk.h> ->
- * <windows.h> on Win32) defines RGB(r,g,b) as a COLORREF macro. That
- * collides with our phc_descr Color::RGB variant name and breaks both
- * the descriptor definition below AND every `case RGB(...)` match
- * pattern downstream (cl /EP substitutes the macro before phc parses).
- * Defang here so all consumers see the bare identifier. No-op on
- * Linux/Mac where RGB is not a preprocessor macro. */
-#ifdef RGB
-#  undef RGB
-#endif
-
 /* --- Color representation --- */
 
 typedef enum {
     Color_Default,
     Color_Indexed,
-    Color_RGB,
+    Color_Rgb24,
     Color__COUNT
 } Color_Tag;
 
@@ -78,14 +67,14 @@ typedef struct {
     uint8_t r;
     uint8_t g;
     uint8_t b;
-} Color_RGB_t;
+} Color_Rgb24_t;
 
 typedef struct Color {
     Color_Tag tag;
     union {
         Color_Default_t Default;
         Color_Indexed_t Indexed;
-        Color_RGB_t RGB;
+        Color_Rgb24_t Rgb24;
     };
 } Color;
 
@@ -102,12 +91,12 @@ static inline Color Color_mk_Indexed(uint8_t index) {
     return _v;
 }
 
-static inline Color Color_mk_RGB(uint8_t r, uint8_t g, uint8_t b) {
+static inline Color Color_mk_Rgb24(uint8_t r, uint8_t g, uint8_t b) {
     Color _v;
-    _v.tag = Color_RGB;
-    _v.RGB.r = r;
-    _v.RGB.g = g;
-    _v.RGB.b = b;
+    _v.tag = Color_Rgb24;
+    _v.Rgb24.r = r;
+    _v.Rgb24.g = g;
+    _v.Rgb24.b = b;
     return _v;
 }
 
@@ -121,11 +110,11 @@ static inline Color_Indexed_t Color_as_Indexed(Color v) {
     return v.Indexed;
 }
 
-static inline Color_RGB_t Color_as_RGB(Color v) {
-    if (v.tag != Color_RGB) abort();
-    return v.RGB;
+static inline Color_Rgb24_t Color_as_Rgb24(Color v) {
+    if (v.tag != Color_Rgb24) abort();
+    return v.Rgb24;
 }
-#line 27
+#line 16
 
 /* --- Cell attributes (bitmask) --- */
 
@@ -196,7 +185,7 @@ static inline const char *CellAttr_to_string(CellAttr p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 40
+#line 29
 
 /* --- Pen state: current SGR attributes for new characters --- */
 
@@ -277,7 +266,7 @@ static inline int pen_apply_sgr_extended(Pen *pen, int *params, int count, int i
         return 3;
     } else if (params[1] == 2 && count >= 5) {
         /* RGB: 38;2;R;G;B or 48;2;R;G;B */
-        *target = Color_mk_RGB(
+        *target = Color_mk_Rgb24(
             (uint8_t)(params[2] & 0xFF),
             (uint8_t)(params[3] & 0xFF),
             (uint8_t)(params[4] & 0xFF)
@@ -294,13 +283,13 @@ static inline int color_equal(Color a, Color other) {
     case Color_Indexed: { uint8_t index = a.Indexed.index; {
             return other.tag == Color_Indexed && index == other.Indexed.index;
         } break; }
-    case Color_RGB: { uint8_t r = a.RGB.r; uint8_t g = a.RGB.g; uint8_t b = a.RGB.b; {
-            return other.tag == Color_RGB &&
-                   r == other.RGB.r && g == other.RGB.g && b == other.RGB.b;
+    case Color_Rgb24: { uint8_t r = a.Rgb24.r; uint8_t g = a.Rgb24.g; uint8_t b = a.Rgb24.b; {
+            return other.tag == Color_Rgb24 &&
+                   r == other.Rgb24.r && g == other.Rgb24.g && b == other.Rgb24.b;
         } break; }
     default: break;
 }
-#line 142
+#line 131
     return 0;
 }
 
@@ -886,9 +875,9 @@ typedef enum {
     VTState_Ground,
     VTState_Escape,
     VTState_EscapeIntermediate,
-    VTState_CSI,
-    VTState_OSC,
-    VTState_DCS,
+    VTState_Csi,
+    VTState_Osc,
+    VTState_Dcs,
     VTState__COUNT
 } VTState_Tag;
 
@@ -908,18 +897,18 @@ typedef struct {
     int params[16];
     int param_count;
     int priv;
-} VTState_CSI_t;
+} VTState_Csi_t;
 
 typedef struct {
     char buf[512];
     int len;
     int esc_seen;
-} VTState_OSC_t;
+} VTState_Osc_t;
 
 typedef struct {
     char buf[512];
     int len;
-} VTState_DCS_t;
+} VTState_Dcs_t;
 
 typedef struct VTState {
     VTState_Tag tag;
@@ -927,9 +916,9 @@ typedef struct VTState {
         VTState_Ground_t Ground;
         VTState_Escape_t Escape;
         VTState_EscapeIntermediate_t EscapeIntermediate;
-        VTState_CSI_t CSI;
-        VTState_OSC_t OSC;
-        VTState_DCS_t DCS;
+        VTState_Csi_t Csi;
+        VTState_Osc_t Osc;
+        VTState_Dcs_t Dcs;
     };
 } VTState;
 
@@ -952,26 +941,26 @@ static inline VTState VTState_mk_EscapeIntermediate(char intermediate) {
     return _v;
 }
 
-static inline VTState VTState_mk_CSI(int param_count, int priv) {
+static inline VTState VTState_mk_Csi(int param_count, int priv) {
     VTState _v;
-    _v.tag = VTState_CSI;
-    _v.CSI.param_count = param_count;
-    _v.CSI.priv = priv;
+    _v.tag = VTState_Csi;
+    _v.Csi.param_count = param_count;
+    _v.Csi.priv = priv;
     return _v;
 }
 
-static inline VTState VTState_mk_OSC(int len, int esc_seen) {
+static inline VTState VTState_mk_Osc(int len, int esc_seen) {
     VTState _v;
-    _v.tag = VTState_OSC;
-    _v.OSC.len = len;
-    _v.OSC.esc_seen = esc_seen;
+    _v.tag = VTState_Osc;
+    _v.Osc.len = len;
+    _v.Osc.esc_seen = esc_seen;
     return _v;
 }
 
-static inline VTState VTState_mk_DCS(int len) {
+static inline VTState VTState_mk_Dcs(int len) {
     VTState _v;
-    _v.tag = VTState_DCS;
-    _v.DCS.len = len;
+    _v.tag = VTState_Dcs;
+    _v.Dcs.len = len;
     return _v;
 }
 
@@ -990,21 +979,21 @@ static inline VTState_EscapeIntermediate_t VTState_as_EscapeIntermediate(VTState
     return v.EscapeIntermediate;
 }
 
-static inline VTState_CSI_t VTState_as_CSI(VTState v) {
-    if (v.tag != VTState_CSI) abort();
-    return v.CSI;
+static inline VTState_Csi_t VTState_as_Csi(VTState v) {
+    if (v.tag != VTState_Csi) abort();
+    return v.Csi;
 }
 
-static inline VTState_OSC_t VTState_as_OSC(VTState v) {
-    if (v.tag != VTState_OSC) abort();
-    return v.OSC;
+static inline VTState_Osc_t VTState_as_Osc(VTState v) {
+    if (v.tag != VTState_Osc) abort();
+    return v.Osc;
 }
 
-static inline VTState_DCS_t VTState_as_DCS(VTState v) {
-    if (v.tag != VTState_DCS) abort();
-    return v.DCS;
+static inline VTState_Dcs_t VTState_as_Dcs(VTState v) {
+    if (v.tag != VTState_Dcs) abort();
+    return v.Dcs;
 }
-#line 730
+#line 719
 
 /* --- UTF-8 decoder state --- */
 
@@ -1436,7 +1425,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
 
     /* ESC is an 'anywhere' control — aborts current sequence.
      * Exception: OSC handles ESC internally for ST detection (ESC \). */
-    if (byte == 0x1B && state.tag != VTState_OSC) {
+    if (byte == 0x1B && state.tag != VTState_Osc) {
         if (parser->utf8.remaining > 0) {
             /* Emit U+FFFD for the abandoned partial UTF-8 sequence */
             Scrollback *sb = term->using_alt ? NULL : term->scrollback;
@@ -1450,7 +1439,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
      * Exception: OSC/DCS treat C0 bytes as string content (except BEL which
      * terminates OSC). */
     if (byte < 0x20 && byte != 0x1B &&
-        state.tag != VTState_OSC && state.tag != VTState_DCS) {
+        state.tag != VTState_Osc && state.tag != VTState_Dcs) {
         handle_c0(term, byte);
         return state;  /* preserve current parser state */
     }
@@ -1477,23 +1466,23 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break;
     case VTState_Escape: {
             if (byte == '[') {
-                VTState s = VTState_mk_CSI(0, 0);
-                memset(s.CSI.params, -1, sizeof(s.CSI.params));
-                s.CSI.param_count = 0;
-                s.CSI.priv = 0;
+                VTState s = VTState_mk_Csi(0, 0);
+                memset(s.Csi.params, -1, sizeof(s.Csi.params));
+                s.Csi.param_count = 0;
+                s.Csi.priv = 0;
                 return s;
             }
             if (byte == ']') {
-                VTState s = VTState_mk_OSC(0, 0);
-                memset(s.OSC.buf, 0, sizeof(s.OSC.buf));
-                s.OSC.len = 0;
-                s.OSC.esc_seen = 0;
+                VTState s = VTState_mk_Osc(0, 0);
+                memset(s.Osc.buf, 0, sizeof(s.Osc.buf));
+                s.Osc.len = 0;
+                s.Osc.esc_seen = 0;
                 return s;
             }
             if (byte == 'P') {
-                VTState s = VTState_mk_DCS(0);
-                memset(s.DCS.buf, 0, sizeof(s.DCS.buf));
-                s.DCS.len = 0;
+                VTState s = VTState_mk_Dcs(0);
+                memset(s.Dcs.buf, 0, sizeof(s.Dcs.buf));
+                s.Dcs.len = 0;
                 return s;
             }
             if (byte == '#' || byte == '(' || byte == ')') {
@@ -1507,33 +1496,33 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             handle_esc_dispatch(term, (char)byte, intermediate);
             return VTState_mk_Ground();
         } break; }
-    case VTState_CSI: { int *params = state.CSI.params; int param_count = state.CSI.param_count; int priv = state.CSI.priv; {
+    case VTState_Csi: { int *params = state.Csi.params; int param_count = state.Csi.param_count; int priv = state.Csi.priv; {
             if (byte == '?' && param_count == 0) {
                 /* Private mode indicator */
                 VTState s = state;
-                s.CSI.priv = 1;
+                s.Csi.priv = 1;
                 return s;
             }
             if (byte >= '0' && byte <= '9') {
                 /* Accumulate digit into current parameter */
                 VTState s = state;
-                int idx = s.CSI.param_count > 0 ? s.CSI.param_count - 1 : 0;
-                if (s.CSI.param_count == 0) s.CSI.param_count = 1;
+                int idx = s.Csi.param_count > 0 ? s.Csi.param_count - 1 : 0;
+                if (s.Csi.param_count == 0) s.Csi.param_count = 1;
                 /* First digit: transition from -1 (not provided) to the digit */
-                if (s.CSI.params[idx] == -1) s.CSI.params[idx] = 0;
-                s.CSI.params[idx] = s.CSI.params[idx] * 10 + (byte - '0');
+                if (s.Csi.params[idx] == -1) s.Csi.params[idx] = 0;
+                s.Csi.params[idx] = s.Csi.params[idx] * 10 + (byte - '0');
                 return s;
             }
             if (byte == ';') {
                 VTState s = state;
-                if (s.CSI.param_count == 0) {
+                if (s.Csi.param_count == 0) {
                     /* Leading semicolon: implicit first param + new second */
-                    s.CSI.param_count = 2;
-                    s.CSI.params[0] = -1;
-                    s.CSI.params[1] = -1;
-                } else if (s.CSI.param_count < 16) {
-                    s.CSI.param_count++;
-                    s.CSI.params[s.CSI.param_count - 1] = -1;
+                    s.Csi.param_count = 2;
+                    s.Csi.params[0] = -1;
+                    s.Csi.params[1] = -1;
+                } else if (s.Csi.param_count < 16) {
+                    s.Csi.param_count++;
+                    s.Csi.params[s.Csi.param_count - 1] = -1;
                 }
                 return s;
             }
@@ -1545,7 +1534,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             /* Intermediate bytes (0x20-0x2F) — ignore for now */
             return state;
         } break; }
-    case VTState_OSC: { char *buf = state.OSC.buf; int len = state.OSC.len; int esc_seen = state.OSC.esc_seen; {
+    case VTState_Osc: { char *buf = state.Osc.buf; int len = state.Osc.len; int esc_seen = state.Osc.esc_seen; {
             /* OSC terminated by BEL (0x07) or ST (ESC \) */
             if (byte == 0x07) {
                 handle_osc_dispatch(term, buf, len);
@@ -1554,7 +1543,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             if (byte == 0x1B) {
                 /* Might be start of ST (ESC \) */
                 VTState s = parser->state;
-                s.OSC.esc_seen = 1;
+                s.Osc.esc_seen = 1;
                 return s;
             }
             if (esc_seen == 1 && byte == '\\') {
@@ -1569,12 +1558,12 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             }
             /* Accumulate */
             VTState s = parser->state;
-            if (s.OSC.len < 511) {
-                s.OSC.buf[s.OSC.len++] = (char)byte;
+            if (s.Osc.len < 511) {
+                s.Osc.buf[s.Osc.len++] = (char)byte;
             }
             return s;
         } break; }
-    case VTState_DCS: { char *buf = state.DCS.buf; int len = state.DCS.len; {
+    case VTState_Dcs: { char *buf = state.Dcs.buf; int len = state.Dcs.len; {
             (void)buf;
             (void)len;
             /* DCS terminated by ST (ESC \), or ESC starts new sequence */
@@ -1586,14 +1575,14 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             }
             /* Accumulate (but we don't process DCS yet) */
             VTState s = state;
-            if (s.DCS.len < 511) {
-                s.DCS.buf[s.DCS.len++] = (char)byte;
+            if (s.Dcs.len < 511) {
+                s.Dcs.buf[s.Dcs.len++] = (char)byte;
             }
             return s;
         } break; }
     default: break;
 }
-#line 1323
+#line 1312
 
     return VTState_mk_Ground();
 }
@@ -1658,7 +1647,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1349
+#line 1338
 
 /* --- Input event types --- */
 
@@ -1751,7 +1740,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1358
+#line 1347
 
 /* --- UTF-8 encoding --- */
 
@@ -1904,7 +1893,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1445
+#line 1434
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -2033,12 +2022,12 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
                 snprintf(out, (size_t)outsize, "#%02x%02x%02x", v, v, v);
             }
         } break; }
-    case Color_RGB: { uint8_t r = c.RGB.r; uint8_t g = c.RGB.g; uint8_t b = c.RGB.b; {
+    case Color_Rgb24: { uint8_t r = c.Rgb24.r; uint8_t g = c.Rgb24.g; uint8_t b = c.Rgb24.b; {
             snprintf(out, (size_t)outsize, "#%02x%02x%02x", r, g, b);
         } break; }
     default: break;
 }
-#line 1577
+#line 1566
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2377,7 +2366,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1898
+#line 1887
 
 /* Config structs — mirrors Python dataclasses */
 

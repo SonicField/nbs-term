@@ -19,9 +19,9 @@ phc_descr VTState {
     Ground {},
     Escape {},
     EscapeIntermediate { char intermediate; },
-    CSI { int params[16]; int param_count; int priv; },
-    OSC { char buf[512]; int len; int esc_seen; },
-    DCS { char buf[512]; int len; }
+    Csi { int params[16]; int param_count; int priv; },
+    Osc { char buf[512]; int len; int esc_seen; },
+    Dcs { char buf[512]; int len; }
 };
 
 /* --- UTF-8 decoder state --- */
@@ -454,7 +454,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
 
     /* ESC is an 'anywhere' control — aborts current sequence.
      * Exception: OSC handles ESC internally for ST detection (ESC \). */
-    if (byte == 0x1B && state.tag != VTState_OSC) {
+    if (byte == 0x1B && state.tag != VTState_Osc) {
         if (parser->utf8.remaining > 0) {
             /* Emit U+FFFD for the abandoned partial UTF-8 sequence */
             Scrollback *sb = term->using_alt ? NULL : term->scrollback;
@@ -468,7 +468,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
      * Exception: OSC/DCS treat C0 bytes as string content (except BEL which
      * terminates OSC). */
     if (byte < 0x20 && byte != 0x1B &&
-        state.tag != VTState_OSC && state.tag != VTState_DCS) {
+        state.tag != VTState_Osc && state.tag != VTState_Dcs) {
         handle_c0(term, byte);
         return state;  /* preserve current parser state */
     }
@@ -496,23 +496,23 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
 
         case Escape: {
             if (byte == '[') {
-                VTState s = VTState_mk_CSI(0, 0);
-                memset(s.CSI.params, -1, sizeof(s.CSI.params));
-                s.CSI.param_count = 0;
-                s.CSI.priv = 0;
+                VTState s = VTState_mk_Csi(0, 0);
+                memset(s.Csi.params, -1, sizeof(s.Csi.params));
+                s.Csi.param_count = 0;
+                s.Csi.priv = 0;
                 return s;
             }
             if (byte == ']') {
-                VTState s = VTState_mk_OSC(0, 0);
-                memset(s.OSC.buf, 0, sizeof(s.OSC.buf));
-                s.OSC.len = 0;
-                s.OSC.esc_seen = 0;
+                VTState s = VTState_mk_Osc(0, 0);
+                memset(s.Osc.buf, 0, sizeof(s.Osc.buf));
+                s.Osc.len = 0;
+                s.Osc.esc_seen = 0;
                 return s;
             }
             if (byte == 'P') {
-                VTState s = VTState_mk_DCS(0);
-                memset(s.DCS.buf, 0, sizeof(s.DCS.buf));
-                s.DCS.len = 0;
+                VTState s = VTState_mk_Dcs(0);
+                memset(s.Dcs.buf, 0, sizeof(s.Dcs.buf));
+                s.Dcs.len = 0;
                 return s;
             }
             if (byte == '#' || byte == '(' || byte == ')') {
@@ -528,33 +528,33 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             return VTState_mk_Ground();
         } break;
 
-        case CSI(params, param_count, priv): {
+        case Csi(params, param_count, priv): {
             if (byte == '?' && param_count == 0) {
                 /* Private mode indicator */
                 VTState s = state;
-                s.CSI.priv = 1;
+                s.Csi.priv = 1;
                 return s;
             }
             if (byte >= '0' && byte <= '9') {
                 /* Accumulate digit into current parameter */
                 VTState s = state;
-                int idx = s.CSI.param_count > 0 ? s.CSI.param_count - 1 : 0;
-                if (s.CSI.param_count == 0) s.CSI.param_count = 1;
+                int idx = s.Csi.param_count > 0 ? s.Csi.param_count - 1 : 0;
+                if (s.Csi.param_count == 0) s.Csi.param_count = 1;
                 /* First digit: transition from -1 (not provided) to the digit */
-                if (s.CSI.params[idx] == -1) s.CSI.params[idx] = 0;
-                s.CSI.params[idx] = s.CSI.params[idx] * 10 + (byte - '0');
+                if (s.Csi.params[idx] == -1) s.Csi.params[idx] = 0;
+                s.Csi.params[idx] = s.Csi.params[idx] * 10 + (byte - '0');
                 return s;
             }
             if (byte == ';') {
                 VTState s = state;
-                if (s.CSI.param_count == 0) {
+                if (s.Csi.param_count == 0) {
                     /* Leading semicolon: implicit first param + new second */
-                    s.CSI.param_count = 2;
-                    s.CSI.params[0] = -1;
-                    s.CSI.params[1] = -1;
-                } else if (s.CSI.param_count < 16) {
-                    s.CSI.param_count++;
-                    s.CSI.params[s.CSI.param_count - 1] = -1;
+                    s.Csi.param_count = 2;
+                    s.Csi.params[0] = -1;
+                    s.Csi.params[1] = -1;
+                } else if (s.Csi.param_count < 16) {
+                    s.Csi.param_count++;
+                    s.Csi.params[s.Csi.param_count - 1] = -1;
                 }
                 return s;
             }
@@ -567,7 +567,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             return state;
         } break;
 
-        case OSC(buf, len, esc_seen): {
+        case Osc(buf, len, esc_seen): {
             /* OSC terminated by BEL (0x07) or ST (ESC \) */
             if (byte == 0x07) {
                 handle_osc_dispatch(term, buf, len);
@@ -576,7 +576,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             if (byte == 0x1B) {
                 /* Might be start of ST (ESC \) */
                 VTState s = parser->state;
-                s.OSC.esc_seen = 1;
+                s.Osc.esc_seen = 1;
                 return s;
             }
             if (esc_seen == 1 && byte == '\\') {
@@ -591,13 +591,13 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             }
             /* Accumulate */
             VTState s = parser->state;
-            if (s.OSC.len < 511) {
-                s.OSC.buf[s.OSC.len++] = (char)byte;
+            if (s.Osc.len < 511) {
+                s.Osc.buf[s.Osc.len++] = (char)byte;
             }
             return s;
         } break;
 
-        case DCS(buf, len): {
+        case Dcs(buf, len): {
             (void)buf;
             (void)len;
             /* DCS terminated by ST (ESC \), or ESC starts new sequence */
@@ -609,8 +609,8 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
             }
             /* Accumulate (but we don't process DCS yet) */
             VTState s = state;
-            if (s.DCS.len < 511) {
-                s.DCS.buf[s.DCS.len++] = (char)byte;
+            if (s.Dcs.len < 511) {
+                s.Dcs.buf[s.Dcs.len++] = (char)byte;
             }
             return s;
         } break;

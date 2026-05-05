@@ -49,7 +49,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
                 snprintf(out, (size_t)outsize, "#%02x%02x%02x", v, v, v);
             }
         } break;
-        case RGB(r, g, b): {
+        case Rgb24(r, g, b): {
             snprintf(out, (size_t)outsize, "#%02x%02x%02x", r, g, b);
         } break;
     }

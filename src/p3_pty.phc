@@ -52,14 +52,6 @@
 #include "vt_parser.phc"   /* pulls sgr.phc + screen.phc */
 #include "pty.phc"          /* cross-platform PTY abstraction */
 
-/* pty.phc pulls <windows.h> on Win32, which defines RGB(r,g,b) as a
- * COLORREF macro AFTER sgr.phc's earlier #undef. Defang again here so
- * the case RGB(r,g,b) match patterns below see the bare variant name.
- * No-op on Linux/Mac. */
-#ifdef RGB
-#  undef RGB
-#endif
-
 /* Cell pixel grid — fixed for first cut; P5/P6a wires real font metrics. */
 #define CELL_W 9
 #define CELL_H 16
@@ -98,7 +90,7 @@ static int color_is_default(Color c) {
     phc_match(Color, c) {
         case Default: { is_def = 1; } break;
         case Indexed(index): { (void)index; is_def = 0; } break;
-        case RGB(r, g, b): { (void)r; (void)g; (void)b; is_def = 0; } break;
+        case Rgb24(r, g, b): { (void)r; (void)g; (void)b; is_def = 0; } break;
     }
     return is_def;
 }
@@ -129,7 +121,7 @@ static void color_to_hex(Color c, const char *defcol, char *out, int outsz) {
                 snprintf(out, (size_t)outsz, "#%02x%02x%02x", v, v, v);
             }
         } break;
-        case RGB(r, g, b): {
+        case Rgb24(r, g, b): {
             snprintf(out, (size_t)outsz, "#%02x%02x%02x", r, g, b);
         } break;
     }

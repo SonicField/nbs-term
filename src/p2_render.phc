@@ -70,7 +70,7 @@ static int color_is_default(Color c) {
     phc_match(Color, c) {
         case Default: { is_def = 1; } break;
         case Indexed(index): { (void)index; is_def = 0; } break;
-        case RGB(r, g, b): { (void)r; (void)g; (void)b; is_def = 0; } break;
+        case Rgb24(r, g, b): { (void)r; (void)g; (void)b; is_def = 0; } break;
     }
     return is_def;
 }
@@ -103,7 +103,7 @@ static void color_to_hex(Color c, const char *defcol, char *out, int outsz) {
                 snprintf(out, (size_t)outsz, "#%02x%02x%02x", v, v, v);
             }
         } break;
-        case RGB(r, g, b): {
+        case Rgb24(r, g, b): {
             snprintf(out, (size_t)outsz, "#%02x%02x%02x", r, g, b);
         } break;
     }

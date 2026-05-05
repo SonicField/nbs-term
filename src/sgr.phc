@@ -9,23 +9,12 @@
 
 #include <stdint.h>
 
-/* Windows <wingdi.h> (pulled in transitively via <tcl.h> -> <tk.h> ->
- * <windows.h> on Win32) defines RGB(r,g,b) as a COLORREF macro. That
- * collides with our phc_descr Color::RGB variant name and breaks both
- * the descriptor definition below AND every `case RGB(...)` match
- * pattern downstream (cl /EP substitutes the macro before phc parses).
- * Defang here so all consumers see the bare identifier. No-op on
- * Linux/Mac where RGB is not a preprocessor macro. */
-#ifdef RGB
-#  undef RGB
-#endif
-
 /* --- Color representation --- */
 
 phc_descr Color {
     Default {},
     Indexed { uint8_t index; },
-    RGB { uint8_t r; uint8_t g; uint8_t b; }
+    Rgb24 { uint8_t r; uint8_t g; uint8_t b; }
 };
 
 /* --- Cell attributes (bitmask) --- */
@@ -120,7 +109,7 @@ static inline int pen_apply_sgr_extended(Pen *pen, int *params, int count, int i
         return 3;
     } else if (params[1] == 2 && count >= 5) {
         /* RGB: 38;2;R;G;B or 48;2;R;G;B */
-        *target = Color_mk_RGB(
+        *target = Color_mk_Rgb24(
             (uint8_t)(params[2] & 0xFF),
             (uint8_t)(params[3] & 0xFF),
             (uint8_t)(params[4] & 0xFF)
@@ -137,9 +126,9 @@ static inline int color_equal(Color a, Color other) {
         case Indexed(index): {
             return other.tag == Color_Indexed && index == other.Indexed.index;
         } break;
-        case RGB(r, g, b): {
-            return other.tag == Color_RGB &&
-                   r == other.RGB.r && g == other.RGB.g && b == other.RGB.b;
+        case Rgb24(r, g, b): {
+            return other.tag == Color_Rgb24 &&
+                   r == other.Rgb24.r && g == other.Rgb24.g && b == other.Rgb24.b;
         } break;
     }
     return 0;
