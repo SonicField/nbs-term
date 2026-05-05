@@ -6,6 +6,7 @@ build/
 __pycache__/
 *.egg-info/
 dist/
+deps/tcl-build/
 
 # NBS team infrastructure
 .nbs/

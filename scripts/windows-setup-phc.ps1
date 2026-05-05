@@ -3,10 +3,14 @@
 # Builds the standalone phc binary (build/p3_pty.exe) on Windows. No Python
 # at runtime; links Tcl/Tk + ConPTY (Win10 1809+).
 #
-# Prerequisites checked / installed by this script:
-#   - MSVC Build Tools (cl.exe)            -- offers install if missing
-#   - Magicsplat Tcl/Tk Windows kit         -- prompts for download path
-#   - Git                                   -- assumed; nbs-term cloned via it
+# Self-contained: only assumes host C toolchain bootstrap (vs_BuildTools, admin
+# elevation if absent) and Git. Tcl/Tk is built from vendored source under
+# deps/tcl/ + deps/tk/ (8.6.15, BSD-licensed; pinned in repo per alexie
+# 2026-05-05 D-1777978221, D-1777978497). No system Tcl/Tk dependency.
+#
+# Prerequisites:
+#   - MSVC Build Tools (cl.exe, nmake.exe)  -- auto-installed if missing (admin)
+#   - Git                                    -- assumed; nbs-term cloned via it
 #
 # Run from PowerShell:
 #     .\scripts\windows-setup-phc.ps1
@@ -21,29 +25,63 @@ $ErrorActionPreference = "Stop"
 $RepoDir = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { (Get-Location).Path }
 $BuildDir = Join-Path $RepoDir "build"
 $SrcDir = Join-Path $RepoDir "src"
-$PhcDir = Join-Path $RepoDir "deps\phc"
+$DepsDir = Join-Path $RepoDir "deps"
+$PhcDir = Join-Path $DepsDir "phc"
 $PhcBuildDir = Join-Path $PhcDir "build"
 $PhcExe = Join-Path $PhcBuildDir "phc.exe"
+$TclSrcDir = Join-Path $DepsDir "tcl"
+$TkSrcDir = Join-Path $DepsDir "tk"
+$TclBuildDir = Join-Path $DepsDir "tcl-build"
+$TclInclude = Join-Path $TclBuildDir "include"
+$TclLib = Join-Path $TclBuildDir "lib"
+$TclBin = Join-Path $TclBuildDir "bin"
 
 Write-Host "=== nbs-term Windows pure-phc Setup ===" -ForegroundColor Cyan
 Write-Host "Repo: $RepoDir"
 
-# ---- Step 1: locate MSVC ----
+# ---- Step 0: ensure MSVC Build Tools (mirrors scripts/windows-setup.ps1 pattern) ----
 $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not (Test-Path $VsWhere)) {
-    Write-Host "ERROR: Visual Studio Installer not present." -ForegroundColor Red
-    Write-Host "Install MSVC Build Tools first (https://visualstudio.microsoft.com/visual-cpp-build-tools/)." -ForegroundColor Yellow
-    Write-Host "Or run scripts\windows-setup.ps1 -- it offers MSVC install." -ForegroundColor Yellow
-    exit 1
+$VsPath = $null
+if (Test-Path $VsWhere) {
+    $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
 }
-$VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $VsPath) {
-    Write-Host "ERROR: VC tools not detected. Install via Visual Studio Installer." -ForegroundColor Red
+    Write-Host "MSVC Build Tools not found." -ForegroundColor Yellow
+    $response = Read-Host "Install Visual Studio Build Tools? [Y]/n"
+    if ($response -eq '' -or $response -eq 'Y' -or $response -eq 'y') {
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin) {
+            Write-Host "ERROR: Build Tools install requires admin rights." -ForegroundColor Red
+            Write-Host "Re-run this script from an elevated PowerShell (Run as Administrator)." -ForegroundColor Yellow
+            exit 1
+        }
+        $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+        $vsInstaller = "$env:TEMP\vs_BuildTools.exe"
+        Write-Host "Downloading Visual Studio Build Tools..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri $vsUrl -OutFile $vsInstaller
+        Write-Host "Installing Build Tools (this may take several minutes)..." -ForegroundColor Yellow
+        Start-Process -Wait -FilePath $vsInstaller -ArgumentList @(
+            "--quiet", "--wait", "--norestart",
+            "--add", "Microsoft.VisualStudio.Workload.VCTools",
+            "--includeRecommended"
+        )
+        Remove-Item $vsInstaller -ErrorAction SilentlyContinue
+        Write-Host "Build Tools installed." -ForegroundColor Green
+        if (Test-Path $VsWhere) {
+            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        }
+    } else {
+        Write-Host "ERROR: C compiler required. Install from: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+        exit 1
+    }
+}
+if (-not $VsPath) {
+    Write-Host "ERROR: VC tools not detected after install attempt." -ForegroundColor Red
     exit 1
 }
 Write-Host "MSVC found at $VsPath" -ForegroundColor Green
 
-# Import MSVC environment so cl.exe / link.exe land on PATH for this session.
+# Import MSVC environment so cl.exe / link.exe / nmake.exe land on PATH for this session.
 $VcVarsBat = Join-Path $VsPath "VC\Auxiliary\Build\vcvars64.bat"
 if (-not (Test-Path $VcVarsBat)) {
     Write-Host "ERROR: vcvars64.bat not found at $VcVarsBat." -ForegroundColor Red
@@ -58,40 +96,77 @@ foreach ($line in $EnvDump) {
 }
 & cl.exe /? 2>&1 | Select-Object -First 1
 
-# ---- Step 2: locate Tcl/Tk Windows kit ----
-# Order: $env:TCL_HOME / $env:TK_HOME -> Magicsplat default -> ActiveTcl default.
-$TclHome = $env:TCL_HOME
-if (-not $TclHome) {
-    foreach ($candidate in @("C:\Tcl", "C:\ActiveTcl", "C:\tcl86")) {
-        if (Test-Path (Join-Path $candidate "include\tcl.h")) {
-            $TclHome = $candidate; break
-        }
-    }
-}
-if (-not $TclHome -or -not (Test-Path (Join-Path $TclHome "include\tcl.h"))) {
-    Write-Host "ERROR: Tcl/Tk Windows kit not found." -ForegroundColor Red
-    Write-Host "" -ForegroundColor Yellow
-    Write-Host "Install Magicsplat Tcl/Tk for Windows (recommended):" -ForegroundColor Yellow
-    Write-Host "  https://www.magicsplat.com/tcl-installer/" -ForegroundColor White
-    Write-Host "Default install path: C:\Tcl  (auto-detected)." -ForegroundColor White
-    Write-Host "Or set `$env:TCL_HOME to the install root and re-run." -ForegroundColor White
+# ---- Step 1: build vendored Tcl/Tk from deps/{tcl,tk}/ ----
+# Pinned at 8.6.15 (per deps/tcl/README.md, deps/tk/README.md; verifiable via
+# upstream sourceforge.net SHA256 in commit e05c00c message).
+if (-not (Test-Path $TclSrcDir) -or -not (Test-Path (Join-Path $TclSrcDir "win\makefile.vc"))) {
+    Write-Host "ERROR: vendored Tcl source missing at $TclSrcDir." -ForegroundColor Red
+    Write-Host "Re-clone the repo or run: git checkout deps/tcl deps/tk" -ForegroundColor Yellow
     exit 1
 }
-$TclInclude = Join-Path $TclHome "include"
-$TclLib = Join-Path $TclHome "lib"
-# Find the import library (tcl86.lib / tcl90.lib varies by version).
+if (-not (Test-Path $TkSrcDir) -or -not (Test-Path (Join-Path $TkSrcDir "win\makefile.vc"))) {
+    Write-Host "ERROR: vendored Tk source missing at $TkSrcDir." -ForegroundColor Red
+    exit 1
+}
+
+$TclBuildMarker = Join-Path $TclLib "tcl86.lib"
+if (-not (Test-Path $TclBuildMarker)) {
+    Write-Host "Building vendored Tcl 8.6.15 -> $TclBuildDir ..." -ForegroundColor Yellow
+    Push-Location (Join-Path $TclSrcDir "win")
+    try {
+        & nmake.exe -nologo -f makefile.vc release
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tcl release build failed (nmake exit $LASTEXITCODE)" -ForegroundColor Red
+            exit 1
+        }
+        & nmake.exe -nologo -f makefile.vc install "INSTALLDIR=$TclBuildDir"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tcl install failed (nmake exit $LASTEXITCODE)" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "Built Tcl 8.6.15 -> $TclBuildDir" -ForegroundColor Green
+} else {
+    Write-Host "Vendored Tcl 8.6.15 already built (delete deps/tcl-build to force rebuild)" -ForegroundColor Yellow
+}
+
+$TkBuildMarker = Join-Path $TclLib "tk86.lib"
+if (-not (Test-Path $TkBuildMarker)) {
+    Write-Host "Building vendored Tk 8.6.15 -> $TclBuildDir ..." -ForegroundColor Yellow
+    Push-Location (Join-Path $TkSrcDir "win")
+    try {
+        & nmake.exe -nologo -f makefile.vc release "TCLDIR=$TclSrcDir"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tk release build failed (nmake exit $LASTEXITCODE)" -ForegroundColor Red
+            exit 1
+        }
+        & nmake.exe -nologo -f makefile.vc install "INSTALLDIR=$TclBuildDir" "TCLDIR=$TclSrcDir"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tk install failed (nmake exit $LASTEXITCODE)" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "Built Tk 8.6.15 -> $TclBuildDir" -ForegroundColor Green
+} else {
+    Write-Host "Vendored Tk 8.6.15 already built" -ForegroundColor Yellow
+}
+
+# Locate the import libraries (tcl86.lib + tk86.lib) for linking.
 $TclImport = Get-ChildItem -Path $TclLib -Filter "tcl*.lib" -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notmatch "stub" } | Select-Object -First 1
 $TkImport = Get-ChildItem -Path $TclLib -Filter "tk*.lib" -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notmatch "stub" } | Select-Object -First 1
 if (-not $TclImport -or -not $TkImport) {
-    Write-Host "ERROR: tcl*.lib / tk*.lib not found under $TclLib." -ForegroundColor Red
-    Write-Host "Magicsplat ships these in lib\; check your install." -ForegroundColor Yellow
+    Write-Host "ERROR: tcl*.lib / tk*.lib not found under $TclLib after build." -ForegroundColor Red
     exit 1
 }
-Write-Host "Tcl/Tk found at $TclHome ($($TclImport.Name) + $($TkImport.Name))" -ForegroundColor Green
+Write-Host "Vendored Tcl/Tk ready at $TclBuildDir ($($TclImport.Name) + $($TkImport.Name))" -ForegroundColor Green
 
-# ---- Step 3: build phc.exe ----
+# ---- Step 2: build phc.exe ----
 if (-not (Test-Path $PhcBuildDir)) { New-Item -ItemType Directory -Path $PhcBuildDir | Out-Null }
 if (-not (Test-Path $PhcExe)) {
     Write-Host "Building phc compiler from source..." -ForegroundColor Yellow
@@ -116,7 +191,7 @@ if (-not (Test-Path $PhcExe)) {
     Write-Host "phc.exe already built (delete to force rebuild)" -ForegroundColor Yellow
 }
 
-# ---- Step 4: build build/p3_pty.exe ----
+# ---- Step 3: build build/p3_pty.exe ----
 if (-not (Test-Path $BuildDir)) { New-Item -ItemType Directory -Path $BuildDir | Out-Null }
 $PtyPhc = Join-Path $SrcDir "p3_pty.phc"
 $PtyC = Join-Path $BuildDir "p3_pty.c"
@@ -159,10 +234,9 @@ if ($PyImport) {
 }
 Write-Host "PASS: phc binary has zero Python linkage" -ForegroundColor Green
 
-# ---- Step 5: self-test ----
+# ---- Step 4: self-test ----
 Write-Host "Running self-test (build/p3_pty.exe -test)..." -ForegroundColor Yellow
-# Tcl/Tk runtime DLLs need to be on PATH; Magicsplat default puts them in bin\.
-$TclBin = Join-Path $TclHome "bin"
+# Tcl/Tk runtime DLLs need to be on PATH; they live in deps/tcl-build/bin.
 $env:PATH = "$TclBin;$env:PATH"
 & $PtyExe -test
 $rc = $LASTEXITCODE
