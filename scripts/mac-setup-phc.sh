@@ -95,12 +95,14 @@ fi
 
 # ---- Step 4: build phc compiler from deps/phc ----
 # phc is a git submodule. `git clone --single-branch` does NOT init submodules,
-# so deps/phc is empty until explicit init. Defensive: remove a partial deps/
-# phc dir (no .git inside) left by a prior failed run before init, since git
-# refuses to clone into a non-empty path.
+# so deps/phc is empty until explicit init. Recovery: if a prior failed run
+# left deps/phc non-empty (e.g. created deps/phc/build/ before bombing), git
+# submodule update refuses to clone into it. Deinit + rm + init is the
+# canonical recovery (per supervisor 2026-05-05 12:15:05).
 if [ ! -d "deps/phc/src" ]; then
-    if [ -d "deps/phc" ] && [ ! -e "deps/phc/.git" ]; then
-        echo "Removing partial deps/phc dir before submodule init..."
+    if [ -d "deps/phc" ] && [ -n "$(ls -A deps/phc 2>/dev/null)" ]; then
+        echo "Cleaning stale deps/phc before submodule init..."
+        git submodule deinit -f deps/phc 2>/dev/null || true
         rm -rf deps/phc
     fi
     echo "Initializing phc submodule (deps/phc)..."

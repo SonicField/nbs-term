@@ -322,9 +322,20 @@ regenerate:
 # so a fresh clone + make works without a manual `git submodule update --init`
 # step (per supervisor 2026-05-05 11:55:33; matches windows-setup-phc.ps1 +
 # mac-setup-phc.sh auto-init pattern).
+#
+# Recovery: if $(PHC_DIR) exists but is non-empty without the submodule's
+# Makefile inside (e.g. a prior failed run touched $(PHC_DIR)/build), git
+# submodule update refuses to clone into a non-empty path. Deinit+rm+init
+# is the canonical recovery (per supervisor 2026-05-05 12:15:05; mirrors
+# 9dfcf83 Win/Mac fix).
 phc: $(PHC_BIN)
 $(PHC_BIN):
 	@if [ ! -f $(PHC_DIR)/Makefile ]; then \
+		if [ -d $(PHC_DIR) ] && [ -n "$$(ls -A $(PHC_DIR) 2>/dev/null)" ]; then \
+			echo "Cleaning stale $(PHC_DIR) before submodule init..."; \
+			git submodule deinit -f $(PHC_DIR) 2>/dev/null || true; \
+			rm -rf $(PHC_DIR); \
+		fi; \
 		echo "Initializing phc submodule ($(PHC_DIR))..."; \
 		git submodule update --init $(PHC_DIR) || { echo "ERROR: git submodule init failed for $(PHC_DIR)"; exit 1; }; \
 	fi
