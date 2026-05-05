@@ -138,10 +138,12 @@ int main(int argc, char *argv[]) {
     int rc = pty_install_tcl_handler(h, interp, on_pty_data, h);
     phc_check(rc == TCL_OK, "pty_install_tcl_handler != TCL_OK");
 
-    /* Drain events until marker observed or 30s timeout. 30s is
-     * generous for CI cold-start of cmd.exe + powershell on Win;
-     * POSIX awk path completes in well under 1s. */
-    const int max_loops = 3000;  /* 3000 * 10ms = 30s */
+    /* Drain events until marker observed or 60s timeout. 60s is the
+     * upper bound for CI cold-start of cmd.exe + powershell + ConPTY on
+     * a slow Win runner (per pythia #48 — bumped from 30s to leave
+     * headroom for runner-environment latency vs misattributing a
+     * timeout as a PTY-layer fault). POSIX awk path completes <1s. */
+    const int max_loops = 6000;  /* 6000 * 10ms = 60s */
     for (int i = 0; i < max_loops; i++) {
         Tcl_DoOneEvent(TCL_FILE_EVENTS | TCL_IDLE_EVENTS | TCL_DONT_WAIT);
         if (g_marker_seen) {

@@ -322,13 +322,21 @@ if ($selftest_rc -eq 0) {
     Write-Host "  * ConPTY not supported (Windows 10 < 1809)." -ForegroundColor Yellow
 }
 
-# Diagnostic summary: which layer is faulty.
-if ($burst_rc -ne 0 -and $selftest_rc -ne 0) {
-    Write-Host "DIAGNOSIS: both tests failed -> fault is in PTY/ConPTY layer (ring backpressure or read-pump)." -ForegroundColor Yellow
-} elseif ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
-    Write-Host "DIAGNOSIS: burst PASS but self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
+# Diagnostic summary: which layer is faulty. The burst exit code further
+# discriminates the failure mode (per pythia #48: collapsing exit 2 timeout
+# vs exit 3 short-read into "burst FAIL" misattributes runner-environment
+# latency as a PTY/ConPTY layer fault). Exit 1 = setup; 2 = timeout (no
+# marker); 3 = short read (bytes dropped).
+if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst PASS, self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
+} elseif ($burst_rc -eq 3 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst SHORT-READ (exit 3), self-test FAIL -> ConPTY ring backpressure regression (c8d5378 fix #4 may have regressed)." -ForegroundColor Yellow
+} elseif ($burst_rc -eq 2 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst TIMEOUT (exit 2), self-test FAIL -> child never produced marker; likely runner-environment latency or producer-side issue. Cannot distinguish PTY vs Tk from these exit codes alone." -ForegroundColor Yellow
+} elseif ($burst_rc -eq 1 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst SETUP-FAIL (exit 1), self-test FAIL -> Tcl/PTY setup failed before drain; investigate stderr." -ForegroundColor Yellow
 } elseif ($burst_rc -ne 0 -and $selftest_rc -eq 0) {
-    Write-Host "DIAGNOSIS: burst FAIL but self-test PASS -> burst payload exceeded what the Tk-driven self-test exercises (rare; investigate)." -ForegroundColor Yellow
+    Write-Host "DIAGNOSIS: burst FAIL (exit $burst_rc), self-test PASS -> burst exercised a path not reached by the Tk-driven self-test (rare; investigate)." -ForegroundColor Yellow
 }
 
 if ($burst_rc -ne 0) { exit $burst_rc }
