@@ -8,6 +8,44 @@ __pycache__/
 dist/
 deps/tcl-build/
 
+# Vendored Tcl/Tk in-tree build artifacts (deps/{tcl,tk}/ source stays
+# pristine vs upstream tarball; configure+make outputs are local only).
+deps/tcl/unix/Makefile
+deps/tcl/unix/config.cache
+deps/tcl/unix/config.log
+deps/tcl/unix/config.status
+deps/tcl/unix/tclConfig.sh
+deps/tcl/unix/tcl.pc
+deps/tcl/unix/tclUuid.h
+deps/tcl/unix/*.o
+deps/tcl/unix/*.so*
+deps/tcl/unix/*.dylib*
+deps/tcl/unix/*.a
+deps/tcl/unix/tclsh*
+deps/tcl/unix/dltest/
+deps/tcl/unix/pkgs/
+deps/tcl/unix/manifest.txt
+deps/tcl/libtommath/Makefile
+deps/tcl/libtommath/*.o
+deps/tcl/libtommath/*.a
+deps/tcl/win/Release_*/
+deps/tcl/win/Debug_*/
+deps/tk/unix/Makefile
+deps/tk/unix/config.cache
+deps/tk/unix/config.log
+deps/tk/unix/config.status
+deps/tk/unix/tkConfig.sh
+deps/tk/unix/tk.pc
+deps/tk/unix/tkUuid.h
+deps/tk/unix/wish*
+deps/tk/unix/*.o
+deps/tk/unix/*.so*
+deps/tk/unix/*.dylib*
+deps/tk/unix/*.a
+deps/tk/unix/manifest.txt
+deps/tk/win/Release_*/
+deps/tk/win/Debug_*/
+
 # NBS team infrastructure
 .nbs/
 review.md

@@ -15,11 +15,24 @@ PHC := ASAN_OPTIONS=detect_leaks=0 $(PHC_BIN)
 CC ?= gcc
 PYTHON := python3
 
+# Vendored Tcl/Tk 8.6.15 — built from deps/{tcl,tk}/ source via tcl-tk target.
+# No system libtcl/libtk linkage (alexie 2026-05-05 D-1777978221, D-1777978497).
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+TCL_LIB_EXT := dylib
+else
+TCL_LIB_EXT := so
+endif
+TCL_BUILD_DIR := deps/tcl-build
+TCL_VENDOR_LIB := $(TCL_BUILD_DIR)/lib/libtcl8.6.$(TCL_LIB_EXT)
+TK_VENDOR_LIB := $(TCL_BUILD_DIR)/lib/libtk8.6.$(TCL_LIB_EXT)
+TCL_VENDOR_PREFIX := $(abspath $(TCL_BUILD_DIR))
+
 # Flags
 PYTHON_CFLAGS := $(shell $(PYTHON)-config --cflags)
 PYTHON_LDFLAGS := $(shell $(PYTHON)-config --ldflags --embed 2>/dev/null || $(PYTHON)-config --ldflags)
 CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fPIC
-LDFLAGS := -shared -ltcl8.6
+LDFLAGS := -shared -L$(TCL_BUILD_DIR)/lib -ltcl8.6 -Wl,-rpath,$(TCL_VENDOR_PREFIX)/lib
 
 # Sanitizer flags (for testing)
 ASAN_FLAGS := -fsanitize=address -fno-omit-frame-pointer
@@ -41,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-phc-invariants
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk
 
 all: $(EXTENSION_SO)
 
@@ -66,44 +79,65 @@ $(BUILDDIR)/render.h: $(SRCDIR)/render.phc $(BUILDDIR)/sgr.h $(BUILDDIR)/screen.
 # --- Step 6: extension.phc (single translation unit) ---
 # extension.phc #includes all .phc sources directly.
 # Preprocessed as one unit so phc sees all phc_descr types.
-$(BUILDDIR)/extension.c: $(SRCDIR)/extension.phc $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/input.phc $(SRCDIR)/render.phc | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+$(BUILDDIR)/extension.c: $(SRCDIR)/extension.phc $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/input.phc $(SRCDIR)/render.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -I$(TCL_BUILD_DIR)/include -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
 $(BUILDDIR)/extension.o: $(BUILDDIR)/extension.c
-	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -I$(TCL_BUILD_DIR)/include -c $< -o $@
 
 # --- Shared library ---
-$(EXTENSION_SO): $(BUILDDIR)/extension.o
+$(EXTENSION_SO): $(BUILDDIR)/extension.o $(TK_VENDOR_LIB)
 	$(CC) $(LDFLAGS) $< -o $@
 
 # --- P1 calibration: standalone phc binary, no Python ---
 # Tcl/Tk C-API hello-world. Builds a native executable directly from .phc;
 # zero Python linkage. Bar: see src/p1_hello.phc header.
-TCLTK_CFLAGS := $(shell pkg-config --cflags tk 2>/dev/null)
-TCLTK_LIBS := $(shell pkg-config --libs tk 2>/dev/null || echo "-ltk8.6 -ltcl8.6")
+#
+# Tcl/Tk linkage: vendored deps/tcl-build (built via tcl-tk target). Override
+# TCLTK_CFLAGS / TCLTK_LIBS only for diagnostic builds — production builds
+# must link against the vendored prefix per pure-phc doctrine.
+TCLTK_CFLAGS ?= -I$(TCL_BUILD_DIR)/include
+TCLTK_LIBS ?= -L$(TCL_BUILD_DIR)/lib -ltk8.6 -ltcl8.6 -Wl,-rpath,$(TCL_VENDOR_PREFIX)/lib
 P1_CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function
 
-$(BUILDDIR)/p1_hello.c: $(SRCDIR)/p1_hello.phc | $(BUILDDIR)
+# --- Vendored Tcl/Tk build (deps/tcl-build) ---
+# In-tree configure+make+install. Source under deps/{tcl,tk}/ stays pristine
+# vs upstream tarball (8.6.15); configure-generated artifacts are gitignored.
+$(TCL_VENDOR_LIB):
+	@echo "Building vendored Tcl 8.6.15 -> $(TCL_BUILD_DIR) ..."
+	cd deps/tcl/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads
+	$(MAKE) -C deps/tcl/unix
+	$(MAKE) -C deps/tcl/unix install
+
+$(TK_VENDOR_LIB): $(TCL_VENDOR_LIB)
+	@echo "Building vendored Tk 8.6.15 -> $(TCL_BUILD_DIR) ..."
+	cd deps/tk/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads --with-tcl=$(abspath deps/tcl/unix)
+	$(MAKE) -C deps/tk/unix
+	$(MAKE) -C deps/tk/unix install
+
+tcl-tk: $(TK_VENDOR_LIB)
+
+$(BUILDDIR)/p1_hello.c: $(SRCDIR)/p1_hello.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
-$(BUILDDIR)/p1_hello: $(BUILDDIR)/p1_hello.c
+$(BUILDDIR)/p1_hello: $(BUILDDIR)/p1_hello.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
 
 p1_hello: $(BUILDDIR)/p1_hello
 
-$(BUILDDIR)/p1_5_notebook.c: $(SRCDIR)/p1_5_notebook.phc | $(BUILDDIR)
+$(BUILDDIR)/p1_5_notebook.c: $(SRCDIR)/p1_5_notebook.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
-$(BUILDDIR)/p1_5_notebook: $(BUILDDIR)/p1_5_notebook.c
+$(BUILDDIR)/p1_5_notebook: $(BUILDDIR)/p1_5_notebook.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
 
 p1_5_notebook: $(BUILDDIR)/p1_5_notebook
 
 # P2: standalone phc TerminalWidget renderer (includes vt_parser+screen+sgr)
-$(BUILDDIR)/p2_render.c: $(SRCDIR)/p2_render.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
+$(BUILDDIR)/p2_render.c: $(SRCDIR)/p2_render.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
-$(BUILDDIR)/p2_render: $(BUILDDIR)/p2_render.c
+$(BUILDDIR)/p2_render: $(BUILDDIR)/p2_render.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -o $@
 
 p2_render: $(BUILDDIR)/p2_render
@@ -111,10 +145,10 @@ p2_render: $(BUILDDIR)/p2_render
 # P3+P4: PTY-driven live terminal. Cross-platform via pty.phc (forkpty on
 # POSIX, ConPTY on Win32). -lutil for forkpty (Linux); macOS pulls forkpty
 # from libSystem, the -lutil is a harmless no-op there.
-$(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc | $(BUILDDIR)
+$(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
-$(BUILDDIR)/p3_pty: $(BUILDDIR)/p3_pty.c
+$(BUILDDIR)/p3_pty: $(BUILDDIR)/p3_pty.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
 
 p3_pty: $(BUILDDIR)/p3_pty
@@ -189,8 +223,38 @@ verify-no-eval-objex:
 	fi; \
 	echo "PASS: no Tcl_EvalObjEx in production .phc"
 
-# Roll-up: run both invariant guards.
-verify-phc-invariants: verify-no-python-link verify-no-eval-objex
+# (3) No system libtcl/libtk linkage on phc binaries. Tcl/Tk must come from
+# the vendored build under deps/tcl-build/lib (alexie 2026-05-05
+# D-1777978221, D-1777978497; pure-source-code-dep doctrine). Mirrors
+# verify-no-python-link scope (phc binaries only; EXTENSION_SO legacy
+# build also links vendored via LDFLAGS, but is not asserted here).
+verify-no-system-tcl-link: $(PHC_BINARIES)
+	@fail=0; \
+	if [ "$(UNAME_S)" = "Darwin" ]; then \
+	  inspect="otool -L"; \
+	else \
+	  inspect="ldd"; \
+	fi; \
+	for b in $(PHC_BINARIES); do \
+	  if [ -e "$$b" ]; then \
+	    if $$inspect "$$b" 2>/dev/null | grep -E '/(usr|opt|System)/.*libt(cl|k)' >/dev/null; then \
+	      echo "FAIL: $$b links system Tcl/Tk (must use vendored deps/tcl-build)"; \
+	      $$inspect "$$b" | grep -E 'libt(cl|k)'; \
+	      fail=1; \
+	    fi; \
+	    if ! $$inspect "$$b" 2>/dev/null | grep -F "$(TCL_VENDOR_PREFIX)/lib/libtcl8.6" >/dev/null; then \
+	      echo "FAIL: $$b does not link vendored libtcl8.6 from $(TCL_VENDOR_PREFIX)/lib"; \
+	      $$inspect "$$b" | grep -E 'libt(cl|k)'; \
+	      fail=1; \
+	    fi; \
+	  else \
+	    echo "SKIP: $$b not built"; \
+	  fi; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "PASS: phc binaries link vendored Tcl/Tk only"; else exit 1; fi
+
+# Roll-up: run all invariant guards.
+verify-phc-invariants: verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link
 
 test-asan: CC := clang
 test-asan: CFLAGS += $(ASAN_FLAGS)
