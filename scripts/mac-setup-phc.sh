@@ -94,6 +94,16 @@ else
 fi
 
 # ---- Step 4: build phc compiler from deps/phc ----
+# phc is a git submodule. `git clone --single-branch` does NOT init submodules,
+# so deps/phc is empty until explicit init.
+if [ ! -d "deps/phc/src" ]; then
+    echo "Initializing phc submodule (deps/phc)..."
+    git submodule update --init deps/phc
+    if [ ! -d "deps/phc/src" ]; then
+        echo "ERROR: git submodule init failed for deps/phc."
+        exit 1
+    fi
+fi
 echo "Building phc compiler..."
 make -C deps/phc CC=cc -j 2>&1 | tail -3
 if [ ! -x deps/phc/build/phc ]; then

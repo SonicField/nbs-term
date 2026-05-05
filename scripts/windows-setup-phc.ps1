@@ -167,6 +167,21 @@ if (-not $TclImport -or -not $TkImport) {
 Write-Host "Vendored Tcl/Tk ready at $TclBuildDir ($($TclImport.Name) + $($TkImport.Name))" -ForegroundColor Green
 
 # ---- Step 2: build phc.exe ----
+# phc lives at deps/phc as a git submodule. A `git clone --single-branch` does
+# NOT init submodules, so deps/phc/src is empty until init. Idempotent re-run.
+if (-not (Test-Path (Join-Path $PhcDir "src"))) {
+    Write-Host "Initializing phc submodule (deps/phc)..." -ForegroundColor Yellow
+    Push-Location $RepoDir
+    try {
+        & git submodule update --init deps/phc
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: git submodule init failed for deps/phc." -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+}
 if (-not (Test-Path $PhcBuildDir)) { New-Item -ItemType Directory -Path $PhcBuildDir | Out-Null }
 if (-not (Test-Path $PhcExe)) {
     Write-Host "Building phc compiler from source..." -ForegroundColor Yellow
