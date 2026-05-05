@@ -169,7 +169,17 @@ Write-Host "Vendored Tcl/Tk ready at $TclBuildDir ($($TclImport.Name) + $($TkImp
 # ---- Step 2: build phc.exe ----
 # phc lives at deps/phc as a git submodule. A `git clone --single-branch` does
 # NOT init submodules, so deps/phc/src is empty until init. Idempotent re-run.
+#
+# Defensive: a prior failed run may have left deps/phc as a non-empty dir
+# (e.g. with deps/phc/build/ created by an earlier script invocation that
+# bombed before submodule init). git submodule update refuses to clone into
+# a non-empty path with no .git inside, so clean those leftover directories
+# before init.
 if (-not (Test-Path (Join-Path $PhcDir "src"))) {
+    if ((Test-Path $PhcDir) -and -not (Test-Path (Join-Path $PhcDir ".git"))) {
+        Write-Host "Removing partial deps/phc dir before submodule init..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $PhcDir
+    }
     Write-Host "Initializing phc submodule (deps/phc)..." -ForegroundColor Yellow
     Push-Location $RepoDir
     try {
