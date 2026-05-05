@@ -318,12 +318,15 @@ regenerate:
 	} > generated/extension.c
 	@echo "Done ($(shell wc -l < generated/extension.c) lines)"
 
-# Build phc from submodule (if not already built)
+# Build phc from submodule (if not already built). Auto-init the submodule
+# so a fresh clone + make works without a manual `git submodule update --init`
+# step (per supervisor 2026-05-05 11:55:33; matches windows-setup-phc.ps1 +
+# mac-setup-phc.sh auto-init pattern).
 phc: $(PHC_BIN)
 $(PHC_BIN):
 	@if [ ! -f $(PHC_DIR)/Makefile ]; then \
-		echo "Error: phc submodule not initialised. Run: git submodule update --init"; \
-		exit 1; \
+		echo "Initializing phc submodule ($(PHC_DIR))..."; \
+		git submodule update --init $(PHC_DIR) || { echo "ERROR: git submodule init failed for $(PHC_DIR)"; exit 1; }; \
 	fi
 	$(MAKE) -C $(PHC_DIR)
 
