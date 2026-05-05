@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst
 
 all: $(EXTENSION_SO)
 
@@ -163,6 +163,18 @@ $(BUILDDIR)/test_parser: $(TESTDIR)/test_parser.c $(SRCDIR)/sgr.phc $(SRCDIR)/sc
 
 $(BUILDDIR)/test_screen: $(TESTDIR)/test_screen.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_screen.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
+
+# test_pty_burst — programmatic byte-accounting for pty.phc (testkeeper
+# deferred spec D-1777640886). Validates POSIX read-pump-under-load and
+# Win32 ring backpressure (c8d5378 fix #4) without Tk/render in the loop.
+# Same build shape as p3_pty (Tcl link, vendored Tcl/Tk, -lutil for forkpty).
+$(BUILDDIR)/test_pty_burst.c: $(TESTDIR)/test_pty_burst.phc $(SRCDIR)/pty.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_pty_burst: $(BUILDDIR)/test_pty_burst.c $(TK_VENDOR_LIB)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
+
+test_pty_burst: $(BUILDDIR)/test_pty_burst
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \

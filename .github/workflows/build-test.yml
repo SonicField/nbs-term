@@ -54,6 +54,11 @@ jobs:
       - name: Self-test (xvfb-run build/p3_pty -test)
         run: xvfb-run -a build/p3_pty -test
 
+      - name: Burst test (PTY layer, no Tk)
+        run: |
+          make build/test_pty_burst
+          build/test_pty_burst
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -85,6 +90,11 @@ jobs:
       - name: Self-test (build/p3_pty -test)
         run: build/p3_pty -test
 
+      - name: Burst test (PTY layer, no Tk)
+        run: |
+          make build/test_pty_burst
+          build/test_pty_burst
+
   win-build:
     name: Windows
     runs-on: windows-latest
@@ -105,7 +115,17 @@ jobs:
 
       - name: Run windows-setup-phc.ps1
         # Single script does MSVC import + vendored Tcl/Tk build (cache-aware via
-        # tcl86.lib markers) + phc compiler + p3_pty.exe + self-test +
-        # zero-Python-linkage check. Equivalent to make tcl-tk + make p3_pty +
-        # verify-no-python-link + p3_pty -test on POSIX, in one script.
+        # tcl86.lib markers) + phc compiler + p3_pty.exe + test_pty_burst.exe +
+        # self-test + zero-Python-linkage check. Equivalent to make tcl-tk + make
+        # p3_pty + make test_pty_burst + verify-no-python-link + p3_pty -test on
+        # POSIX, in one script.
         run: .\scripts\windows-setup-phc.ps1
+
+      - name: Burst test (PTY layer, no Tk)
+        # The Tk-driven self-test inside windows-setup-phc.ps1 currently fails
+        # 'marker not seen' under CI (separable issue per generalist 17:23:14);
+        # the burst test bypasses Tk to validate the ConPTY ring-backpressure
+        # path independently — diagnoses whether faults live in PTY or Tk layer.
+        run: |
+          $env:PATH = "$pwd\deps\tcl-build\bin;$env:PATH"
+          .\build\test_pty_burst.exe

@@ -249,6 +249,36 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PtyExe)) {
 }
 Write-Host "Built $PtyExe" -ForegroundColor Green
 
+# ---- Step 3.5: build build/test_pty_burst.exe ----
+# Programmatic byte-accounting test for pty.phc; isolates the PTY layer
+# from Tk/render so a self-test failure can be diagnosed (PTY ring vs Tk
+# render). Per testkeeper deferred spec D-1777640886.
+$TestSrc = Join-Path (Join-Path $RepoDir "tests") "test_pty_burst.phc"
+$TestC = Join-Path $BuildDir "test_pty_burst.c"
+$TestExe = Join-Path $BuildDir "test_pty_burst.exe"
+
+Write-Host "Preprocessing $TestSrc -> $TestC ..." -ForegroundColor Yellow
+$TestPp = Join-Path $BuildDir "test_pty_burst.i"
+& cl.exe /nologo /EP /TC /I"$SrcDir" /I"$TclInclude" $TestSrc 2>$null | Out-File -Encoding ASCII -FilePath $TestPp
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: cl /EP failed on $TestSrc" -ForegroundColor Red
+    exit 1
+}
+$TestPreText = Get-Content -Raw $TestPp
+$TestPreText | & $PhcExe | Out-File -Encoding ASCII -FilePath $TestC
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: phc transform failed on $TestSrc" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Compiling $TestC -> $TestExe ..." -ForegroundColor Yellow
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /I"$TclInclude" /Fe"$TestExe" $TestC `
+    /link $($TclImport.FullName) $($TkImport.FullName) kernel32.lib user32.lib shell32.lib advapi32.lib | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TestExe)) {
+    Write-Host "ERROR: cl link failed for test_pty_burst.exe" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Built $TestExe" -ForegroundColor Green
+
 # ---- Static guard: no Python DLL import (mirrors POSIX verify-no-python-link) ----
 Write-Host "Verifying zero Python linkage..." -ForegroundColor Yellow
 $Deps = & dumpbin.exe /dependents $PtyExe 2>$null
