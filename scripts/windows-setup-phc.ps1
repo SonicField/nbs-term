@@ -290,22 +290,49 @@ if ($PyImport) {
 }
 Write-Host "PASS: phc binary has zero Python linkage" -ForegroundColor Green
 
-# ---- Step 4: self-test ----
-Write-Host "Running self-test (build/p3_pty.exe -test)..." -ForegroundColor Yellow
+# ---- Step 4: self-tests ----
 # Tcl/Tk runtime DLLs need to be on PATH; they live in deps/tcl-build/bin.
 $env:PATH = "$TclBin;$env:PATH"
+
+# Run BOTH the burst test (PTY layer only) AND p3_pty.exe -test (whole stack
+# including Tk render) unconditionally, capturing both exit codes. This
+# preserves the diagnostic comparison even when one fails — burst PASS +
+# self-test FAIL isolates the fault to the Tk/render layer; both FAIL
+# isolates it to the PTY/ConPTY layer (per testkeeper deferred spec
+# D-1777640886, generalist 18:04:57 ordering note).
+Write-Host "Running burst test (build/test_pty_burst.exe — PTY layer)..." -ForegroundColor Yellow
+& $TestExe
+$burst_rc = $LASTEXITCODE
+if ($burst_rc -eq 0) {
+    Write-Host "BURST TEST OK: ConPTY ring-backpressure drain" -ForegroundColor Green
+} else {
+    Write-Host "BURST TEST FAILED (exit $burst_rc). See stderr above." -ForegroundColor Red
+}
+
+Write-Host "Running self-test (build/p3_pty.exe -test)..." -ForegroundColor Yellow
 & $PtyExe -test
-$rc = $LASTEXITCODE
-if ($rc -eq 0) {
+$selftest_rc = $LASTEXITCODE
+if ($selftest_rc -eq 0) {
     Write-Host "SELF-TEST OK: ConPTY -> render round-trip" -ForegroundColor Green
 } else {
-    Write-Host "SELF-TEST FAILED (exit $rc). See stderr above." -ForegroundColor Red
+    Write-Host "SELF-TEST FAILED (exit $selftest_rc). See stderr above." -ForegroundColor Red
     Write-Host "Common causes:" -ForegroundColor Yellow
     Write-Host "  * Tcl/Tk runtime DLLs not on PATH (check $TclBin)." -ForegroundColor Yellow
     Write-Host "  * cmd.exe child not found (CreateProcess error)." -ForegroundColor Yellow
     Write-Host "  * ConPTY not supported (Windows 10 < 1809)." -ForegroundColor Yellow
-    exit $rc
 }
+
+# Diagnostic summary: which layer is faulty.
+if ($burst_rc -ne 0 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: both tests failed -> fault is in PTY/ConPTY layer (ring backpressure or read-pump)." -ForegroundColor Yellow
+} elseif ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst PASS but self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
+} elseif ($burst_rc -ne 0 -and $selftest_rc -eq 0) {
+    Write-Host "DIAGNOSIS: burst FAIL but self-test PASS -> burst payload exceeded what the Tk-driven self-test exercises (rare; investigate)." -ForegroundColor Yellow
+}
+
+if ($burst_rc -ne 0) { exit $burst_rc }
+if ($selftest_rc -ne 0) { exit $selftest_rc }
 
 Write-Host ""
 Write-Host "=== Build Complete ===" -ForegroundColor Green
