@@ -9,6 +9,17 @@
 
 #include <stdint.h>
 
+/* Windows <wingdi.h> (pulled in transitively via <tcl.h> -> <tk.h> ->
+ * <windows.h> on Win32) defines RGB(r,g,b) as a COLORREF macro. That
+ * collides with our phc_descr Color::RGB variant name and breaks both
+ * the descriptor definition below AND every `case RGB(...)` match
+ * pattern downstream (cl /EP substitutes the macro before phc parses).
+ * Defang here so all consumers see the bare identifier. No-op on
+ * Linux/Mac where RGB is not a preprocessor macro. */
+#ifdef RGB
+#  undef RGB
+#endif
+
 /* --- Color representation --- */
 
 phc_descr Color {
