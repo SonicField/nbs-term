@@ -177,7 +177,23 @@ static DWORD WINAPI win32_io_thread(LPVOID arg) {
 /* ---- Public API ---- */
 
 #if !defined(_WIN32)
+/* Install SIGPIPE handler once per process. Default disposition is to
+ * terminate the renderer if the child exits during pty_write — which
+ * happens routinely on Mac (and Linux) when the user closes the shell.
+ * SIG_IGN turns the write into EPIPE that pty_write already handles
+ * cleanly. Idempotent across pty_open calls. */
+static void pty_install_sigpipe_ignore(void) {
+    static int installed = 0;
+    if (installed) return;
+    struct sigaction sa = {0};
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
+    installed = 1;
+}
+
 static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
+    pty_install_sigpipe_ignore();
     PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
     if (!h) return NULL;
     int master = -1;
@@ -187,6 +203,12 @@ static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
         free(h); return NULL;
     }
     if (pid == 0) {
+        /* Restore default SIGPIPE so exec'd shell isn't surprised by an
+         * inherited SIG_IGN disposition (shells expect default). */
+        struct sigaction sa = {0};
+        sa.sa_handler = SIG_DFL;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPIPE, &sa, NULL);
         struct winsize ws = {0};
         ws.ws_row = (unsigned short)rows;
         ws.ws_col = (unsigned short)cols;
