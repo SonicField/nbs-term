@@ -103,16 +103,23 @@ P1_CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function
 # --- Vendored Tcl/Tk build (deps/tcl-build) ---
 # In-tree configure+make+install. Source under deps/{tcl,tk}/ stays pristine
 # vs upstream tarball (8.6.15); configure-generated artifacts are gitignored.
+# JOBS: parallelism for the inner Tcl/Tk make. Defaults to nproc on
+# Linux, sysctl on Mac, 4 elsewhere. Override with `make JOBS=N tcl-tk`.
+# Tcl 8.6 + Tk 8.6 Makefiles are autoconf-generated and parallel-safe
+# (theologian 13:59:17). Mac script already uses `make -j`; Win nmake
+# is serial (alexie-greenlit-only per supervisor 14:10:53).
+JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
 $(TCL_VENDOR_LIB):
-	@echo "Building vendored Tcl 8.6.15 -> $(TCL_BUILD_DIR) ..."
+	@echo "Building vendored Tcl 8.6.15 -> $(TCL_BUILD_DIR) (jobs=$(JOBS)) ..."
 	cd deps/tcl/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads
-	$(MAKE) -C deps/tcl/unix
+	$(MAKE) -j$(JOBS) -C deps/tcl/unix
 	$(MAKE) -C deps/tcl/unix install
 
 $(TK_VENDOR_LIB): $(TCL_VENDOR_LIB)
-	@echo "Building vendored Tk 8.6.15 -> $(TCL_BUILD_DIR) ..."
+	@echo "Building vendored Tk 8.6.15 -> $(TCL_BUILD_DIR) (jobs=$(JOBS)) ..."
 	cd deps/tk/unix && ./configure --prefix=$(TCL_VENDOR_PREFIX) --enable-shared --enable-threads $(if $(filter Darwin,$(UNAME_S)),--enable-aqua,) --with-tcl=$(abspath deps/tcl/unix)
-	$(MAKE) -C deps/tk/unix
+	$(MAKE) -j$(JOBS) -C deps/tk/unix
 	$(MAKE) -C deps/tk/unix install
 
 tcl-tk: $(TK_VENDOR_LIB)
