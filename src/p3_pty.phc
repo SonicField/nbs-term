@@ -53,11 +53,15 @@
 #include "pty.phc"          /* cross-platform PTY abstraction */
 #include "config.phc"       /* nbs_config_load — honest-file at startup */
 
-/* Cell pixel grid — fixed for first cut; P5/P6a wires real font metrics
- * (font-derived CELL_W/CELL_H is its own surface per the Tk-native
- * primitives rule, deferred from this commit). */
-#define CELL_W 9
-#define CELL_H 16
+/* Cell pixel grid — derived from TkFixedFont metrics at startup via
+ * compute_cell_metrics() per feedback_tk_native_over_platform +
+ * librarian D-1778048574 (no platform anchors; font.measure / font
+ * metrics -linespace are the cross-platform Tk-native primitives).
+ * Initial values are a safe fallback for the (vanishingly rare) case
+ * where the font query fails before the first paint — every render
+ * call after main()'s compute_cell_metrics uses the actual values. */
+static int g_cell_w = 9;
+static int g_cell_h = 16;
 
 /* Globals so the Tcl file handler / command callbacks can find the engine
  * without ClientData plumbing for every registration. P5 will likely
@@ -70,6 +74,25 @@ static PTYHandle         *g_pty    = NULL;
 static int                g_dirty = 0;        /* render scheduled flag */
 static int                g_child_alive = 1;
 static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
+
+/* Query Tk for the actual TkFixedFont character cell metrics so cursor
+ * + glyph layout align across platforms. 'M' is conventional for
+ * monospace cell width (TkFixedFont is monospace, so any printable
+ * ASCII gives the same answer; pick one explicitly so the contract
+ * is obvious). 'font metrics -linespace' returns the recommended
+ * inter-line vertical advance; matches the row spacing used by
+ * '-anchor nw'-anchored text items. Tk requires Tk_Init first; this
+ * runs after 'package require Tk' in main(). */
+static void compute_cell_metrics(Tcl_Interp *interp) {
+    if (Tcl_Eval(interp, "font measure TkFixedFont M") == TCL_OK) {
+        int w = atoi(Tcl_GetStringResult(interp));
+        if (w > 0 && w <= 1000) g_cell_w = w;
+    }
+    if (Tcl_Eval(interp, "font metrics TkFixedFont -linespace") == TCL_OK) {
+        int h = atoi(Tcl_GetStringResult(interp));
+        if (h > 0 && h <= 1000) g_cell_h = h;
+    }
+}
 
 static int eval_argv(Tcl_Interp *interp, int objc, const char *argv[]) {
     Tcl_Obj **objv = (Tcl_Obj **)Tcl_Alloc(sizeof(Tcl_Obj *) * objc);
@@ -150,16 +173,25 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
     return 0;
 }
 
-/* Cursor block overlay. Single filled rectangle at the cursor cell —
- * canvas-pixel block matching the CELL_W/CELL_H grid the row text uses,
- * tagged "cursor" so every render frame replaces the previous in one
- * pass (`delete all` at the top of render_screen handles cleanup).
+/* Cursor overlay — legacy 'inline cursor system' port per alexie
+ * 2026-05-12 13:39:01 + theologian 13:41:40 mapping. Mirrors
+ * extension.phc:1109-1152 (= nbsterm.py:368-407 from 07e0158
+ * 'Cursor overlay no span split'); takes pixel x from
+ * font.measure(<row prefix bytes up to cursor col>) so the block
+ * lands ON the painted glyph regardless of TkFixedFont's actual
+ * per-platform width (uniform col*g_cell_w grid drifts on Win
+ * where the resolved monospace face is wider than 9px).
  *
- * Style is a solid block (cursor.style/blink consumption is a
- * follow-up); color comes from g_config.cursor.color when non-empty,
- * else falls back to g_config.fg. Always-visible — there is no
- * DECTCEM hide-cursor mode in screen.phc yet, so the cursor renders
- * unconditionally. */
+ * Style branch (g_config.cursor.style):
+ *  - Block: full cell rect in cursor color + re-render the cell
+ *    character on top in g_config.bg (inverted-overlay; without
+ *    this the block obscures the glyph it should be highlighting)
+ *  - Underline: 2px rect at bottom of cell
+ *  - Bar: 2px wide rect at left of cell
+ *
+ * Always-visible — screen.phc has no DECTCEM hide-cursor mode yet.
+ * Tagged "cursor" so `delete all` at the top of render_screen
+ * collects the previous frame's overlay in one pass. */
 static int render_cursor(Tcl_Interp *interp, const char *canvas,
                          const ScreenBuffer *scr) {
     int r = scr->cursor.row;
@@ -168,19 +200,88 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     if (r >= scr->rows) r = scr->rows - 1;
     if (c < 0) c = 0;
     if (c >= scr->cols) c = scr->cols - 1;
+
+    /* Build the row prefix (visible cells only, skipping wide_cont
+     * the same way render_screen does) up to the cursor column.
+     * This is the byte sequence Tk has actually painted to the left
+     * of the cursor cell — feeding it through 'font measure' gives
+     * the exact pixel x where the cursor glyph starts. */
+    char prefix[4096];
+    int  prefixlen = 0;
+    for (int cc = 0; cc < c && prefixlen < (int)sizeof prefix - 4; cc++) {
+        const Cell *cell = screen_cell_const(scr, r, cc);
+        if (cell->wide_cont) continue;
+        uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+        prefixlen += utf8_emit(cp, prefix + prefixlen,
+                               (int)sizeof prefix - prefixlen);
+    }
+    prefix[prefixlen] = '\0';
+
+    int cx = 0;
+    {
+        const char *measure[] = {"font", "measure", "TkFixedFont", prefix};
+        if (EVAL_ARGV(interp, measure) == TCL_OK) {
+            cx = atoi(Tcl_GetStringResult(interp));
+        }
+    }
+    int cy = r * g_cell_h;
+
+    const char *cur_color = g_config.cursor.color[0]
+                              ? g_config.cursor.color
+                              : g_config.fg;
+
     char xs[16], ys[16], x2s[16], y2s[16];
-    snprintf(xs,  sizeof xs,  "%d", c * CELL_W);
-    snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
-    snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
-    snprintf(y2s, sizeof y2s, "%d", (r + 1) * CELL_H);
-    const char *cursor_color = g_config.cursor.color[0]
-                                 ? g_config.cursor.color
-                                 : g_config.fg;
+
+    /* Underline / Bar: simple thin-rect overlays, no character re-render
+     * (the row text item already painted the glyph and the overlay sits
+     * at the cell edge, not on top). */
+    if (strcmp(g_config.cursor.style, "Underline") == 0) {
+        snprintf(xs,  sizeof xs,  "%d", cx);
+        snprintf(ys,  sizeof ys,  "%d", cy + g_cell_h - 2);
+        snprintf(x2s, sizeof x2s, "%d", cx + g_cell_w);
+        snprintf(y2s, sizeof y2s, "%d", cy + g_cell_h);
+        const char *rect[] = {canvas, "create", "rectangle",
+                              xs, ys, x2s, y2s,
+                              "-fill", cur_color, "-outline", "",
+                              "-tags", "cursor"};
+        return EVAL_ARGV(interp, rect);
+    }
+    if (strcmp(g_config.cursor.style, "Bar") == 0) {
+        snprintf(xs,  sizeof xs,  "%d", cx);
+        snprintf(ys,  sizeof ys,  "%d", cy);
+        snprintf(x2s, sizeof x2s, "%d", cx + 2);
+        snprintf(y2s, sizeof y2s, "%d", cy + g_cell_h);
+        const char *rect[] = {canvas, "create", "rectangle",
+                              xs, ys, x2s, y2s,
+                              "-fill", cur_color, "-outline", "",
+                              "-tags", "cursor"};
+        return EVAL_ARGV(interp, rect);
+    }
+
+    /* Block (default): rect + inverted-overlay character. The text
+     * item painted on top uses g_config.bg as fg so the cursor cell
+     * character remains visible inside the cursor block. */
+    snprintf(xs,  sizeof xs,  "%d", cx);
+    snprintf(ys,  sizeof ys,  "%d", cy);
+    snprintf(x2s, sizeof x2s, "%d", cx + g_cell_w);
+    snprintf(y2s, sizeof y2s, "%d", cy + g_cell_h);
     const char *rect[] = {canvas, "create", "rectangle",
                           xs, ys, x2s, y2s,
-                          "-fill", cursor_color, "-outline", "",
+                          "-fill", cur_color, "-outline", "",
                           "-tags", "cursor"};
-    return EVAL_ARGV(interp, rect);
+    if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+
+    const Cell *cur_cell = screen_cell_const(scr, r, c);
+    uint32_t cp = cur_cell->codepoint ? cur_cell->codepoint : ' ';
+    char ch[8];
+    int ch_len = utf8_emit(cp, ch, (int)sizeof ch - 1);
+    ch[ch_len] = '\0';
+    const char *text[] = {canvas, "create", "text",
+                          xs, ys,
+                          "-anchor", "nw", "-text", ch,
+                          "-fill", g_config.bg, "-font", "TkFixedFont",
+                          "-tags", "cursor"};
+    return EVAL_ARGV(interp, text);
 }
 
 static int render_screen(Tcl_Interp *interp, const char *canvas,
@@ -202,10 +303,10 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
                                 (int)sizeof(rowbuf) - rowlen);
             if (color_is_default(cell->bg)) continue;
             color_to_hex(cell->bg, g_config.bg, bg, sizeof bg);
-            snprintf(xs,  sizeof xs,  "%d", c * CELL_W);
-            snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
-            snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
-            snprintf(y2s, sizeof y2s, "%d", (r + 1) * CELL_H);
+            snprintf(xs,  sizeof xs,  "%d", c * g_cell_w);
+            snprintf(ys,  sizeof ys,  "%d", r * g_cell_h);
+            snprintf(x2s, sizeof x2s, "%d", (c + 1) * g_cell_w);
+            snprintf(y2s, sizeof y2s, "%d", (r + 1) * g_cell_h);
             snprintf(tag, sizeof tag, "bg%d_%d", r, c);
             const char *rect[] = {canvas, "create", "rectangle",
                                   xs, ys, x2s, y2s,
@@ -217,7 +318,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
         color_to_hex(screen_cell_const(scr, r, 0)->fg, g_config.fg,
                      fg, sizeof fg);
         snprintf(xs,  sizeof xs,  "%d", 0);
-        snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
+        snprintf(ys,  sizeof ys,  "%d", r * g_cell_h);
         snprintf(tag, sizeof tag, "row%d", r);
         const char *text[] = {canvas, "create", "text", xs, ys,
                               "-anchor", "nw", "-text", rowbuf,
@@ -294,9 +395,9 @@ static int PtyWrite(ClientData cd, Tcl_Interp *interp, int objc,
 }
 
 /* Tcl command: pty_resize <pixel_w> <pixel_h>. Bound via `bind .c
- * <Configure>`. Maps canvas pixels to a cell grid using the fixed CELL_W
- * / CELL_H constants, propagates via TIOCSWINSZ + terminal_resize, then
- * forces a render. */
+ * <Configure>`. Maps canvas pixels to a cell grid using g_cell_w /
+ * g_cell_h (font.measure-derived at startup), propagates via
+ * TIOCSWINSZ + terminal_resize, then forces a render. */
 static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
                      Tcl_Obj *const objv[]) {
     (void)cd;
@@ -307,7 +408,7 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
     int pw = 0, ph = 0;
     if (Tcl_GetIntFromObj(interp, objv[1], &pw) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &ph) != TCL_OK) return TCL_ERROR;
-    int cols = pw / CELL_W, rows = ph / CELL_H;
+    int cols = pw / g_cell_w, rows = ph / g_cell_h;
     if (cols < 1) cols = 1;
     if (rows < 1) rows = 1;
     if (cols == g_term->active->cols && rows == g_term->active->rows) {
@@ -364,6 +465,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "init: %s\n", Tcl_GetStringResult(g_interp));
         return 1;
     }
+    /* TkFixedFont metrics are valid only after Tk_Init; query now so
+     * canvas size, render_screen, render_cursor, and pty_resize all
+     * see the actual platform-derived cell dimensions. */
+    compute_cell_metrics(g_interp);
 
     g_term = terminal_new(g_config.rows, g_config.cols);
     if (!g_term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
@@ -380,8 +485,8 @@ int main(int argc, char *argv[]) {
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     char wstr[16], hstr[16];
-    snprintf(wstr, sizeof wstr, "%d", g_config.cols * CELL_W);
-    snprintf(hstr, sizeof hstr, "%d", g_config.rows * CELL_H);
+    snprintf(wstr, sizeof wstr, "%d", g_config.cols * g_cell_w);
+    snprintf(hstr, sizeof hstr, "%d", g_config.rows * g_cell_h);
     const char *canvas[] = {"canvas", ".c",
                             "-width", wstr, "-height", hstr,
                             "-bg", g_config.bg, "-highlightthickness", "0"};
