@@ -1,0 +1,293 @@
+/*
+ * config.phc — pure-C config loader for the pure-phc binary
+ *
+ * Reads ~/.nbs/nbs-term.honest (POSIX) or
+ * %LOCALAPPDATA%/nbs/nbs-term.honest (Win); applies defaults for any
+ * missing field or missing file. No Python linkage — distinct from
+ * src/config_structs.phc, which is the Python-coupled config layer
+ * for the legacy EXTENSION_SO build.
+ *
+ * Schema mirrors config.py + DEFAULT_CONFIG (the canonical Honest
+ * shape):
+ *
+ *   var config : TerminalConfig = (
+ *     font   : (family : 'Menlo'; size : 14);
+ *     cursor : (style : Block; blink : True; color : '');
+ *     gamma  : 1.20;
+ *     fg     : '#d0d0d0';
+ *     bg     : '#1a1a1a';
+ *     rows   : 24;
+ *     cols   : 80;
+ *     refresh_hz : 60;
+ *   );
+ *
+ * Built-in defaults (no file present): match p3_pty.phc's prior
+ * hardcoded constants exactly — bg '#1a1a1a' (the visual the binary
+ * has shipped with), 24x80, fg '#d0d0d0', cursor color empty (= fall
+ * through to fg), font.family 'TkFixedFont' (Tk-native named font).
+ * Loader is read-only: missing file -> defaults applied in-memory, no
+ * file written; user creates a file to override any field.
+ *
+ * Parser: minimal Honest reader — finds 'var <name> : <type> = ('
+ * opening, walks the body with paren-depth tracking, extracts
+ * 'field : value' pairs (recursing into nested records). Quoted
+ * strings via single quotes; bare identifiers and numbers as-is.
+ * No comments or list values supported (DEFAULT_CONFIG has neither).
+ */
+#ifndef NBSTERM_CONFIG_H
+#define NBSTERM_CONFIG_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+/* No <windows.h> here — pty.phc pulls it on Win and the p3_pty.phc
+ * #undef RGB right after that include defangs the COLORREF macro
+ * before phc parses Color match patterns. Re-pulling windows.h here
+ * is harmless (header-guarded), but skipped to keep includes minimal. */
+
+typedef struct {
+    char family[64];
+    int  size;
+} NbsFontConfig;
+
+typedef struct {
+    char style[16];      /* "Block" | "Underline" | "Bar" */
+    int  blink;          /* 0 or 1 */
+    char color[16];      /* "#rrggbb" or "" (empty -> fall back to fg) */
+} NbsCursorConfig;
+
+typedef struct {
+    NbsFontConfig   font;
+    NbsCursorConfig cursor;
+    double gamma;
+    char   fg[16];
+    char   bg[16];
+    int    rows;
+    int    cols;
+    int    refresh_hz;
+} NbsTerminalConfig;
+
+static NbsTerminalConfig nbs_config_default(void) {
+    NbsTerminalConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    /* TkFixedFont is the Tk-native named font that resolves to the
+     * platform monospace at draw time — no #ifdef per
+     * feedback_tk_native_over_platform + D-1777632987. Aligns the
+     * unconsumed default with the actual consumer at p3_pty.phc render
+     * (text item -font TkFixedFont). */
+    snprintf(cfg.font.family, sizeof cfg.font.family, "%s", "TkFixedFont");
+    cfg.font.size = 14;
+    snprintf(cfg.cursor.style, sizeof cfg.cursor.style, "%s", "Block");
+    cfg.cursor.blink   = 1;
+    cfg.cursor.color[0] = '\0';
+    cfg.gamma          = 1.0;
+    snprintf(cfg.fg, sizeof cfg.fg, "%s", "#d0d0d0");
+    snprintf(cfg.bg, sizeof cfg.bg, "%s", "#1a1a1a");
+    cfg.rows           = 24;
+    cfg.cols           = 80;
+    cfg.refresh_hz     = 60;
+    return cfg;
+}
+
+/* Resolve the platform-specific config path. Returns 1 on success
+ * (out filled), 0 if neither env var nor reasonable fallback exists. */
+static int nbs_config_path(char *out, size_t outsz) {
+    if (!out || outsz < 32) return 0;
+#if defined(_WIN32)
+    const char *base = getenv("LOCALAPPDATA");
+    if (!base || !*base) base = getenv("USERPROFILE");
+    if (!base || !*base) return 0;
+    int n = snprintf(out, outsz, "%s\\nbs\\nbs-term.honest", base);
+#else
+    const char *home = getenv("HOME");
+    if (!home || !*home) return 0;
+    int n = snprintf(out, outsz, "%s/.nbs/nbs-term.honest", home);
+#endif
+    return n > 0 && (size_t)n < outsz;
+}
+
+/* Skip whitespace + ';'. Returns new position. */
+static size_t nbs__skip_ws(const char *s, size_t pos, size_t len) {
+    while (pos < len && (s[pos] == ' ' || s[pos] == '\t' ||
+                         s[pos] == '\r' || s[pos] == '\n' ||
+                         s[pos] == ';')) pos++;
+    return pos;
+}
+
+/* Match identifier at pos; fills out_id (with NUL); returns chars consumed
+ * (0 if no identifier). */
+static size_t nbs__read_ident(const char *s, size_t pos, size_t len,
+                              char *out_id, size_t out_sz) {
+    size_t start = pos;
+    while (pos < len && ((s[pos] >= 'a' && s[pos] <= 'z') ||
+                         (s[pos] >= 'A' && s[pos] <= 'Z') ||
+                         (s[pos] >= '0' && s[pos] <= '9') ||
+                         s[pos] == '_')) pos++;
+    size_t n = pos - start;
+    if (n == 0 || n + 1 > out_sz) { out_id[0] = '\0'; return 0; }
+    memcpy(out_id, s + start, n);
+    out_id[n] = '\0';
+    return n;
+}
+
+/* Find the matching ')' for an opening '(' assumed at s[pos]. Returns
+ * position of the closing ')' on success, len on failure. */
+static size_t nbs__match_paren(const char *s, size_t pos, size_t len) {
+    int depth = 1;
+    pos++;
+    while (pos < len && depth > 0) {
+        if (s[pos] == '(') depth++;
+        else if (s[pos] == ')') depth--;
+        if (depth == 0) return pos;
+        pos++;
+    }
+    return len;
+}
+
+/* Apply one scalar field to cfg given a dotted key (e.g. "font.family",
+ * "cursor.style", "rows"). Quoted strings have already been unquoted. */
+static void nbs__apply(NbsTerminalConfig *cfg, const char *key, const char *val) {
+    if (strcmp(key, "font.family") == 0) {
+        snprintf(cfg->font.family, sizeof cfg->font.family, "%s", val);
+    } else if (strcmp(key, "font.size") == 0) {
+        long v = strtol(val, NULL, 10);
+        if (v > 0 && v <= 200) cfg->font.size = (int)v;
+    } else if (strcmp(key, "cursor.style") == 0) {
+        snprintf(cfg->cursor.style, sizeof cfg->cursor.style, "%s", val);
+    } else if (strcmp(key, "cursor.blink") == 0) {
+        cfg->cursor.blink = (val[0] == 'T' || val[0] == 't' ||
+                             val[0] == '1' || val[0] == 'Y' || val[0] == 'y');
+    } else if (strcmp(key, "cursor.color") == 0) {
+        snprintf(cfg->cursor.color, sizeof cfg->cursor.color, "%s", val);
+    } else if (strcmp(key, "gamma") == 0) {
+        double v = strtod(val, NULL);
+        if (v > 0.0 && v <= 5.0) cfg->gamma = v;
+    } else if (strcmp(key, "fg") == 0) {
+        snprintf(cfg->fg, sizeof cfg->fg, "%s", val);
+    } else if (strcmp(key, "bg") == 0) {
+        snprintf(cfg->bg, sizeof cfg->bg, "%s", val);
+    } else if (strcmp(key, "rows") == 0) {
+        long v = strtol(val, NULL, 10);
+        if (v > 0 && v <= 9999) cfg->rows = (int)v;
+    } else if (strcmp(key, "cols") == 0) {
+        long v = strtol(val, NULL, 10);
+        if (v > 0 && v <= 9999) cfg->cols = (int)v;
+    } else if (strcmp(key, "refresh_hz") == 0) {
+        long v = strtol(val, NULL, 10);
+        if (v > 0 && v <= 240) cfg->refresh_hz = (int)v;
+    }
+    /* Unknown keys silently ignored — forward-compatible. */
+}
+
+/* Walk a record body (the bytes between '(' and ')'), emitting
+ * key:value pairs to nbs__apply. prefix is the dotted-key prefix
+ * (empty for top-level). */
+static void nbs__parse_record(const char *s, size_t len, NbsTerminalConfig *cfg,
+                              const char *prefix) {
+    char field[64], key[96], val[64];
+    size_t pos = 0;
+    while (pos < len) {
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len) break;
+        size_t n = nbs__read_ident(s, pos, len, field, sizeof field);
+        if (n == 0) { pos++; continue; }
+        pos += n;
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len || s[pos] != ':') continue;
+        pos++;
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len) break;
+        if (prefix[0]) {
+            snprintf(key, sizeof key, "%s.%s", prefix, field);
+        } else {
+            snprintf(key, sizeof key, "%s", field);
+        }
+        if (s[pos] == '(') {
+            /* Nested record. */
+            size_t end = nbs__match_paren(s, pos, len);
+            if (end > pos + 1) {
+                nbs__parse_record(s + pos + 1, end - pos - 1, cfg, key);
+            }
+            pos = (end < len) ? end + 1 : len;
+        } else if (s[pos] == '\'') {
+            /* Quoted string. */
+            size_t start = ++pos;
+            while (pos < len && s[pos] != '\'') pos++;
+            size_t vn = pos - start;
+            if (vn >= sizeof val) vn = sizeof val - 1;
+            memcpy(val, s + start, vn);
+            val[vn] = '\0';
+            if (pos < len) pos++;
+            nbs__apply(cfg, key, val);
+        } else {
+            /* Bare identifier or number. */
+            size_t start = pos;
+            while (pos < len && s[pos] != ';' && s[pos] != ')' &&
+                   s[pos] != ' ' && s[pos] != '\t' &&
+                   s[pos] != '\r' && s[pos] != '\n') pos++;
+            size_t vn = pos - start;
+            if (vn >= sizeof val) vn = sizeof val - 1;
+            memcpy(val, s + start, vn);
+            val[vn] = '\0';
+            nbs__apply(cfg, key, val);
+        }
+    }
+}
+
+/* Find 'var <ident> : <ident> = (' in s and parse the body into cfg.
+ * Returns 1 if a var block was found and parsed, 0 otherwise. */
+static int nbs__parse_var_config(const char *s, size_t len, NbsTerminalConfig *cfg) {
+    static const char *var_kw = "var";
+    size_t kw_len = strlen(var_kw);
+    for (size_t i = 0; i + kw_len < len; i++) {
+        if (memcmp(s + i, var_kw, kw_len) != 0) continue;
+        if (i > 0 && (s[i-1] >= 'a' && s[i-1] <= 'z')) continue;  /* not a word boundary */
+        size_t pos = i + kw_len;
+        if (pos >= len || (s[pos] != ' ' && s[pos] != '\t')) continue;
+        pos = nbs__skip_ws(s, pos, len);
+        char ident[64];
+        size_t n = nbs__read_ident(s, pos, len, ident, sizeof ident);
+        if (n == 0) continue;
+        pos += n;
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len || s[pos] != ':') continue;
+        pos++;
+        pos = nbs__skip_ws(s, pos, len);
+        n = nbs__read_ident(s, pos, len, ident, sizeof ident);
+        if (n == 0) continue;
+        pos += n;
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len || s[pos] != '=') continue;
+        pos++;
+        pos = nbs__skip_ws(s, pos, len);
+        if (pos >= len || s[pos] != '(') continue;
+        size_t end = nbs__match_paren(s, pos, len);
+        if (end <= pos + 1) return 0;
+        nbs__parse_record(s + pos + 1, end - pos - 1, cfg, "");
+        return 1;
+    }
+    return 0;
+}
+
+/* Load config: starts from defaults, overrides with file values if
+ * the file exists and parses. Always succeeds with sensible cfg. */
+static void nbs_config_load(NbsTerminalConfig *cfg) {
+    *cfg = nbs_config_default();
+    char path[1024];
+    if (!nbs_config_path(path, sizeof path)) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[got] = '\0';
+    nbs__parse_var_config(buf, got, cfg);
+    free(buf);
+}
+
+#endif /* NBSTERM_CONFIG_H */

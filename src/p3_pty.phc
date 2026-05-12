@@ -51,25 +51,25 @@
 
 #include "vt_parser.phc"   /* pulls sgr.phc + screen.phc */
 #include "pty.phc"          /* cross-platform PTY abstraction */
+#include "config.phc"       /* nbs_config_load — honest-file at startup */
 
-/* Cell pixel grid — fixed for first cut; P5/P6a wires real font metrics. */
+/* Cell pixel grid — fixed for first cut; P5/P6a wires real font metrics
+ * (font-derived CELL_W/CELL_H is its own surface per the Tk-native
+ * primitives rule, deferred from this commit). */
 #define CELL_W 9
 #define CELL_H 16
-#define DEFAULT_FG "#d0d0d0"
-#define DEFAULT_BG "#1a1a1a"
-#define INITIAL_ROWS 24
-#define INITIAL_COLS 80
 
 /* Globals so the Tcl file handler / command callbacks can find the engine
  * without ClientData plumbing for every registration. P5 will likely
  * pass a per-tab context via ClientData when multiple TerminalWidgets
  * coexist; for P3/P4 single-window scope, globals are honest. */
-static Tcl_Interp *g_interp = NULL;
-static Terminal   *g_term   = NULL;
-static VTParser   *g_parser = NULL;
-static PTYHandle  *g_pty    = NULL;
-static int         g_dirty = 0;     /* render scheduled flag */
-static int         g_child_alive = 1;
+static Tcl_Interp        *g_interp = NULL;
+static Terminal          *g_term   = NULL;
+static VTParser          *g_parser = NULL;
+static PTYHandle         *g_pty    = NULL;
+static int                g_dirty = 0;        /* render scheduled flag */
+static int                g_child_alive = 1;
+static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
 
 static int eval_argv(Tcl_Interp *interp, int objc, const char *argv[]) {
     Tcl_Obj **objv = (Tcl_Obj **)Tcl_Alloc(sizeof(Tcl_Obj *) * objc);
@@ -155,10 +155,11 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
  * tagged "cursor" so every render frame replaces the previous in one
  * pass (`delete all` at the top of render_screen handles cleanup).
  *
- * Style is a solid block at DEFAULT_FG; when (c) wires the config
- * system, the color/style fields land here without changing the call
- * site. Always-visible — there is no DECTCEM hide-cursor mode in
- * screen.phc yet, so the cursor renders unconditionally. */
+ * Style is a solid block (cursor.style/blink consumption is a
+ * follow-up); color comes from g_config.cursor.color when non-empty,
+ * else falls back to g_config.fg. Always-visible — there is no
+ * DECTCEM hide-cursor mode in screen.phc yet, so the cursor renders
+ * unconditionally. */
 static int render_cursor(Tcl_Interp *interp, const char *canvas,
                          const ScreenBuffer *scr) {
     int r = scr->cursor.row;
@@ -172,9 +173,12 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
     snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
     snprintf(y2s, sizeof y2s, "%d", (r + 1) * CELL_H);
+    const char *cursor_color = g_config.cursor.color[0]
+                                 ? g_config.cursor.color
+                                 : g_config.fg;
     const char *rect[] = {canvas, "create", "rectangle",
                           xs, ys, x2s, y2s,
-                          "-fill", DEFAULT_FG, "-outline", "",
+                          "-fill", cursor_color, "-outline", "",
                           "-tags", "cursor"};
     return EVAL_ARGV(interp, rect);
 }
@@ -197,7 +201,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
             rowlen += utf8_emit(cp, rowbuf + rowlen,
                                 (int)sizeof(rowbuf) - rowlen);
             if (color_is_default(cell->bg)) continue;
-            color_to_hex(cell->bg, DEFAULT_BG, bg, sizeof bg);
+            color_to_hex(cell->bg, g_config.bg, bg, sizeof bg);
             snprintf(xs,  sizeof xs,  "%d", c * CELL_W);
             snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
             snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
@@ -210,7 +214,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
             if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
         }
         rowbuf[rowlen] = 0;
-        color_to_hex(screen_cell_const(scr, r, 0)->fg, DEFAULT_FG,
+        color_to_hex(screen_cell_const(scr, r, 0)->fg, g_config.fg,
                      fg, sizeof fg);
         snprintf(xs,  sizeof xs,  "%d", 0);
         snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
@@ -347,6 +351,13 @@ static char **build_child_argv(int argc, char *argv[]) {
 
 int main(int argc, char *argv[]) {
     Tcl_FindExecutable(argv[0]);
+
+    /* Load config first so terminal/canvas init use file/default values
+     * instead of compile-time constants. nbs_config_load is total — it
+     * always populates g_config (file values where present, defaults
+     * elsewhere). */
+    nbs_config_load(&g_config);
+
     g_interp = Tcl_CreateInterp();
     if (Tcl_Init(g_interp) != TCL_OK ||
         Tcl_Eval(g_interp, "package require Tk") != TCL_OK) {
@@ -354,14 +365,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    g_term = terminal_new(INITIAL_ROWS, INITIAL_COLS);
+    g_term = terminal_new(g_config.rows, g_config.cols);
     if (!g_term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
     g_parser = vt_parser_new(g_term);
     if (!g_parser) { fprintf(stderr, "vt_parser_new failed\n"); return 1; }
 
     char **child_argv = build_child_argv(argc, argv);
     if (!child_argv) return 1;
-    g_pty = pty_open(child_argv, INITIAL_ROWS, INITIAL_COLS);
+    g_pty = pty_open(child_argv, g_config.rows, g_config.cols);
     if (!g_pty) return 1;
 
     Tcl_CreateObjCommand(g_interp, "pty_write",  PtyWrite,  NULL, NULL);
@@ -369,11 +380,11 @@ int main(int argc, char *argv[]) {
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     char wstr[16], hstr[16];
-    snprintf(wstr, sizeof wstr, "%d", INITIAL_COLS * CELL_W);
-    snprintf(hstr, sizeof hstr, "%d", INITIAL_ROWS * CELL_H);
+    snprintf(wstr, sizeof wstr, "%d", g_config.cols * CELL_W);
+    snprintf(hstr, sizeof hstr, "%d", g_config.rows * CELL_H);
     const char *canvas[] = {"canvas", ".c",
                             "-width", wstr, "-height", hstr,
-                            "-bg", DEFAULT_BG, "-highlightthickness", "0"};
+                            "-bg", g_config.bg, "-highlightthickness", "0"};
     if (EVAL_ARGV(g_interp, canvas) != TCL_OK ||
         Tcl_Eval(g_interp,
             "pack .c -fill both -expand 1;"
