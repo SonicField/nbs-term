@@ -62,15 +62,6 @@ jobs:
           make build/test_pty_burst
           build/test_pty_burst
 
-      - name: Burst test direct (PTY layer, no shell — (iii) probe)
-        # (iii) probe per supervisor 2026-05-05 18:23:08: producer is direct
-        # self-exec, no shell wrapper. Discriminates shell-startup hypothesis
-        # from a PTY-layer fault on platforms where test_pty_burst times out.
-        if: always()
-        run: |
-          make build/test_pty_burst_direct
-          build/test_pty_burst_direct
-
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -110,13 +101,6 @@ jobs:
           make build/test_pty_burst
           build/test_pty_burst
 
-      - name: Burst test direct (PTY layer, no shell — (iii) probe)
-        # (iii) probe per supervisor 2026-05-05 18:23:08. See linux-build.
-        if: always()
-        run: |
-          make build/test_pty_burst_direct
-          build/test_pty_burst_direct
-
   win-build:
     name: Windows
     runs-on: windows-latest
@@ -138,9 +122,8 @@ jobs:
       - name: Run windows-setup-phc.ps1
         # Single script does MSVC import + vendored Tcl/Tk build (cache-aware via
         # tcl86.lib markers) + phc compiler + p3_pty.exe + test_pty_burst.exe +
-        # test_pty_burst_direct.exe + three self-tests (burst PTY-only powershell
-        # producer + burst PTY-only direct-exec producer + p3_pty Tk-render) with
-        # diagnostic comparison + zero-Python-linkage check. All tests run
-        # unconditionally inside the script; (iii) probe discriminates
-        # powershell-startup from PTY-layer fault.
+        # two self-tests (burst PTY-only direct-exec producer + p3_pty Tk-render)
+        # with diagnostic comparison + zero-Python-linkage check. All tests run
+        # unconditionally inside the script. Burst test uses direct-exec producer
+        # (post-(iii) canonicalisation, a0ed609).
         run: .\scripts\windows-setup-phc.ps1
