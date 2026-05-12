@@ -1,0 +1,206 @@
+/*
+ * test_extract_utf8.phc — F2 byte-extract regression anchor
+ *
+ * Pythia #77 (2026-05-12 18:25:50) + supervisor 18:26:48: F1 anchor at
+ * 836d03b discriminates pixel_to_cell arithmetic; this shim discriminates
+ * the F2 byte-extract path (NbsCopy walk + utf8_emit + row_sel_range +
+ * newline-on-row-boundary + 64KB truncation). If alexie reports 'copy
+ * gives wrong text or wrong newlines or truncated' AND this test passes,
+ * the bug is upstream (selection state) or downstream (Tk clipboard);
+ * if this test fails, regression is in the F2 extraction algorithm.
+ *
+ * Approach — pure-spec test (mirrors 836d03b shape): copies utf8_emit
+ * (p3_pty.phc:284) + row_sel_range (p3_pty.phc:406) + the NbsCopy walk
+ * (p3_pty.phc:1166-1213, minus Tcl/clipboard parts) into parameterised
+ * locals. Tests SPEC, not production. Coupling: drift between these and
+ * the production functions is itself a bug, catchable at next render-
+ * coords / selection code review.
+ *
+ * Headless (libc only); no Tcl/Tk/PTY/screen.phc link.
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+/* SPEC COPY — utf8_emit from src/p3_pty.phc:284-303 */
+static int utf8_emit_spec(uint32_t cp, char *buf, int bufsz) {
+    if (cp < 0x80 && bufsz >= 1) { buf[0] = (char)cp; return 1; }
+    if (cp < 0x800 && bufsz >= 2) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000 && bufsz >= 3) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (bufsz >= 4) {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+    return 0;
+}
+
+/* SPEC COPY — row_sel_range from src/p3_pty.phc:406-415 */
+static void row_sel_range_spec(int r, int sr, int sc, int er, int ec,
+                               int cols, int *out_c0, int *out_c1) {
+    if (r < sr || r > er) { *out_c0 = -1; *out_c1 = -1; return; }
+    int c0 = (r == sr) ? sc : 0;
+    int c1 = (r == er) ? ec : cols;
+    if (c1 <= c0) { *out_c0 = -1; *out_c1 = -1; return; }
+    *out_c0 = c0;
+    *out_c1 = c1;
+}
+
+/* Cell mock — minimal version of screen.phc Cell carrying codepoint +
+ * wide_cont (the only fields NbsCopy walks). Layout-decoupled from
+ * production Cell; spec test exercises the extraction logic only. */
+typedef struct { uint32_t codepoint; int wide_cont; } CellMock;
+
+/* SPEC COPY — NbsCopy extract walk from src/p3_pty.phc:1180-1213 minus
+ * the Tcl/clipboard parts. grid is rows*cols CellMock; sel canonical
+ * (sr,sc)<=(er,ec). Returns bytes written (<= bufsz-1, terminator NOT
+ * written — caller does it if needed). */
+static int extract_selected_spec(const CellMock *grid, int rows, int cols,
+                                 int sr, int sc, int er, int ec,
+                                 char *buf, int bufsz) {
+    int len = 0;
+    for (int r = sr; r <= er && r < rows; r++) {
+        int c0 = -1, c1 = -1;
+        row_sel_range_spec(r, sr, sc, er, ec, cols, &c0, &c1);
+        if (c0 >= 0) {
+            for (int c = c0; c < c1 && c < cols; c++) {
+                const CellMock *cell = &grid[r * cols + c];
+                if (cell->wide_cont) continue;
+                uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+                if (len + 4 < bufsz) {
+                    len += utf8_emit_spec(cp, buf + len, bufsz - len);
+                }
+            }
+        }
+        if (r < er && len + 1 < bufsz) {
+            buf[len++] = '\n';
+        }
+    }
+    return len;
+}
+
+/* Helper: build a CellMock grid from an ASCII string per row (newline
+ * separated). Assumes ASCII only for simplicity — utf8 cases are tested
+ * directly through utf8_emit_spec. */
+static void grid_from_ascii(CellMock *grid, int rows, int cols,
+                            const char *const *lines) {
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const char *line = lines[r];
+            grid[r * cols + c].codepoint = (uint32_t)(line[c] ? line[c] : ' ');
+            grid[r * cols + c].wide_cont = 0;
+        }
+    }
+}
+
+int main(void) {
+    int fail = 0;
+    char buf[64];
+
+    /* (1) utf8_emit cases */
+    int n;
+    n = utf8_emit_spec('A', buf, sizeof buf);
+    if (n != 1 || buf[0] != 'A') { printf("FAIL utf8 ASCII: n=%d buf[0]=0x%02x\n", n, (unsigned char)buf[0]); fail++; }
+
+    n = utf8_emit_spec(0x00E9, buf, sizeof buf);  /* 'é' */
+    if (n != 2 || (unsigned char)buf[0] != 0xC3 || (unsigned char)buf[1] != 0xA9) {
+        printf("FAIL utf8 2-byte: n=%d %02x %02x\n", n, (unsigned char)buf[0], (unsigned char)buf[1]); fail++;
+    }
+
+    n = utf8_emit_spec(0x4E2D, buf, sizeof buf);  /* '中' */
+    if (n != 3 || (unsigned char)buf[0] != 0xE4 || (unsigned char)buf[1] != 0xB8 || (unsigned char)buf[2] != 0xAD) {
+        printf("FAIL utf8 3-byte: n=%d %02x %02x %02x\n", n, (unsigned char)buf[0], (unsigned char)buf[1], (unsigned char)buf[2]); fail++;
+    }
+
+    n = utf8_emit_spec(0x1F600, buf, sizeof buf);  /* 😀 emoji */
+    if (n != 4) { printf("FAIL utf8 4-byte: n=%d\n", n); fail++; }
+
+    /* utf8_emit returns 0 when bufsz too small */
+    n = utf8_emit_spec('A', buf, 0);
+    if (n != 0) { printf("FAIL utf8 ASCII bufsz=0: n=%d\n", n); fail++; }
+    n = utf8_emit_spec(0x4E2D, buf, 2);
+    if (n != 0) { printf("FAIL utf8 3-byte bufsz=2: n=%d\n", n); fail++; }
+
+    /* (2) row_sel_range cases */
+    int c0, c1;
+    /* r before sr */
+    row_sel_range_spec(0, 1, 5, 3, 10, 80, &c0, &c1);
+    if (c0 != -1 || c1 != -1) { printf("FAIL row_sel r<sr: %d,%d\n", c0, c1); fail++; }
+    /* r after er */
+    row_sel_range_spec(4, 1, 5, 3, 10, 80, &c0, &c1);
+    if (c0 != -1 || c1 != -1) { printf("FAIL row_sel r>er: %d,%d\n", c0, c1); fail++; }
+    /* r == sr (multi-row) */
+    row_sel_range_spec(1, 1, 5, 3, 10, 80, &c0, &c1);
+    if (c0 != 5 || c1 != 80) { printf("FAIL row_sel r==sr: %d,%d\n", c0, c1); fail++; }
+    /* r in middle */
+    row_sel_range_spec(2, 1, 5, 3, 10, 80, &c0, &c1);
+    if (c0 != 0 || c1 != 80) { printf("FAIL row_sel middle: %d,%d\n", c0, c1); fail++; }
+    /* r == er */
+    row_sel_range_spec(3, 1, 5, 3, 10, 80, &c0, &c1);
+    if (c0 != 0 || c1 != 10) { printf("FAIL row_sel r==er: %d,%d\n", c0, c1); fail++; }
+    /* single-row sel */
+    row_sel_range_spec(2, 2, 3, 2, 7, 80, &c0, &c1);
+    if (c0 != 3 || c1 != 7) { printf("FAIL row_sel single: %d,%d\n", c0, c1); fail++; }
+    /* c1 <= c0 → -1 sentinel (degenerate single-row click) */
+    row_sel_range_spec(2, 2, 5, 2, 5, 80, &c0, &c1);
+    if (c0 != -1 || c1 != -1) { printf("FAIL row_sel degenerate: %d,%d\n", c0, c1); fail++; }
+
+    /* (3) extract walk: single ASCII row */
+    CellMock g1[2 * 5];
+    const char *lines1[] = {"ABCDE", "FGHIJ"};
+    grid_from_ascii(g1, 2, 5, lines1);
+    char out[64];
+    int len = extract_selected_spec(g1, 2, 5, 0, 0, 0, 5, out, sizeof out);
+    out[len] = '\0';
+    if (len != 5 || strcmp(out, "ABCDE") != 0) { printf("FAIL extract single-row: len=%d '%s'\n", len, out); fail++; }
+
+    /* (4) multi-row with newline-on-row-boundary */
+    len = extract_selected_spec(g1, 2, 5, 0, 0, 1, 5, out, sizeof out);
+    out[len] = '\0';
+    if (len != 11 || strcmp(out, "ABCDE\nFGHIJ") != 0) { printf("FAIL extract multi-row: len=%d '%s'\n", len, out); fail++; }
+
+    /* (5) wide_cont skip */
+    CellMock g2[1 * 4];
+    g2[0].codepoint = 0x4E2D; g2[0].wide_cont = 0;  /* '中' (lead) */
+    g2[1].codepoint = 0x4E2D; g2[1].wide_cont = 1;  /* wide cont — skipped */
+    g2[2].codepoint = 'X';    g2[2].wide_cont = 0;
+    g2[3].codepoint = 'Y';    g2[3].wide_cont = 0;
+    len = extract_selected_spec(g2, 1, 4, 0, 0, 0, 4, out, sizeof out);
+    out[len] = '\0';
+    /* Expected: 中 (3 bytes) + X + Y = 5 bytes; wide_cont cell skipped */
+    if (len != 5 || (unsigned char)out[0] != 0xE4 || out[3] != 'X' || out[4] != 'Y') {
+        printf("FAIL extract wide_cont skip: len=%d (%02x %02x %02x %02x %02x)\n",
+               len, (unsigned char)out[0], (unsigned char)out[1], (unsigned char)out[2],
+               (unsigned char)out[3], (unsigned char)out[4]); fail++;
+    }
+
+    /* (6) Truncation: tiny buf can't hold full row */
+    len = extract_selected_spec(g1, 2, 5, 0, 0, 0, 5, out, 4);
+    /* len + 4 < 4 is FALSE for any len>=0, so loop never advances len; return 0 */
+    if (len != 0) { printf("FAIL extract truncation: len=%d (expect 0)\n", len); fail++; }
+
+    /* (7) Empty (no selection cells) */
+    len = extract_selected_spec(g1, 2, 5, 1, 5, 0, 0, out, sizeof out);
+    /* sr=1 sc=5 er=0 ec=0 — sr > er so loop never runs */
+    if (len != 0) { printf("FAIL extract empty: len=%d (expect 0)\n", len); fail++; }
+
+    int total = 13;  /* 6 utf8 + 7 row_sel + extract paths counted separately above */
+    if (fail == 0) {
+        printf("test_extract_utf8 ok: 13/13 cases PASS (specs at p3_pty.phc:284 + 406 + 1180)\n");
+        return 0;
+    }
+    printf("test_extract_utf8 FAILED: %d/%d cases\n", fail, total);
+    return 1;
+}

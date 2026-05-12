@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8
 
 all: $(EXTENSION_SO)
 
@@ -198,6 +198,19 @@ $(BUILDDIR)/test_pixel_to_cell: $(BUILDDIR)/test_pixel_to_cell.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_pixel_to_cell: $(BUILDDIR)/test_pixel_to_cell
+
+# test_extract_utf8 — F2 byte-extract regression anchor (testkeeper
+# shim per pythia #77 + supervisor 18:26:48). Pure-spec: copies
+# utf8_emit + row_sel_range + NbsCopy walk from p3_pty.phc into
+# parameterised locals; tests utf8 1-4 byte + row_sel sentinels +
+# multi-row newline + wide_cont skip + truncation. Headless.
+$(BUILDDIR)/test_extract_utf8.c: $(TESTDIR)/test_extract_utf8.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_extract_utf8: $(BUILDDIR)/test_extract_utf8.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_extract_utf8: $(BUILDDIR)/test_extract_utf8
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \
