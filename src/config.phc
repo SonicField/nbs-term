@@ -7,13 +7,14 @@
  * src/config_structs.phc, which is the Python-coupled config layer
  * for the legacy EXTENSION_SO build.
  *
- * Schema mirrors config.py + DEFAULT_CONFIG (the canonical Honest
- * shape):
+ * Schema (matches the bytes nbs_config_load writes on first run, which
+ * matches nbs_config_default in turn — first-run-with-file output is
+ * byte-identical to first-run-without-file in-memory):
  *
  *   var config : TerminalConfig = (
- *     font   : (family : 'Menlo'; size : 14);
- *     cursor : (style : Block; blink : True; color : '');
- *     gamma  : 1.20;
+ *     font   : (family : 'TkFixedFont'; size : 14);
+ *     cursor : (style : 'Block'; blink : True; color : '');
+ *     gamma  : 1.0;
  *     fg     : '#d0d0d0';
  *     bg     : '#1a1a1a';
  *     rows   : 24;
@@ -21,12 +22,14 @@
  *     refresh_hz : 60;
  *   );
  *
- * Built-in defaults (no file present): match p3_pty.phc's prior
- * hardcoded constants exactly — bg '#1a1a1a' (the visual the binary
- * has shipped with), 24x80, fg '#d0d0d0', cursor color empty (= fall
- * through to fg), font.family 'TkFixedFont' (Tk-native named font).
- * Loader is read-only: missing file -> defaults applied in-memory, no
- * file written; user creates a file to override any field.
+ * First-run lifecycle: missing file -> auto-create at the resolved
+ * path with the template above (mkdir parent dir as needed; best-
+ * effort, log+continue on FS failure). Defaults match p3_pty.phc's
+ * prior hardcoded constants exactly — bg '#1a1a1a', 24x80, fg
+ * '#d0d0d0', cursor color empty (= fall through to fg), font.family
+ * 'TkFixedFont' (Tk-native named font). After first run the file is
+ * user-editable; per-field defaults still apply for any field absent
+ * from the file.
  *
  * Parser: minimal Honest reader — finds 'var <name> : <type> = ('
  * opening, walks the body with paren-depth tracking, extracts
@@ -40,10 +43,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* No <windows.h> here — pty.phc pulls it on Win and the p3_pty.phc
+/* mkdir for the parent of nbs-term.honest on first-run auto-create.
+ * POSIX <sys/stat.h> mkdir(path, mode); Win <direct.h> _mkdir(path)
+ * with no mode arg. Both are header-guarded against multiple include.
+ * No <windows.h> here — pty.phc pulls it on Win and the p3_pty.phc
  * #undef RGB right after that include defangs the COLORREF macro
- * before phc parses Color match patterns. Re-pulling windows.h here
- * is harmless (header-guarded), but skipped to keep includes minimal. */
+ * before phc parses Color match patterns. */
+#if defined(_WIN32)
+#  include <direct.h>
+#  define nbs__mkdir(path) _mkdir(path)
+#else
+#  include <sys/stat.h>
+#  include <sys/types.h>
+#  define nbs__mkdir(path) mkdir((path), 0700)
+#endif
 
 typedef struct {
     char family[64];
@@ -269,14 +282,106 @@ static int nbs__parse_var_config(const char *s, size_t len, NbsTerminalConfig *c
     return 0;
 }
 
-/* Load config: starts from defaults, overrides with file values if
- * the file exists and parses. Always succeeds with sensible cfg. */
+/* Default config file template — byte-exact mirror of the schema in
+ * the file-header docstring; values match nbs_config_default(). Written
+ * verbatim on first run so loading the file produces the same struct
+ * the binary would have without the file present. */
+static const char NBS_DEFAULT_CONFIG[] =
+    "type\n"
+    "  CursorStyle = (Block, Underline, Bar);\n"
+    "\n"
+    "  FontConfig = record\n"
+    "    family : String;\n"
+    "    size   : Integer;\n"
+    "  end;\n"
+    "\n"
+    "  CursorConfig = record\n"
+    "    style : CursorStyle;\n"
+    "    blink : Boolean;\n"
+    "    color : String;\n"
+    "  end;\n"
+    "\n"
+    "  TerminalConfig = record\n"
+    "    font   : FontConfig;\n"
+    "    cursor : CursorConfig;\n"
+    "    gamma  : Real;\n"
+    "    fg     : String;\n"
+    "    bg     : String;\n"
+    "    rows   : Integer;\n"
+    "    cols       : Integer;\n"
+    "    refresh_hz : Integer;\n"
+    "  end;\n"
+    "\n"
+    "var config : TerminalConfig = (\n"
+    "  font   : (family : 'TkFixedFont'; size : 14);\n"
+    "  cursor : (style : Block; blink : True; color : '');\n"
+    "  gamma  : 1.0;\n"
+    "  fg     : '#d0d0d0';\n"
+    "  bg     : '#1a1a1a';\n"
+    "  rows       : 24;\n"
+    "  cols       : 80;\n"
+    "  refresh_hz : 60;\n"
+    ");\n";
+
+/* mkdir the parent directory of `path` (best-effort; ignores
+ * already-exists). Handles both '/' and '\\' separators so the same
+ * helper works for POSIX and Win paths. */
+static void nbs__mkdir_parent(const char *path) {
+    char dir[1024];
+    size_t len = strlen(path);
+    if (len == 0 || len + 1 > sizeof dir) return;
+    memcpy(dir, path, len + 1);
+    /* Find last separator and truncate to get the parent dir. */
+    char *last = NULL;
+    for (size_t i = 0; i < len; i++) {
+        if (dir[i] == '/' || dir[i] == '\\') last = dir + i;
+    }
+    if (!last || last == dir) return;  /* no parent or root */
+    *last = '\0';
+    /* Best-effort mkdir; if it fails (already exists, permissions),
+     * the subsequent fopen("w") will surface the relevant error. */
+    (void)nbs__mkdir(dir);
+}
+
+/* Write the default config template at `path`. Best-effort: returns 1
+ * on success, 0 on any FS failure. Logs a single line to stderr on
+ * failure so a user investigating "no file got created" has a trail. */
+static int nbs__write_default(const char *path) {
+    nbs__mkdir_parent(path);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "nbs-term: could not auto-create config at %s "
+                        "(continuing with built-in defaults)\n", path);
+        return 0;
+    }
+    size_t want = sizeof NBS_DEFAULT_CONFIG - 1;
+    size_t got  = fwrite(NBS_DEFAULT_CONFIG, 1, want, f);
+    int    ferr = ferror(f);
+    fclose(f);
+    if (got != want || ferr) {
+        fprintf(stderr, "nbs-term: incomplete write of default config "
+                        "at %s (continuing with built-in defaults)\n", path);
+        return 0;
+    }
+    return 1;
+}
+
+/* Load config: starts from defaults; if no file exists, auto-create
+ * the default template at the resolved path then load it (so the
+ * cfg struct ends up populated from the file in the canonical first-
+ * run path). Always succeeds with sensible cfg even if FS write +
+ * read fail. */
 static void nbs_config_load(NbsTerminalConfig *cfg) {
     *cfg = nbs_config_default();
     char path[1024];
     if (!nbs_config_path(path, sizeof path)) return;
     FILE *f = fopen(path, "rb");
-    if (!f) return;
+    if (!f) {
+        /* First-run path: auto-create the default file, then re-open. */
+        if (!nbs__write_default(path)) return;
+        f = fopen(path, "rb");
+        if (!f) return;
+    }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
     long sz = ftell(f);
     if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return; }
