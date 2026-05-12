@@ -69,6 +69,15 @@
 static int g_cell_w = 9;
 static int g_cell_h = 16;
 
+/* A2 layout state — origin-centering + slop padding per
+ * theologian 15:54:45 mapping (legacy nbsterm.py:196-249
+ * _compute_origin_for + alexie 2026-04-29 PADDING=4 halving).
+ * Updated by compute_layout(); applied in render_screen +
+ * render_cursor. Initial values are pre-paint fallbacks. */
+#define NBS_PADDING 4
+static int g_origin_x = NBS_PADDING;
+static int g_origin_y = NBS_PADDING;
+
 /* Globals so the Tcl file handler / command callbacks can find the engine
  * without ClientData plumbing for every registration. P5 will likely
  * pass a per-tab context via ClientData when multiple TerminalWidgets
@@ -138,6 +147,10 @@ static const char *attrs_to_font_tag(CellAttr attrs) {
     if (italic)         return "font_italic";
     return "font_normal";
 }
+
+/* Forward decl — render_screen end-of-paint reflow may schedule
+ * another idle render (A2 bbox-calibration / compute_layout convergence). */
+static void schedule_render(void);
 
 /* Apply g_config.gamma to a #rrggbb hex color in-place via a caller-
  * provided buffer. Identity passthrough at gamma==1.0 (the loader
@@ -246,6 +259,92 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
     return 0;
 }
 
+/* A2 — origin centering per nbsterm.py:196-249. Builds the same
+ * per-row codepoint sequence render_screen will paint, runs Tk
+ * font measure on each row to find the widest, then centers the
+ * text block in the canvas with a 2*g_cell_w slop cap on the
+ * horizontal margin (alexie 2026-04-29 17:56:52 'slop too wide'
+ * bound; d390acc + librarian D-1777362486-confirmed pattern;
+ * theologian_branch_tree_bug_c.md trap — must NOT shrink to
+ * char_width//8 of 60a1291). PADDING fallback when no text
+ * (cold-start). Returns 1 if g_origin_x or g_origin_y changed. */
+static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
+    int canvas_w = 0, canvas_h = 0;
+    if (Tcl_Eval(interp, "winfo width .c") == TCL_OK) {
+        canvas_w = atoi(Tcl_GetStringResult(interp));
+    }
+    if (Tcl_Eval(interp, "winfo height .c") == TCL_OK) {
+        canvas_h = atoi(Tcl_GetStringResult(interp));
+    }
+    /* Walk every row, build the same codepoint sequence render_screen
+     * builds, measure under font_normal, take the max — gives the
+     * actual painted text width regardless of per-cell-width drift
+     * on platforms where font.measure(M) under-counts. */
+    int max_w = 0;
+    char rowbuf[4096];
+    for (int r = 0; r < scr->rows; r++) {
+        int rowlen = 0;
+        for (int c = 0; c < scr->cols && rowlen < (int)sizeof rowbuf - 4; c++) {
+            const Cell *cell = screen_cell_const(scr, r, c);
+            if (cell->wide_cont) continue;
+            uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+            rowlen += utf8_emit(cp, rowbuf + rowlen,
+                                (int)sizeof rowbuf - rowlen);
+        }
+        rowbuf[rowlen] = '\0';
+        if (rowlen == 0) continue;
+        const char *measure[] = {"font", "measure", "font_normal", rowbuf};
+        if (EVAL_ARGV(interp, measure) == TCL_OK) {
+            int w = atoi(Tcl_GetStringResult(interp));
+            if (w > max_w) max_w = w;
+        }
+    }
+    int new_x, new_y;
+    if (max_w == 0 || canvas_w == 0 || canvas_h == 0) {
+        new_x = NBS_PADDING;
+        new_y = NBS_PADDING;
+    } else {
+        int half = (canvas_w - max_w) / 2;
+        int cap  = 2 * g_cell_w;
+        new_x = (half < cap) ? half : cap;
+        if (new_x < 0) new_x = 0;
+        int text_h = scr->rows * g_cell_h;
+        new_y = (canvas_h - text_h) / 2;
+        if (new_y < 0) new_y = 0;
+    }
+    int changed = (new_x != g_origin_x) || (new_y != g_origin_y);
+    g_origin_x = new_x;
+    g_origin_y = new_y;
+    return changed;
+}
+
+/* A2 — bbox-calibration per nbsterm.py:497-512. After a paint,
+ * query the canvas bbox of the row0 text item, divide by cols to
+ * get the actual rendered cell width, and WIDEN g_cell_w if it
+ * exceeds the current value by >0.5px. Asymmetric (never shrink):
+ * Win 'monospace' alias on some installs is not actually fixed
+ * width — without WIDEN-only, the cell-width oscillates and
+ * line-wrap breaks (alexie 2026-04-28 14:23:15 cols-runaway).
+ * Returns 1 if g_cell_w changed. */
+static int bbox_calibrate(Tcl_Interp *interp, const ScreenBuffer *scr) {
+    if (scr->cols < 1) return 0;
+    if (Tcl_Eval(interp, ".c bbox row0") != TCL_OK) return 0;
+    Tcl_Obj *res = Tcl_GetObjResult(interp);
+    Tcl_Obj **bbox_elts = NULL;
+    int bbox_n = 0;
+    if (Tcl_ListObjGetElements(interp, res, &bbox_n, &bbox_elts) != TCL_OK) return 0;
+    if (bbox_n != 4) return 0;  /* empty row -> empty bbox -> no calibration */
+    int x1 = 0, x2 = 0;
+    if (Tcl_GetIntFromObj(interp, bbox_elts[0], &x1) != TCL_OK) return 0;
+    if (Tcl_GetIntFromObj(interp, bbox_elts[2], &x2) != TCL_OK) return 0;
+    int eff = (x2 - x1) / scr->cols;
+    if (eff > g_cell_w) {
+        g_cell_w = eff;
+        return 1;
+    }
+    return 0;
+}
+
 /* Cursor overlay — legacy 'inline cursor system' port per alexie
  * 2026-05-12 13:39:01 + theologian 13:41:40 mapping. Mirrors
  * extension.phc:1109-1152 (= nbsterm.py:368-407 from 07e0158
@@ -297,7 +396,10 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
             cx = atoi(Tcl_GetStringResult(interp));
         }
     }
-    int cy = r * g_cell_h;
+    /* A2 origin offset — keeps the cursor block on the painted glyph
+     * after compute_layout shifts the row text away from x=0. */
+    cx += g_origin_x;
+    int cy = g_origin_y + r * g_cell_h;
 
     /* H gamma applied to both the cursor block fill and the inverted-
      * overlay text fg (which is g_config.bg). Same uniform-gamma
@@ -453,8 +555,10 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
     if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
 
     for (int r = 0; r < scr->rows; r++) {
-        int x_pixel = 0;
-        int y_pixel = r * g_cell_h;
+        /* A2 — paint each row at the centered origin per
+         * compute_layout (NBS_PADDING fallback before first paint). */
+        int x_pixel = g_origin_x;
+        int y_pixel = g_origin_y + r * g_cell_h;
 
         char span_text[4096];
         int  span_text_len = 0;
@@ -500,12 +604,20 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
     }
 
     if (render_cursor(interp, canvas, scr) != TCL_OK) return TCL_ERROR;
+
+    /* A2 — post-paint bbox-calibration may widen g_cell_w, then
+     * compute_layout reflows the centered origin. Either change
+     * triggers another paint so the next frame uses the corrected
+     * geometry. Schedule (vs synchronous re-render) keeps render_screen
+     * a single-pass call and prevents recursion. */
+    int dirty = 0;
+    if (bbox_calibrate(interp, scr)) dirty = 1;
+    if (compute_layout(interp, scr)) dirty = 1;
+    if (dirty) schedule_render();
     return TCL_OK;
 }
 
 /* ---- PTY plumbing (delegated to pty.phc) ---- */
-
-static void schedule_render(void);
 
 /* pty.phc data callback. Drains as much as pty_read returns in one go,
  * pushes bytes through vt_parser, schedules a render. EOF tears down
@@ -618,10 +730,15 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
     if (cols < 1) cols = 1;
     if (rows < 1) rows = 1;
     if (cols == g_term->active->cols && rows == g_term->active->rows) {
+        /* Geometry-only resize (window dragged but cell grid unchanged):
+         * still recompute layout because canvas_w/canvas_h shifted. */
+        compute_layout(interp, g_term->active);
+        schedule_render();
         return TCL_OK;
     }
     terminal_resize(g_term, rows, cols);
     pty_resize(g_pty, rows, cols);
+    compute_layout(interp, g_term->active);
     schedule_render();
     return TCL_OK;
 }
