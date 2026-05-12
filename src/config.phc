@@ -366,6 +366,63 @@ static int nbs__write_default(const char *path) {
     return 1;
 }
 
+/* Write current cfg back to the resolved honest path. Mirrors
+ * nbs__write_default + DEFAULT_CONFIG template shape but uses the
+ * supplied cfg values; called by the A3 PreferencesDialog Save
+ * button so settings persist across runs. Best-effort: returns 1 on
+ * success, 0 on FS failure (caller may surface to the user). */
+static int nbs_config_save(const NbsTerminalConfig *cfg) {
+    char path[1024];
+    if (!nbs_config_path(path, sizeof path)) return 0;
+    nbs__mkdir_parent(path);
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    fprintf(f,
+        "type\n"
+        "  CursorStyle = (Block, Underline, Bar);\n"
+        "\n"
+        "  FontConfig = record\n"
+        "    family : String;\n"
+        "    size   : Integer;\n"
+        "  end;\n"
+        "\n"
+        "  CursorConfig = record\n"
+        "    style : CursorStyle;\n"
+        "    blink : Boolean;\n"
+        "    color : String;\n"
+        "  end;\n"
+        "\n"
+        "  TerminalConfig = record\n"
+        "    font   : FontConfig;\n"
+        "    cursor : CursorConfig;\n"
+        "    gamma  : Real;\n"
+        "    fg     : String;\n"
+        "    bg     : String;\n"
+        "    rows   : Integer;\n"
+        "    cols       : Integer;\n"
+        "    refresh_hz : Integer;\n"
+        "  end;\n"
+        "\n"
+        "var config : TerminalConfig = (\n"
+        "  font   : (family : '%s'; size : %d);\n"
+        "  cursor : (style : %s; blink : %s; color : '%s');\n"
+        "  gamma  : %.2f;\n"
+        "  fg     : '%s';\n"
+        "  bg     : '%s';\n"
+        "  rows       : %d;\n"
+        "  cols       : %d;\n"
+        "  refresh_hz : %d;\n"
+        ");\n",
+        cfg->font.family, cfg->font.size,
+        cfg->cursor.style, cfg->cursor.blink ? "True" : "False", cfg->cursor.color,
+        cfg->gamma,
+        cfg->fg, cfg->bg,
+        cfg->rows, cfg->cols, cfg->refresh_hz);
+    int err = ferror(f);
+    fclose(f);
+    return err ? 0 : 1;
+}
+
 /* Load config: starts from defaults; if no file exists, auto-create
  * the default template at the resolved path then load it (so the
  * cfg struct ends up populated from the file in the canonical first-

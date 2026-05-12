@@ -903,6 +903,211 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* A3 — apply a freshly-loaded g_config to the live binary. Mirrors
+ * nbsterm.py:1398-1429 _apply_config: re-configure named fonts,
+ * recompute cell metrics, re-paint canvas -bg with gamma, recompute
+ * rows/cols from canvas pixels, screen+pty resize if the cell grid
+ * shifts, blink_reset, schedule_render. Called from PrefsSave +
+ * (future) honest-file watcher. */
+static void nbs_apply_config(Tcl_Interp *interp) {
+    /* Reconfigure the four named fonts to the new family/size. */
+    char fontcmd[1024];
+    snprintf(fontcmd, sizeof fontcmd,
+        "font configure font_normal       -family {%s} -size %d;"
+        "font configure font_bold         -family {%s} -size %d -weight bold;"
+        "font configure font_italic       -family {%s} -size %d -slant italic;"
+        "font configure font_bold_italic  -family {%s} -size %d -weight bold -slant italic",
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size);
+    Tcl_Eval(interp, fontcmd);
+
+    compute_cell_metrics(interp);
+
+    /* Repaint canvas widget bg with gamma transform — mirrors the
+     * 17fe5dc uniform-gamma path at canvas creation. */
+    char canvas_bg_g[16];
+    const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g, sizeof canvas_bg_g);
+    char bgcmd[64];
+    snprintf(bgcmd, sizeof bgcmd, ".c configure -bg %s", canvas_bg);
+    Tcl_Eval(interp, bgcmd);
+
+    /* Reflow on the new cell grid: derive rows/cols from canvas px. */
+    int canvas_w = 0, canvas_h = 0;
+    if (Tcl_Eval(interp, "winfo width .c") == TCL_OK) {
+        canvas_w = atoi(Tcl_GetStringResult(interp));
+    }
+    if (Tcl_Eval(interp, "winfo height .c") == TCL_OK) {
+        canvas_h = atoi(Tcl_GetStringResult(interp));
+    }
+    int new_cols = canvas_w / g_cell_w;
+    int new_rows = canvas_h / g_cell_h;
+    if (new_cols < 1) new_cols = g_config.cols;
+    if (new_rows < 1) new_rows = g_config.rows;
+    if (g_term && g_term->active &&
+        (new_rows != g_term->active->rows || new_cols != g_term->active->cols)) {
+        terminal_resize(g_term, new_rows, new_cols);
+        if (g_pty) pty_resize(g_pty, new_rows, new_cols);
+    }
+
+    /* Re-arm blink (config.cursor.blink may have flipped). */
+    blink_reset();
+
+    compute_layout(interp, g_term ? g_term->active : NULL);
+    schedule_render();
+}
+
+/* Tcl command: nbs_save_prefs <font_family> <font_size> <cursor_style>
+ *   <cursor_blink> <cursor_color> <gamma> <fg> <bg> <rows> <cols>
+ *   <refresh_hz>. Reads 11 fields from the dialog Tcl vars, validates,
+ *   writes to g_config, persists via nbs_config_save, applies live
+ *   via nbs_apply_config, destroys the dialog. */
+static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
+                        Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 12) {
+        Tcl_WrongNumArgs(interp, 1, objv,
+            "font_family font_size cursor_style cursor_blink cursor_color "
+            "gamma fg bg rows cols refresh_hz");
+        return TCL_ERROR;
+    }
+    int    font_size = 14, cursor_blink = 1, rows = 24, cols = 80, refresh_hz = 60;
+    double gamma = 1.0;
+    if (Tcl_GetIntFromObj(interp, objv[2], &font_size)    != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &cursor_blink) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetDoubleFromObj(interp, objv[6], &gamma)      != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[9],  &rows)        != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[10], &cols)        != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[11], &refresh_hz)  != TCL_OK) return TCL_ERROR;
+
+    snprintf(g_config.font.family, sizeof g_config.font.family, "%s",
+             Tcl_GetString(objv[1]));
+    if (font_size > 0  && font_size <= 200)  g_config.font.size  = font_size;
+    snprintf(g_config.cursor.style, sizeof g_config.cursor.style, "%s",
+             Tcl_GetString(objv[3]));
+    g_config.cursor.blink = cursor_blink ? 1 : 0;
+    snprintf(g_config.cursor.color, sizeof g_config.cursor.color, "%s",
+             Tcl_GetString(objv[5]));
+    if (gamma > 0.0    && gamma <= 5.0)      g_config.gamma      = gamma;
+    snprintf(g_config.fg, sizeof g_config.fg, "%s", Tcl_GetString(objv[7]));
+    snprintf(g_config.bg, sizeof g_config.bg, "%s", Tcl_GetString(objv[8]));
+    if (rows > 0       && rows <= 9999)      g_config.rows       = rows;
+    if (cols > 0       && cols <= 9999)      g_config.cols       = cols;
+    if (refresh_hz > 0 && refresh_hz <= 240) g_config.refresh_hz = refresh_hz;
+
+    if (!nbs_config_save(&g_config)) {
+        fprintf(stderr, "nbs-term: could not save config (continuing in-memory)\n");
+    }
+    nbs_apply_config(interp);
+    Tcl_Eval(interp, "destroy .prefs");
+    return TCL_OK;
+}
+
+/* Tcl command: nbs_open_prefs. Builds the PreferencesDialog Toplevel
+ * (legacy nbsterm.py:887-1051 shape, smaller widget set — Save +
+ * Cancel + 11 fields). Color picks via tk_chooseColor (built-in
+ * 24-bit picker; ColorPicker256 lift deferred to A3b). */
+static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
+                        Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    char dlg[8192];
+    snprintf(dlg, sizeof dlg,
+        "if {[winfo exists .prefs]} {raise .prefs; return};"
+        "toplevel .prefs;"
+        "wm title .prefs {nbs-term Preferences};"
+        "wm transient .prefs .;"
+        "set ::prefs_font_family   {%s};"
+        "set ::prefs_font_size     %d;"
+        "set ::prefs_cursor_style  {%s};"
+        "set ::prefs_cursor_blink  %d;"
+        "set ::prefs_cursor_color  {%s};"
+        "set ::prefs_gamma         %.2f;"
+        "set ::prefs_fg            {%s};"
+        "set ::prefs_bg            {%s};"
+        "set ::prefs_rows          %d;"
+        "set ::prefs_cols          %d;"
+        "set ::prefs_refresh_hz    %d;"
+
+        "set row 0;"
+        "label .prefs.lf  -text {Font family:};  grid .prefs.lf  -row $row -column 0 -sticky e;"
+        "entry .prefs.ef  -textvariable ::prefs_font_family -width 24;"
+        "  grid .prefs.ef -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.ls  -text {Font size:};    grid .prefs.ls -row $row -column 0 -sticky e;"
+        "spinbox .prefs.es -from 6 -to 72 -textvariable ::prefs_font_size -width 6;"
+        "  grid .prefs.es -row $row -column 1 -sticky w; incr row;"
+
+        "label .prefs.lcs -text {Cursor style:}; grid .prefs.lcs -row $row -column 0 -sticky e;"
+        "ttk::combobox .prefs.ecs -values {Block Underline Bar} "
+        "  -textvariable ::prefs_cursor_style -state readonly -width 10;"
+        "  grid .prefs.ecs -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lcb -text {Cursor blink:}; grid .prefs.lcb -row $row -column 0 -sticky e;"
+        "checkbutton .prefs.ecb -variable ::prefs_cursor_blink;"
+        "  grid .prefs.ecb -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lcc -text {Cursor color:}; grid .prefs.lcc -row $row -column 0 -sticky e;"
+        "frame .prefs.fcc;"
+        "  entry .prefs.fcc.e -textvariable ::prefs_cursor_color -width 10;"
+        "  button .prefs.fcc.b -text {Pick} -command "
+        "    {set c [tk_chooseColor -initialcolor $::prefs_cursor_color -parent .prefs];"
+        "     if {$c ne {}} {set ::prefs_cursor_color $c}};"
+        "  pack .prefs.fcc.e .prefs.fcc.b -side left;"
+        "  grid .prefs.fcc -row $row -column 1 -sticky w; incr row;"
+
+        "label .prefs.lfg -text {Foreground:};   grid .prefs.lfg -row $row -column 0 -sticky e;"
+        "frame .prefs.ffg;"
+        "  entry .prefs.ffg.e -textvariable ::prefs_fg -width 10;"
+        "  button .prefs.ffg.b -text {Pick} -command "
+        "    {set c [tk_chooseColor -initialcolor $::prefs_fg -parent .prefs];"
+        "     if {$c ne {}} {set ::prefs_fg $c}};"
+        "  pack .prefs.ffg.e .prefs.ffg.b -side left;"
+        "  grid .prefs.ffg -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lbg -text {Background:};   grid .prefs.lbg -row $row -column 0 -sticky e;"
+        "frame .prefs.fbg;"
+        "  entry .prefs.fbg.e -textvariable ::prefs_bg -width 10;"
+        "  button .prefs.fbg.b -text {Pick} -command "
+        "    {set c [tk_chooseColor -initialcolor $::prefs_bg -parent .prefs];"
+        "     if {$c ne {}} {set ::prefs_bg $c}};"
+        "  pack .prefs.fbg.e .prefs.fbg.b -side left;"
+        "  grid .prefs.fbg -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lg  -text {Gamma:};        grid .prefs.lg -row $row -column 0 -sticky e;"
+        "scale .prefs.eg -from 0.5 -to 2.0 -resolution 0.05 -orient horizontal "
+        "  -variable ::prefs_gamma -length 200;"
+        "  grid .prefs.eg -row $row -column 1 -sticky w; incr row;"
+
+        "label .prefs.lr  -text {Rows:};         grid .prefs.lr -row $row -column 0 -sticky e;"
+        "spinbox .prefs.er -from 1 -to 999 -textvariable ::prefs_rows -width 6;"
+        "  grid .prefs.er -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lc  -text {Cols:};         grid .prefs.lc -row $row -column 0 -sticky e;"
+        "spinbox .prefs.ec -from 1 -to 999 -textvariable ::prefs_cols -width 6;"
+        "  grid .prefs.ec -row $row -column 1 -sticky w; incr row;"
+        "label .prefs.lh  -text {Refresh Hz:};   grid .prefs.lh -row $row -column 0 -sticky e;"
+        "scale .prefs.eh -from 10 -to 120 -orient horizontal "
+        "  -variable ::prefs_refresh_hz -length 200;"
+        "  grid .prefs.eh -row $row -column 1 -sticky w; incr row;"
+
+        "frame .prefs.btn;"
+        "  button .prefs.btn.s -text Save    -command "
+        "    {nbs_save_prefs $::prefs_font_family $::prefs_font_size "
+        "     $::prefs_cursor_style $::prefs_cursor_blink $::prefs_cursor_color "
+        "     $::prefs_gamma $::prefs_fg $::prefs_bg "
+        "     $::prefs_rows $::prefs_cols $::prefs_refresh_hz};"
+        "  button .prefs.btn.c -text Cancel  -command {destroy .prefs};"
+        "  pack .prefs.btn.s .prefs.btn.c -side left -padx 4;"
+        "  grid .prefs.btn -row $row -column 0 -columnspan 2 -pady 8",
+
+        g_config.font.family, g_config.font.size,
+        g_config.cursor.style, g_config.cursor.blink, g_config.cursor.color,
+        g_config.gamma,
+        g_config.fg, g_config.bg,
+        g_config.rows, g_config.cols, g_config.refresh_hz);
+    if (Tcl_Eval(interp, dlg) != TCL_OK) {
+        fprintf(stderr, "nbs-term: failed to open Preferences: %s\n",
+                Tcl_GetStringResult(interp));
+        return TCL_ERROR;
+    }
+    return TCL_OK;
+}
+
 /* Build the argv vector for the child. If --ssh is the first user arg,
  * the rest of argv becomes the child argv; otherwise spawn $SHELL (or
  * /bin/sh on POSIX, cmd.exe on Win32) as a login shell calibration. */
@@ -964,10 +1169,12 @@ int main(int argc, char *argv[]) {
     g_pty = pty_open(child_argv, g_config.rows, g_config.cols);
     if (!g_pty) return 1;
 
-    Tcl_CreateObjCommand(g_interp, "pty_write",     PtyWrite,    NULL, NULL);
-    Tcl_CreateObjCommand(g_interp, "pty_resize",    PtyResize,   NULL, NULL);
-    Tcl_CreateObjCommand(g_interp, "pty_paste",     PtyPaste,    NULL, NULL);
-    Tcl_CreateObjCommand(g_interp, "pty_key_event", PtyKeyEvent, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_write",      PtyWrite,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_resize",     PtyResize,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_paste",      PtyPaste,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_key_event",  PtyKeyEvent, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_open_prefs", NbsOpenPrefs, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_save_prefs", NbsSavePrefs, NULL, NULL);
 
     /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
      * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
@@ -1011,10 +1218,12 @@ int main(int argc, char *argv[]) {
             "bind .c <Configure> {pty_resize %w %h};"
             "if {[tk windowingsystem] eq \"aqua\"} {"
             "  bind .c <Command-v> "
-            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break}"
+            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+            "  bind . <Command-comma> {nbs_open_prefs}"
             "} else {"
             "  bind .c <Control-Shift-V> "
-            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break}"
+            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+            "  bind . <Control-comma> {nbs_open_prefs}"
             "};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
