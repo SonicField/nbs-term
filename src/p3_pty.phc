@@ -394,6 +394,39 @@ static int PtyWrite(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* Tcl command: pty_paste <text>. Pushes clipboard text into the
+ * child, wrapping in bracketed-paste markers when the active screen
+ * has DEC mode 2004 (mode_bracketed_paste) enabled. Mirrors
+ * nbsterm.py:1379 _on_paste + extension.phc:179 Terminal_encode_paste
+ * legacy. Bound via `bind .c <Control-Shift-V> {...}` on Linux/Win
+ * and `bind .c <Command-v> {...}` on Mac per nbsterm.py:1170-1200. */
+static int PtyPaste(ClientData cd, Tcl_Interp *interp, int objc,
+                    Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "text");
+        return TCL_ERROR;
+    }
+    int len = 0;
+    const char *s = Tcl_GetStringFromObj(objv[1], &len);
+    if (len <= 0) return TCL_OK;
+    int bracketed = (g_term && g_term->active &&
+                     g_term->active->mode_bracketed_paste);
+    if (bracketed && pty_write(g_pty, "\x1b[200~", 6) < 0) {
+        fprintf(stderr, "pty_write paste-start failed\n");
+        return TCL_ERROR;
+    }
+    if (pty_write(g_pty, s, (size_t)len) < 0) {
+        fprintf(stderr, "pty_write paste-body failed\n");
+        return TCL_ERROR;
+    }
+    if (bracketed && pty_write(g_pty, "\x1b[201~", 6) < 0) {
+        fprintf(stderr, "pty_write paste-end failed\n");
+        return TCL_ERROR;
+    }
+    return TCL_OK;
+}
+
 /* Tcl command: pty_resize <pixel_w> <pixel_h>. Bound via `bind .c
  * <Configure>`. Maps canvas pixels to a cell grid using g_cell_w /
  * g_cell_h (font.measure-derived at startup), propagates via
@@ -482,6 +515,7 @@ int main(int argc, char *argv[]) {
 
     Tcl_CreateObjCommand(g_interp, "pty_write",  PtyWrite,  NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "pty_resize", PtyResize, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_paste",  PtyPaste,  NULL, NULL);
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     char wstr[16], hstr[16];
@@ -490,12 +524,24 @@ int main(int argc, char *argv[]) {
     const char *canvas[] = {"canvas", ".c",
                             "-width", wstr, "-height", hstr,
                             "-bg", g_config.bg, "-highlightthickness", "0"};
+    /* Paste binding: Cmd-V on Aqua, Ctrl-Shift-V on Win/X11 — mirrors
+     * nbsterm.py:1170-1200 legacy. Wrapping `clipboard get` in catch
+     * makes empty/unset clipboard a no-op rather than a Tcl error.
+     * Trailing 'break' stops Tk from also routing the keystroke to the
+     * <Key> handler (which would type a literal 'V'). */
     if (EVAL_ARGV(g_interp, canvas) != TCL_OK ||
         Tcl_Eval(g_interp,
             "pack .c -fill both -expand 1;"
             "focus .c;"
             "bind .c <Key> {pty_write %A};"
             "bind .c <Configure> {pty_resize %w %h};"
+            "if {[tk windowingsystem] eq \"aqua\"} {"
+            "  bind .c <Command-v> "
+            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break}"
+            "} else {"
+            "  bind .c <Control-Shift-V> "
+            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break}"
+            "};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
