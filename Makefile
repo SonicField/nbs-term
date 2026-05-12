@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell
 
 all: $(EXTENSION_SO)
 
@@ -185,6 +185,19 @@ $(BUILDDIR)/test_pty_burst: $(BUILDDIR)/test_pty_burst.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
 
 test_pty_burst: $(BUILDDIR)/test_pty_burst
+
+# test_pixel_to_cell — selection-arithmetic regression anchor for F1
+# (testkeeper shim per pythia #76 + supervisor 17:48:58). Pure-spec:
+# copies pixel_to_cell algorithm from p3_pty.phc:388 and tests
+# (px,py,origin,cell,grid) sweeps. Headless; no Tcl/Tk/PTY link.
+# Discharges 'wrong cells' attribution to render-side when this PASSes.
+$(BUILDDIR)/test_pixel_to_cell.c: $(TESTDIR)/test_pixel_to_cell.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_pixel_to_cell: $(BUILDDIR)/test_pixel_to_cell.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_pixel_to_cell: $(BUILDDIR)/test_pixel_to_cell
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \

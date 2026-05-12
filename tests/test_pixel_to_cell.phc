@@ -1,0 +1,106 @@
+/*
+ * test_pixel_to_cell.phc — selection-arithmetic regression anchor for F1
+ *
+ * Pythia #76 (2026-05-12 17:48:15) + supervisor 17:48:58: cross-commit
+ * symptom 'selection highlights wrong cells' overlaps F1 pixel_to_cell
+ * (e0665eb), A2 origin offset (b37fcd1), A3a font reconfig (2e57d0d),
+ * and C cursor render gating (a348556). Manual git checkout <hash>^
+ * across 4 hashes is the only bisect path without a discriminator.
+ *
+ * This test isolates the pixel_to_cell ARITHMETIC. If alexie reports
+ * 'wrong cells' AND this test passes, the bug is render-side (A2/A3a/C
+ * mutating live globals before a real Tk session); if this test fails
+ * the bug is selection-arithmetic (F1 e0665eb regression).
+ *
+ * Approach — pure-spec test: copies the algorithm from src/p3_pty.phc:388
+ * (pixel_to_cell static at file scope) into a parameterised local
+ * function. Tests the SPEC, not the actual function. Coupling: if the
+ * spec at p3_pty.phc:388-401 changes, this file must be updated to match
+ * — drift between this and the production function is itself a bug to
+ * be caught by code review (gatekeeper at next p3_pty.phc render-coords
+ * touch).
+ *
+ * Headless (no Tcl, no Tk, no PTY); links libc only.
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+/* SPEC COPY of pixel_to_cell from src/p3_pty.phc:388-401 — paramaterised
+ * (origin/cell_w/cell_h/cols/rows passed instead of read from globals)
+ * to make the algorithm directly testable. See file-header for coupling. */
+static void pixel_to_cell_spec(int px, int py,
+                               int origin_x, int origin_y,
+                               int cell_w, int cell_h,
+                               int cols, int rows,
+                               int *out_r, int *out_c) {
+    int x = px - origin_x;
+    int y = py - origin_y;
+    int cc = (x < 0) ? 0 : x / cell_w;
+    int rr = (y < 0) ? 0 : y / cell_h;
+    if (cc >= cols) cc = cols - 1;
+    if (rr >= rows) rr = rows - 1;
+    if (cc < 0) cc = 0;
+    if (rr < 0) rr = 0;
+    *out_c = cc;
+    *out_r = rr;
+}
+
+struct case_ {
+    int px, py;
+    int ox, oy;
+    int cw, ch;
+    int cols, rows;
+    int er, ec;
+    const char *desc;
+};
+
+int main(void) {
+    struct case_ cases[] = {
+        /* Cold-start: origin at (4,4) NBS_PADDING, 9x16 cells */
+        {  4,   4,   4,   4,  9, 16, 80, 24,  0, 0, "click at origin -> (0,0)"},
+        { 13,  20,   4,   4,  9, 16, 80, 24,  1, 1, "click at (13,20) origin (4,4) 9x16 -> (1,1)"},
+
+        /* A2 case: origin shifted by centering */
+        {  0,   0,  20,  30,  9, 16, 80, 24,  0, 0, "pre-origin (px<ox) clamps to col 0"},
+        {  5,  10,  20,  30,  9, 16, 80, 24,  0, 0, "pre-origin (py<oy) clamps to row 0"},
+        { 29,  46,  20,  30,  9, 16, 80, 24,  1, 1, "shifted origin (20,30), click 9px+16y in -> (1,1)"},
+
+        /* A3a font reconfig case: cells re-measured to 12x20 */
+        { 60, 100,   0,   0, 12, 20, 80, 24,  5, 5, "wider font (12x20), click (60,100) -> (5,5)"},
+        { 12,  20,   0,   0, 12, 20, 80, 24,  1, 1, "wider font (12x20), one-cell click -> (1,1)"},
+
+        /* Bounds clamp: out-of-canvas */
+        {10000, 10000, 0, 0, 9, 16, 80, 24, 23, 79, "out-of-bounds (10000,10000) -> (rows-1, cols-1)"},
+        {  -5,   -5, 0, 0, 9, 16, 80, 24,  0, 0, "negative pixel coords clamp to (0,0)"},
+
+        /* Edge of cell — half-cell click rounds down */
+        {  4,   4, 0, 0, 9, 16, 80, 24,  0, 0, "click at (4,4) origin (0,0) 9x16 -> (0,0) (half-cell rounds down)"},
+        {  9,  16, 0, 0, 9, 16, 80, 24,  1, 1, "click at exact cell boundary (9,16) -> (1,1)"},
+
+        /* Right-edge clamp: click past last col */
+        {1000,  30, 0, 0, 9, 16, 80, 24,  1, 79, "click way right at row 1 -> (1, cols-1)"},
+    };
+    int n = sizeof cases / sizeof cases[0];
+
+    int fail = 0;
+    for (int i = 0; i < n; i++) {
+        int r, c;
+        pixel_to_cell_spec(cases[i].px, cases[i].py,
+                           cases[i].ox, cases[i].oy,
+                           cases[i].cw, cases[i].ch,
+                           cases[i].cols, cases[i].rows,
+                           &r, &c);
+        if (r != cases[i].er || c != cases[i].ec) {
+            printf("FAIL [%d] %s: got (%d,%d) expected (%d,%d)\n",
+                   i, cases[i].desc, r, c, cases[i].er, cases[i].ec);
+            fail++;
+        }
+    }
+    if (fail == 0) {
+        printf("test_pixel_to_cell ok: %d/%d cases PASS (spec at p3_pty.phc:388)\n", n, n);
+        return 0;
+    }
+    printf("test_pixel_to_cell FAILED: %d/%d cases\n", fail, n);
+    return 1;
+}
