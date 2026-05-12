@@ -326,6 +326,23 @@ Write-Host "PASS: phc binary has zero Python linkage" -ForegroundColor Green
 # Tcl/Tk runtime DLLs need to be on PATH; they live in deps/tcl-build/bin.
 $env:PATH = "$TclBin;$env:PATH"
 
+# Run the libc-only F1+F2 regression-anchor shims FIRST so their pass/fail
+# signal is observed in CI even when the burst step (Win-CI longstanding
+# fail since 2026-05-05) exits the script via the rc cascade. Order:
+# shim1 -> shim2 -> burst -> selftest. Each captures its own rc; cascade
+# below preserves shim signals before burst/selftest exits.
+Write-Host "Running F1 selection-arithmetic shim (build/test_pixel_to_cell.exe)..." -ForegroundColor Yellow
+& $ShimExe1
+$shim1_rc = $LASTEXITCODE
+if ($shim1_rc -eq 0) { Write-Host "F1 SHIM OK: pixel_to_cell arithmetic" -ForegroundColor Green }
+else                  { Write-Host "F1 SHIM FAILED (exit $shim1_rc)." -ForegroundColor Red }
+
+Write-Host "Running F2 byte-extract shim (build/test_extract_utf8.exe)..." -ForegroundColor Yellow
+& $ShimExe2
+$shim2_rc = $LASTEXITCODE
+if ($shim2_rc -eq 0) { Write-Host "F2 SHIM OK: utf8_emit + row_sel_range + extract walk" -ForegroundColor Green }
+else                  { Write-Host "F2 SHIM FAILED (exit $shim2_rc)." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -355,20 +372,6 @@ if ($selftest_rc -eq 0) {
     Write-Host "  * ConPTY not supported (Windows 10 < 1809)." -ForegroundColor Yellow
 }
 
-# F1 + F2 regression-anchor shims (libc-only, headless). Run unconditionally
-# so a self-test failure doesn't mask a shim regression.
-Write-Host "Running F1 selection-arithmetic shim (build/test_pixel_to_cell.exe)..." -ForegroundColor Yellow
-& $ShimExe1
-$shim1_rc = $LASTEXITCODE
-if ($shim1_rc -eq 0) { Write-Host "F1 SHIM OK: pixel_to_cell arithmetic" -ForegroundColor Green }
-else                  { Write-Host "F1 SHIM FAILED (exit $shim1_rc)." -ForegroundColor Red }
-
-Write-Host "Running F2 byte-extract shim (build/test_extract_utf8.exe)..." -ForegroundColor Yellow
-& $ShimExe2
-$shim2_rc = $LASTEXITCODE
-if ($shim2_rc -eq 0) { Write-Host "F2 SHIM OK: utf8_emit + row_sel_range + extract walk" -ForegroundColor Green }
-else                  { Write-Host "F2 SHIM FAILED (exit $shim2_rc)." -ForegroundColor Red }
-
 # Exit codes: 0 = ok; 1 = setup fail; 2 = timeout (no marker); 3 = short read.
 if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
     Write-Host "DIAGNOSIS: burst PASS, self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
@@ -376,10 +379,13 @@ if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
     Write-Host "DIAGNOSIS: burst FAIL (exit $burst_rc) -> fault is in PTY/ConPTY layer. Investigate ring backpressure (exit 3) or pty_open / Tcl integration (exit 1/2)." -ForegroundColor Yellow
 }
 
-if ($burst_rc -ne 0) { exit $burst_rc }
-if ($selftest_rc -ne 0) { exit $selftest_rc }
+# Cascade: shims first (libc-only spec, must be observable on every CI run);
+# burst + selftest after (PTY/Tk layers, longstanding Win-CI burst fail per
+# testkeeper 2026-05-12 20:23:30 audit).
 if ($shim1_rc -ne 0)    { exit $shim1_rc }
 if ($shim2_rc -ne 0)    { exit $shim2_rc }
+if ($burst_rc -ne 0) { exit $burst_rc }
+if ($selftest_rc -ne 0) { exit $selftest_rc }
 
 Write-Host ""
 Write-Host "=== Build Complete ===" -ForegroundColor Green
