@@ -150,6 +150,35 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
     return 0;
 }
 
+/* Cursor block overlay. Single filled rectangle at the cursor cell —
+ * canvas-pixel block matching the CELL_W/CELL_H grid the row text uses,
+ * tagged "cursor" so every render frame replaces the previous in one
+ * pass (`delete all` at the top of render_screen handles cleanup).
+ *
+ * Style is a solid block at DEFAULT_FG; when (c) wires the config
+ * system, the color/style fields land here without changing the call
+ * site. Always-visible — there is no DECTCEM hide-cursor mode in
+ * screen.phc yet, so the cursor renders unconditionally. */
+static int render_cursor(Tcl_Interp *interp, const char *canvas,
+                         const ScreenBuffer *scr) {
+    int r = scr->cursor.row;
+    int c = scr->cursor.col;
+    if (r < 0) r = 0;
+    if (r >= scr->rows) r = scr->rows - 1;
+    if (c < 0) c = 0;
+    if (c >= scr->cols) c = scr->cols - 1;
+    char xs[16], ys[16], x2s[16], y2s[16];
+    snprintf(xs,  sizeof xs,  "%d", c * CELL_W);
+    snprintf(ys,  sizeof ys,  "%d", r * CELL_H);
+    snprintf(x2s, sizeof x2s, "%d", (c + 1) * CELL_W);
+    snprintf(y2s, sizeof y2s, "%d", (r + 1) * CELL_H);
+    const char *rect[] = {canvas, "create", "rectangle",
+                          xs, ys, x2s, y2s,
+                          "-fill", DEFAULT_FG, "-outline", "",
+                          "-tags", "cursor"};
+    return EVAL_ARGV(interp, rect);
+}
+
 static int render_screen(Tcl_Interp *interp, const char *canvas,
                          const Terminal *term) {
     const ScreenBuffer *scr = term->active;
@@ -192,6 +221,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
                               "-tags", tag};
         if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
     }
+    if (render_cursor(interp, canvas, scr) != TCL_OK) return TCL_ERROR;
     return TCL_OK;
 }
 
