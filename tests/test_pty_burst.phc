@@ -1,28 +1,37 @@
 /*
  * test_pty_burst.phc — programmatic byte-accounting test for pty.phc
  *
- * Per testkeeper deferred spec D-1777640886 (trigger fired by Win
- * compile-link GREEN on dec5397 CI run, librarian 2026-05-05 17:41:38):
- * spawns a burst-emitting child via pty.phc directly, drains via
+ * Spawns ourself in --emit producer mode through pty_open, drains via
  * pty_read in a Tcl event loop, asserts the end-of-stream marker
- * arrives AND the received byte count is at least the expected
- * payload size. No Tk/render dependency; isolates PTY layer from
- * rendering for clean byte accounting.
+ * arrives AND received byte count is at least the expected payload
+ * size. No Tk/render dependency; isolates the PTY layer from rendering
+ * for clean byte accounting.
+ *
+ * Producer choice — direct-exec self-spawn (no shell wrapper):
+ *     ConPTY (Win) and forkpty (POSIX) launch this binary's --emit mode
+ *     directly. Originally this test wrapped its producer in
+ *     powershell -NoProfile (Win) and sh -c awk (POSIX); the Win path
+ *     was retired after the (iii) probe (1f2e33a) confirmed
+ *     powershell-startup as the bottleneck on Win CI rc=2 — short read
+ *     148B / 262144 expected, fault localised to producer choice, not
+ *     to pty.phc / ConPTY. Direct-exec eliminates the cold-start tax
+ *     uniformly and keeps the test cross-platform under one shape.
  *
  * What this falsifies:
  *   POSIX — read-pump-under-load: validates that the non-blocking
  *           master_fd + Tcl_CreateFileHandler driven loop drains
  *           bursty output without losing bytes mid-stream.
- *   Win32 — ring backpressure (c8d5378 fix): the producer emits
- *           ~256KB which exceeds PTY_RING_CAP (65536). With the fix,
+ *   Win32 — ring backpressure (c8d5378 fix #4): producer emits ~256KB
+ *           which exceeds PTY_RING_CAP (65536). With the fix,
  *           SleepConditionVariableSRW paces the I/O thread so all
- *           bytes arrive. Without it (pre-c8d5378), the ring would
- *           overflow and bytes would be silently dropped — this
- *           test would observe a short read.
+ *           bytes arrive. Without it, the ring would overflow and
+ *           bytes would be silently dropped — observed as a short
+ *           read (exit 3).
  *
  * Build: make build/test_pty_burst
- * Run:   build/test_pty_burst         (POSIX, no display needed)
- *        build\test_pty_burst.exe     (Win32, no Aqua/X needed)
+ * Run:   build/test_pty_burst              (test driver)
+ *        build/test_pty_burst --emit       (producer; for the driver to
+ *                                           spawn — not user-facing)
  *
  * Exit codes:
  *   0 — pass: marker observed AND received >= BURST_BYTES
@@ -72,6 +81,19 @@
 #define MARKER "PHC_BURST_END"
 #define MARKER_LEN 13
 
+static int run_emitter(void) {
+    /* Producer mode: emit 256KB + marker to stdout, exit clean.
+     * Direct fwrite (no shell, no powershell) so the test isolates the
+     * PTY layer from any interpreter cold-start. */
+    static const char chunk[8] = {'0','1','2','3','4','5','6','7'};
+    for (int i = 0; i < 32768; i++) {
+        if (fwrite(chunk, 1, 8, stdout) != 8) return 1;
+    }
+    if (fwrite(MARKER, 1, MARKER_LEN, stdout) != MARKER_LEN) return 1;
+    if (fflush(stdout) != 0) return 1;
+    return 0;
+}
+
 static size_t   g_received   = 0;
 static int      g_marker_seen = 0;
 static char     g_tail[16];   /* rolling window for marker scan */
@@ -104,34 +126,25 @@ static void on_pty_data(void *cd) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
+    if (argc > 1 && strcmp(argv[1], "--emit") == 0) {
+        return run_emitter();
+    }
+
     Tcl_FindExecutable(argv[0]);
     Tcl_Interp *interp = Tcl_CreateInterp();
     phc_check(interp != NULL, "Tcl_CreateInterp returned NULL");
 
-    /* Child: emit BURST_BYTES of "01234567" repetitions, then MARKER.
-     * Printable ASCII avoids any PTY line-discipline interference with
-     * the payload bytes themselves; the trailing marker has no newline
-     * so onlcr translation does not perturb the byte count we measure. */
-#if defined(_WIN32)
-    /* PowerShell: build the exact-byte string in memory, write raw to
-     * stdout (avoids Out-Default's CRLF normalisation), then write the
-     * marker. */
+    /* Spawn ourself in --emit mode through pty.phc. ConPTY (Win) and
+     * forkpty (POSIX) launch the .exe / executable directly with no
+     * shell wrapper — producer cold-start budget is minimal. */
+    const char *self = Tcl_GetNameOfExecutable();
+    phc_check(self != NULL && self[0] != 0,
+              "Tcl_GetNameOfExecutable returned empty path");
     char *child_argv[] = {
-        "cmd.exe", "/c",
-        "powershell -NoProfile -Command \"$s='01234567'*32768;"
-        "[Console]::Out.Write($s);"
-        "[Console]::Out.Write('PHC_BURST_END')\"",
+        (char *)self,
+        "--emit",
         NULL
     };
-#else
-    char *child_argv[] = {
-        "sh", "-c",
-        "awk 'BEGIN{for(i=0;i<32768;i++)printf \"01234567\";"
-        "printf \"PHC_BURST_END\"}'",
-        NULL
-    };
-#endif
 
     PTYHandle *h = pty_open(child_argv, 24, 80);
     phc_check(h != NULL, "pty_open returned NULL");
@@ -139,10 +152,8 @@ int main(int argc, char *argv[]) {
     phc_check(rc == TCL_OK, "pty_install_tcl_handler != TCL_OK");
 
     /* Drain events until marker observed or 60s timeout. 60s is the
-     * upper bound for CI cold-start of cmd.exe + powershell + ConPTY on
-     * a slow Win runner (per pythia #48 — bumped from 30s to leave
-     * headroom for runner-environment latency vs misattributing a
-     * timeout as a PTY-layer fault). POSIX awk path completes <1s. */
+     * upper bound for CI cold-start of the producer + ConPTY on a slow
+     * Win runner; direct-exec budget is well under this. */
     const int max_loops = 6000;  /* 6000 * 10ms = 60s */
     for (int i = 0; i < max_loops; i++) {
         Tcl_DoOneEvent(TCL_FILE_EVENTS | TCL_IDLE_EVENTS | TCL_DONT_WAIT);
@@ -173,7 +184,8 @@ int main(int argc, char *argv[]) {
     if (!g_marker_seen) {
         fprintf(stderr,
                 "FAIL: marker not seen within timeout (received %zu bytes; "
-                "expected >= %u + marker)\n",
+                "expected >= %u + marker). Direct-exec producer; fault is "
+                "in the PTY layer (pty_open / Tcl integration / read pump).\n",
                 g_received, BURST_BYTES);
         return 2;
     }

@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pty_burst_direct
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst
 
 all: $(EXTENSION_SO)
 
@@ -167,6 +167,9 @@ $(BUILDDIR)/test_screen: $(TESTDIR)/test_screen.c $(SRCDIR)/sgr.phc $(SRCDIR)/sc
 # test_pty_burst — programmatic byte-accounting for pty.phc (testkeeper
 # deferred spec D-1777640886). Validates POSIX read-pump-under-load and
 # Win32 ring backpressure (c8d5378 fix #4) without Tk/render in the loop.
+# Producer is direct-exec self-spawn (--emit mode) — no shell wrapper, so
+# test isolates the PTY layer from interpreter cold-start (post-(iii)
+# canonicalisation, 1f2e33a confirmed powershell-startup as Win bottleneck).
 # Same build shape as p3_pty (Tcl link, vendored Tcl/Tk, -lutil for forkpty).
 $(BUILDDIR)/test_pty_burst.c: $(TESTDIR)/test_pty_burst.phc $(SRCDIR)/pty.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
@@ -175,18 +178,6 @@ $(BUILDDIR)/test_pty_burst: $(BUILDDIR)/test_pty_burst.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
 
 test_pty_burst: $(BUILDDIR)/test_pty_burst
-
-# test_pty_burst_direct — (iii) probe per supervisor 2026-05-05 18:23:08
-# (shift the probe). Self-execs as producer (--emit) to remove the powershell
-# wrapper from test_pty_burst on Win — discriminates powershell-startup from
-# PTY-layer fault. Same Makefile shape as test_pty_burst.
-$(BUILDDIR)/test_pty_burst_direct.c: $(TESTDIR)/test_pty_burst_direct.phc $(SRCDIR)/pty.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
-	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
-
-$(BUILDDIR)/test_pty_burst_direct: $(BUILDDIR)/test_pty_burst_direct.c $(TK_VENDOR_LIB)
-	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
-
-test_pty_burst_direct: $(BUILDDIR)/test_pty_burst_direct
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \

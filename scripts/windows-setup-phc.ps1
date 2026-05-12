@@ -279,37 +279,6 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TestExe)) {
 }
 Write-Host "Built $TestExe" -ForegroundColor Green
 
-# ---- Step 3.6: build build/test_pty_burst_direct.exe ----
-# (iii) probe per supervisor 2026-05-05 18:23:08 (shift the probe).
-# Self-execs as producer (--emit) to remove the powershell wrapper from
-# test_pty_burst — discriminates powershell-startup hypothesis from a
-# PTY-layer fault. Same cl /EP -> phc -> link pipeline as test_pty_burst.
-$TestDirSrc = Join-Path (Join-Path $RepoDir "tests") "test_pty_burst_direct.phc"
-$TestDirC = Join-Path $BuildDir "test_pty_burst_direct.c"
-$TestDirExe = Join-Path $BuildDir "test_pty_burst_direct.exe"
-
-Write-Host "Preprocessing $TestDirSrc -> $TestDirC ..." -ForegroundColor Yellow
-$TestDirPp = Join-Path $BuildDir "test_pty_burst_direct.i"
-& cl.exe /nologo /EP /TC /I"$SrcDir" /I"$TclInclude" $TestDirSrc 2>$null | Out-File -Encoding ASCII -FilePath $TestDirPp
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: cl /EP failed on $TestDirSrc" -ForegroundColor Red
-    exit 1
-}
-$TestDirPreText = Get-Content -Raw $TestDirPp
-$TestDirPreText | & $PhcExe | Out-File -Encoding ASCII -FilePath $TestDirC
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: phc transform failed on $TestDirSrc" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Compiling $TestDirC -> $TestDirExe ..." -ForegroundColor Yellow
-& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /I"$TclInclude" /Fe"$TestDirExe" $TestDirC `
-    /link $($TclImport.FullName) $($TkImport.FullName) kernel32.lib user32.lib shell32.lib advapi32.lib | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TestDirExe)) {
-    Write-Host "ERROR: cl link failed for test_pty_burst_direct.exe" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Built $TestDirExe" -ForegroundColor Green
-
 # ---- Static guard: no Python DLL import (mirrors POSIX verify-no-python-link) ----
 Write-Host "Verifying zero Python linkage..." -ForegroundColor Yellow
 $Deps = & dumpbin.exe /dependents $PtyExe 2>$null
@@ -325,30 +294,20 @@ Write-Host "PASS: phc binary has zero Python linkage" -ForegroundColor Green
 # Tcl/Tk runtime DLLs need to be on PATH; they live in deps/tcl-build/bin.
 $env:PATH = "$TclBin;$env:PATH"
 
-# Run BOTH the burst test (PTY layer only) AND p3_pty.exe -test (whole stack
-# including Tk render) unconditionally, capturing both exit codes. This
-# preserves the diagnostic comparison even when one fails — burst PASS +
-# self-test FAIL isolates the fault to the Tk/render layer; both FAIL
-# isolates it to the PTY/ConPTY layer (per testkeeper deferred spec
-# D-1777640886, generalist 18:04:57 ordering note).
-Write-Host "Running burst test (build/test_pty_burst.exe — PTY layer, powershell producer)..." -ForegroundColor Yellow
+# Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
+# -test (whole stack including Tk render) unconditionally, capturing both
+# exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
+# layer; burst FAIL isolates to the PTY/ConPTY layer (producer choice is no
+# longer a confound — direct-exec self-spawn replaced the prior powershell
+# wrapper after the (iii) probe 1f2e33a confirmed powershell-startup as
+# the Win bottleneck).
+Write-Host "Running burst test (build/test_pty_burst.exe — PTY layer, direct-exec producer)..." -ForegroundColor Yellow
 & $TestExe
 $burst_rc = $LASTEXITCODE
 if ($burst_rc -eq 0) {
-    Write-Host "BURST TEST OK: ConPTY ring-backpressure drain (powershell producer)" -ForegroundColor Green
+    Write-Host "BURST TEST OK: ConPTY ring-backpressure drain" -ForegroundColor Green
 } else {
     Write-Host "BURST TEST FAILED (exit $burst_rc). See stderr above." -ForegroundColor Red
-}
-
-# (iii) probe — direct-exec producer (no powershell). Discriminates
-# powershell-startup hypothesis from PTY-layer fault when burst test fails.
-Write-Host "Running burst test direct (build/test_pty_burst_direct.exe — PTY layer, no shell)..." -ForegroundColor Yellow
-& $TestDirExe
-$burst_direct_rc = $LASTEXITCODE
-if ($burst_direct_rc -eq 0) {
-    Write-Host "BURST DIRECT OK: ConPTY ring-backpressure drain (direct-exec producer)" -ForegroundColor Green
-} else {
-    Write-Host "BURST DIRECT FAILED (exit $burst_direct_rc). See stderr above." -ForegroundColor Red
 }
 
 Write-Host "Running self-test (build/p3_pty.exe -test)..." -ForegroundColor Yellow
@@ -364,22 +323,14 @@ if ($selftest_rc -eq 0) {
     Write-Host "  * ConPTY not supported (Windows 10 < 1809)." -ForegroundColor Yellow
 }
 
-# Diagnostic summary across both burst probes + self-test. The (iii) direct
-# probe (powershell-removed producer) discriminates powershell-startup from a
-# PTY-layer fault that test_pty_burst alone can't (its producer IS powershell).
 # Exit codes: 0 = ok; 1 = setup fail; 2 = timeout (no marker); 3 = short read.
-if ($burst_rc -eq 0 -and $burst_direct_rc -eq 0 -and $selftest_rc -ne 0) {
-    Write-Host "DIAGNOSIS: both burst PASS, self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
-} elseif ($burst_rc -ne 0 -and $burst_direct_rc -eq 0) {
-    Write-Host "DIAGNOSIS: burst FAIL (exit $burst_rc), burst_direct PASS -> powershell-startup IS the bottleneck. Producer choice fault, NOT pty.phc/ConPTY. Fix lives in test_pty_burst's producer (use direct exec or tighter shell)." -ForegroundColor Yellow
-} elseif ($burst_rc -ne 0 -and $burst_direct_rc -ne 0) {
-    Write-Host "DIAGNOSIS: BOTH burst probes FAIL (powershell + direct-exec) -> fault is in PTY/ConPTY layer; producer choice is not the issue. (burst exit $burst_rc / direct exit $burst_direct_rc.) Investigate ring backpressure (exit 3 either probe) or pty_open / Tcl integration (exit 1/2 either probe)." -ForegroundColor Yellow
-} elseif ($burst_rc -eq 0 -and $burst_direct_rc -ne 0) {
-    Write-Host "DIAGNOSIS: burst PASS, burst_direct FAIL (exit $burst_direct_rc) -> direct-exec exposes a path the powershell wrapper masks. Unusual; investigate stderr." -ForegroundColor Yellow
+if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst PASS, self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
+} elseif ($burst_rc -ne 0) {
+    Write-Host "DIAGNOSIS: burst FAIL (exit $burst_rc) -> fault is in PTY/ConPTY layer. Investigate ring backpressure (exit 3) or pty_open / Tcl integration (exit 1/2)." -ForegroundColor Yellow
 }
 
 if ($burst_rc -ne 0) { exit $burst_rc }
-if ($burst_direct_rc -ne 0) { exit $burst_direct_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
 Write-Host ""
