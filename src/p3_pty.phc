@@ -101,6 +101,15 @@ static int                g_is_mac = 0;       /* set in main() from [tk windowin
 static int             g_blink_visible = 1;
 static Tcl_TimerToken  g_blink_after_id = NULL;
 
+/* F selection state (stream selection from (sr,sc) to (er,ec) in
+ * canonical lexicographic order — sel_normalise swaps if user
+ * dragged backwards). g_sel_active gates render_screen's split-
+ * paint + future copy. Coordinates are screen cells (after
+ * pixel_to_cell), not pixels. */
+static int g_sel_active = 0;
+static int g_sel_sr = 0, g_sel_sc = 0;
+static int g_sel_er = 0, g_sel_ec = 0;
+
 /* Register the four named fonts the legacy nbs-term renderer expects
  * (font_normal / font_bold / font_italic / font_bold_italic), all
  * derived from TkFixedFont's family + size. Mirrors nbsterm.py:130-140
@@ -293,6 +302,68 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
         return 4;
     }
     return 0;
+}
+
+/* F — UTF-8 byte offset of the char_idx-th codepoint within text.
+ * Mirrors extension.phc:819 utf8_byte_offset; used by flush_span's
+ * selection split to slice span_text by cell index. */
+static int utf8_byte_offset(const char *text, int byte_len, int char_idx) {
+    int ci = 0, i = 0;
+    while (i < byte_len && ci < char_idx) {
+        unsigned char c = (unsigned char)text[i];
+        if      (c < 0x80) i += 1;
+        else if (c < 0xE0) i += 2;
+        else if (c < 0xF0) i += 3;
+        else               i += 4;
+        ci++;
+    }
+    return i;
+}
+
+/* F — normalise stream selection to canonical (sr,sc) <= (er,ec)
+ * order. g_sel_* are mutated for forward-walk semantics in copy +
+ * row_sel_range. Returns 1 if swapped, 0 otherwise. */
+static int sel_normalise(int *sr, int *sc, int *er, int *ec) {
+    if (*sr > *er || (*sr == *er && *sc > *ec)) {
+        int tr = *sr, tc = *sc;
+        *sr = *er; *sc = *ec;
+        *er = tr; *ec = tc;
+        return 1;
+    }
+    return 0;
+}
+
+/* F — mouse pixel -> cell (row, col). Uniform divide by g_cell_w/h
+ * with origin offset; text-aware refinement (font.measure binary
+ * search per nbsterm.py:286-337) deferred per theologian 16:19:22
+ * trap (Mac CoreText subadditivity is a separate axis). Clamps to
+ * the active screen bounds. */
+static void pixel_to_cell(int px, int py, int *r, int *c) {
+    int x = px - g_origin_x;
+    int y = py - g_origin_y;
+    int cc = (x < 0) ? 0 : x / g_cell_w;
+    int rr = (y < 0) ? 0 : y / g_cell_h;
+    if (g_term && g_term->active) {
+        if (cc >= g_term->active->cols) cc = g_term->active->cols - 1;
+        if (rr >= g_term->active->rows) rr = g_term->active->rows - 1;
+        if (cc < 0) cc = 0;
+        if (rr < 0) rr = 0;
+    }
+    *c = cc;
+    *r = rr;
+}
+
+/* F — per-row selection cell range under the canonical (sr,sc)<=(er,ec)
+ * stream-selection model. Sets *out_c0 / *out_c1 = -1 when no cells on
+ * row r are selected. */
+static void row_sel_range(int r, int sr, int sc, int er, int ec, int cols,
+                          int *out_c0, int *out_c1) {
+    if (r < sr || r > er) { *out_c0 = -1; *out_c1 = -1; return; }
+    int c0 = (r == sr) ? sc : 0;
+    int c1 = (r == er) ? ec : cols;
+    if (c1 <= c0) { *out_c0 = -1; *out_c1 = -1; return; }
+    *out_c0 = c0;
+    *out_c1 = c1;
 }
 
 /* A2 — origin centering per nbsterm.py:196-249. Builds the same
@@ -510,14 +581,58 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     return EVAL_ARGV(interp, text);
 }
 
-/* Emit one render span — bg rect (when non-default) + text item with
- * the span's font_tag and fg color. Mirrors extension.phc:1041-1047
- * legacy no-selection branch (selection-aware split is the F-track
- * port, not in A1 scope). Span pixel width comes from font.measure
- * on the span's own font, falls back to cells * g_cell_w if measure
- * fails. Returns updated x via *x_inout so the caller can advance. */
+/* Emit one sub-span (pre / sel / post slice of a span, or the full
+ * span when no selection overlap). bg rect when force_bg is set OR
+ * non-default; text with the given fill + font_tag. Returns the
+ * pixel width consumed via *out_w so caller can advance x. */
+static int emit_sub(Tcl_Interp *interp, const char *canvas,
+                    int r, int sub_start_col, int x_pixel, int y_pixel,
+                    const char *sub_text, int sub_text_len,
+                    const char *fg_fill, const char *bg_fill,
+                    int force_bg, const char *font_tag, int *out_w) {
+    int sub_w = 0;
+    {
+        const char *measure[] = {"font", "measure", font_tag, sub_text};
+        if (EVAL_ARGV(interp, measure) == TCL_OK) {
+            sub_w = atoi(Tcl_GetStringResult(interp));
+        }
+    }
+    if (sub_w <= 0) sub_w = sub_text_len * g_cell_w;
+    char xs[16], ys[16], x2s[16], y2s[16], tag[32];
+    snprintf(xs,  sizeof xs,  "%d", x_pixel);
+    snprintf(ys,  sizeof ys,  "%d", y_pixel);
+    if (force_bg) {
+        snprintf(x2s, sizeof x2s, "%d", x_pixel + sub_w);
+        snprintf(y2s, sizeof y2s, "%d", y_pixel + g_cell_h);
+        snprintf(tag, sizeof tag, "bg%d_%d", r, sub_start_col);
+        const char *rect[] = {canvas, "create", "rectangle",
+                              xs, ys, x2s, y2s,
+                              "-fill", bg_fill, "-outline", "",
+                              "-tags", tag};
+        if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+    }
+    char tags_buf[64];
+    snprintf(tags_buf, sizeof tags_buf, "row%d row%d_%d",
+             r, r, sub_start_col);
+    const char *text[] = {canvas, "create", "text",
+                          xs, ys,
+                          "-anchor", "nw", "-text", sub_text,
+                          "-fill", fg_fill, "-font", font_tag,
+                          "-tags", tags_buf};
+    if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
+    *out_w = sub_w;
+    return TCL_OK;
+}
+
+/* Emit one render span — split into pre/sel/post sub-spans when
+ * g_sel_active and the selection range [sel_c0, sel_c1) overlaps
+ * the span's cell range [span_start_col, span_end_col). Sel sub-
+ * span uses fg/bg-swapped colours (matching extension.phc:1083-1088
+ * legacy paint). Mirrors extension.phc:1006-1107 selection-aware
+ * branch + 1041-1047 no-selection fallback. */
 static int flush_span(Tcl_Interp *interp, const char *canvas,
                       int r, int span_start_col, int span_end_col,
+                      int sel_c0, int sel_c1,
                       int y_pixel, const char *span_text,
                       Color fg, Color bg, CellAttr attrs,
                       int *x_inout) {
@@ -537,53 +652,84 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
     const char *bg_render = bg_g;
 
     const char *font_tag = attrs_to_font_tag(attrs);
-
-    int x_pixel = *x_inout;
-    int span_w = (span_end_col - span_start_col) * g_cell_w;  /* fallback */
-    {
-        const char *measure[] = {"font", "measure", font_tag, span_text};
-        if (EVAL_ARGV(interp, measure) == TCL_OK) {
-            int m = atoi(Tcl_GetStringResult(interp));
-            if (m > 0) span_w = m;
-        }
-    }
-
-    char xs[16], ys[16], x2s[16], y2s[16], tag[32];
-    snprintf(xs,  sizeof xs,  "%d", x_pixel);
-    snprintf(ys,  sizeof ys,  "%d", y_pixel);
-
-    /* Bg rect — only when the span carries a non-default bg. The
-     * canvas widget's -bg shows through the gap otherwise. After-
-     * Inverse 'bg' here may be a previously-fg colour: still emit
-     * the rect when non-default so swapped colours render. */
     int bg_default = color_is_default(bg) && !(attrs & CellAttr_Inverse);
-    if (!bg_default) {
-        snprintf(x2s, sizeof x2s, "%d", x_pixel + span_w);
-        snprintf(y2s, sizeof y2s, "%d", y_pixel + g_cell_h);
-        snprintf(tag, sizeof tag, "bg%d_%d", r, span_start_col);
-        const char *rect[] = {canvas, "create", "rectangle",
-                              xs, ys, x2s, y2s,
-                              "-fill", bg_render, "-outline", "",
-                              "-tags", tag};
-        if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+
+    int span_count = span_end_col - span_start_col;
+    int span_text_len = (int)strlen(span_text);
+    int x_pixel = *x_inout;
+
+    /* Compute selection-overlap window in span-local cell coords. */
+    int sub_start = -1, sub_end = -1;
+    if (sel_c0 >= 0 && sel_c1 > span_start_col && sel_c0 < span_end_col) {
+        sub_start = (sel_c0 > span_start_col) ? sel_c0 - span_start_col : 0;
+        sub_end   = (sel_c1 < span_end_col)   ? sel_c1 - span_start_col : span_count;
     }
 
-    /* Two tags per text item: 'row{r}' is the row-wide aggregator
-     * (used by the self-test marker scan + future scrollback queries)
-     * and 'row{r}_{col}' is the per-span discriminator (lets future
-     * incremental render replace one span at a time). Tk -tags accepts
-     * a single string with space-separated tag names. */
-    char tags_buf[64];
-    snprintf(tags_buf, sizeof tags_buf, "row%d row%d_%d",
-             r, r, span_start_col);
-    const char *text[] = {canvas, "create", "text",
-                          xs, ys,
-                          "-anchor", "nw", "-text", span_text,
-                          "-fill", fg_render, "-font", font_tag,
-                          "-tags", tags_buf};
-    if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
+    if (sub_start < 0) {
+        /* No selection overlap — single sub-span paint. */
+        int sub_w = 0;
+        if (emit_sub(interp, canvas, r, span_start_col, x_pixel, y_pixel,
+                     span_text, span_text_len,
+                     fg_render, bg_render, !bg_default,
+                     font_tag, &sub_w) != TCL_OK) return TCL_ERROR;
+        *x_inout = x_pixel + sub_w;
+        return TCL_OK;
+    }
 
-    *x_inout = x_pixel + span_w;
+    /* Split into up to 3 sub-spans: pre / sel / post. Selected sub-
+     * span paints with swapped colours (fg becomes bg-fill, bg-or-
+     * default-fg becomes text-fill — extension.phc:1083-1088). */
+    char sub_text[4096];
+    int  bx = x_pixel;
+
+    if (sub_start > 0) {
+        int b_bytes = utf8_byte_offset(span_text, span_text_len, sub_start);
+        if (b_bytes > (int)sizeof sub_text - 1) b_bytes = (int)sizeof sub_text - 1;
+        memcpy(sub_text, span_text, (size_t)b_bytes);
+        sub_text[b_bytes] = '\0';
+        int sub_w = 0;
+        if (emit_sub(interp, canvas, r, span_start_col, bx, y_pixel,
+                     sub_text, b_bytes,
+                     fg_render, bg_render, !bg_default,
+                     font_tag, &sub_w) != TCL_OK) return TCL_ERROR;
+        bx += sub_w;
+    }
+
+    {
+        int s_byte_start = utf8_byte_offset(span_text, span_text_len, sub_start);
+        int s_byte_end   = utf8_byte_offset(span_text, span_text_len, sub_end);
+        int s_bytes = s_byte_end - s_byte_start;
+        if (s_bytes < 0) s_bytes = 0;
+        if (s_bytes > (int)sizeof sub_text - 1) s_bytes = (int)sizeof sub_text - 1;
+        memcpy(sub_text, span_text + s_byte_start, (size_t)s_bytes);
+        sub_text[s_bytes] = '\0';
+        int sub_w = 0;
+        /* Selected sub-span: fg colour becomes the rect fill, bg
+         * colour becomes the text fill — visual highlight matches
+         * legacy nbsterm split-render. */
+        if (emit_sub(interp, canvas, r, span_start_col + sub_start, bx, y_pixel,
+                     sub_text, s_bytes,
+                     bg_render, fg_render, 1 /* always paint sel rect */,
+                     font_tag, &sub_w) != TCL_OK) return TCL_ERROR;
+        bx += sub_w;
+    }
+
+    if (sub_end < span_count) {
+        int a_byte_start = utf8_byte_offset(span_text, span_text_len, sub_end);
+        int a_bytes = span_text_len - a_byte_start;
+        if (a_bytes < 0) a_bytes = 0;
+        if (a_bytes > (int)sizeof sub_text - 1) a_bytes = (int)sizeof sub_text - 1;
+        memcpy(sub_text, span_text + a_byte_start, (size_t)a_bytes);
+        sub_text[a_bytes] = '\0';
+        int sub_w = 0;
+        if (emit_sub(interp, canvas, r, span_start_col + sub_end, bx, y_pixel,
+                     sub_text, a_bytes,
+                     fg_render, bg_render, !bg_default,
+                     font_tag, &sub_w) != TCL_OK) return TCL_ERROR;
+        bx += sub_w;
+    }
+
+    *x_inout = bx;
     return TCL_OK;
 }
 
@@ -598,11 +744,26 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
     const char *clear[] = {canvas, "delete", "all"};
     if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
 
+    /* F — normalise selection once per render so flush_span sees a
+     * canonical (sr,sc)<=(er,ec) range. Reverse-drag handled here. */
+    int sel_sr = g_sel_sr, sel_sc = g_sel_sc;
+    int sel_er = g_sel_er, sel_ec = g_sel_ec;
+    if (g_sel_active) sel_normalise(&sel_sr, &sel_sc, &sel_er, &sel_ec);
+
     for (int r = 0; r < scr->rows; r++) {
         /* A2 — paint each row at the centered origin per
          * compute_layout (NBS_PADDING fallback before first paint). */
         int x_pixel = g_origin_x;
         int y_pixel = g_origin_y + r * g_cell_h;
+
+        /* F — per-row selection range (cells [sel_c0, sel_c1)).
+         * -1 sentinel when row not in selection — flush_span treats
+         * that as a no-overlap full-span paint. */
+        int sel_c0 = -1, sel_c1 = -1;
+        if (g_sel_active) {
+            row_sel_range(r, sel_sr, sel_sc, sel_er, sel_ec, scr->cols,
+                          &sel_c0, &sel_c1);
+        }
 
         char span_text[4096];
         int  span_text_len = 0;
@@ -620,6 +781,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
                 /* Flush the in-flight span before starting a new one. */
                 span_text[span_text_len] = '\0';
                 if (flush_span(interp, canvas, r, span_start_col, c,
+                               sel_c0, sel_c1,
                                y_pixel, span_text,
                                span_proto.fg, span_proto.bg, span_proto.attrs,
                                &x_pixel) != TCL_OK) return TCL_ERROR;
@@ -641,6 +803,7 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
         if (span_active && span_text_len > 0) {
             span_text[span_text_len] = '\0';
             if (flush_span(interp, canvas, r, span_start_col, scr->cols,
+                           sel_c0, sel_c1,
                            y_pixel, span_text,
                            span_proto.fg, span_proto.bg, span_proto.attrs,
                            &x_pixel) != TCL_OK) return TCL_ERROR;
@@ -900,6 +1063,72 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
     }
 
     /* Unhandled key — silent no-op (matches Py_RETURN_NONE legacy). */
+    return TCL_OK;
+}
+
+/* F — mouse selection start/extend/end. NbsSelDown captures the
+ * anchor cell + activates selection; NbsSelDrag/Up extends the end
+ * cell. Tk binds wire ButtonPress-1 / B1-Motion / ButtonRelease-1
+ * to these. Mirrors nbsterm.py:339-354 _on_mouse_* legacy. */
+static int NbsSelDown(ClientData cd, Tcl_Interp *interp, int objc,
+                      Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y");
+        return TCL_ERROR;
+    }
+    int px = 0, py = 0;
+    if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
+    int r = 0, c = 0;
+    pixel_to_cell(px, py, &r, &c);
+    g_sel_sr = g_sel_er = r;
+    g_sel_sc = g_sel_ec = c;
+    g_sel_active = 1;
+    schedule_render();
+    return TCL_OK;
+}
+
+static int NbsSelDrag(ClientData cd, Tcl_Interp *interp, int objc,
+                      Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y");
+        return TCL_ERROR;
+    }
+    if (!g_sel_active) return TCL_OK;
+    int px = 0, py = 0;
+    if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
+    int r = 0, c = 0;
+    pixel_to_cell(px, py, &r, &c);
+    g_sel_er = r;
+    g_sel_ec = c;
+    schedule_render();
+    return TCL_OK;
+}
+
+static int NbsSelUp(ClientData cd, Tcl_Interp *interp, int objc,
+                    Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y");
+        return TCL_ERROR;
+    }
+    if (!g_sel_active) return TCL_OK;
+    int px = 0, py = 0;
+    if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
+    int r = 0, c = 0;
+    pixel_to_cell(px, py, &r, &c);
+    g_sel_er = r;
+    g_sel_ec = c;
+    /* If user clicked without dragging — start cell == end cell —
+     * collapse selection (matches nbsterm.py click-to-clear UX). */
+    if (g_sel_sr == g_sel_er && g_sel_sc == g_sel_ec) {
+        g_sel_active = 0;
+    }
+    schedule_render();
     return TCL_OK;
 }
 
@@ -1175,6 +1404,9 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "pty_key_event",  PtyKeyEvent, NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_open_prefs", NbsOpenPrefs, NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_save_prefs", NbsSavePrefs, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_down",   NbsSelDown,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_drag",   NbsSelDrag,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,     NULL, NULL);
 
     /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
      * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
@@ -1216,6 +1448,9 @@ int main(int argc, char *argv[]) {
             "focus .c;"
             "bind .c <Key> {pty_key_event %K %s %A};"
             "bind .c <Configure> {pty_resize %w %h};"
+            "bind .c <ButtonPress-1>   {nbs_sel_down %x %y};"
+            "bind .c <B1-Motion>       {nbs_sel_drag %x %y};"
+            "bind .c <ButtonRelease-1> {nbs_sel_up   %x %y};"
             "if {[tk windowingsystem] eq \"aqua\"} {"
             "  bind .c <Command-v> "
             "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
