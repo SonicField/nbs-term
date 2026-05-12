@@ -1066,6 +1066,69 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* F2 — copy current selection to the Tk clipboard. Walks selected
+ * cells (sr,sc) to (er,ec) in canonical order; emits utf8 per cell
+ * with '\n' on row boundary; writes via 'clipboard clear/append'.
+ * Mirrors extension.phc:531-606 Terminal_extract_selected_text +
+ * nbsterm.py:412-426 copy_selection. Bound to Cmd+C (Aqua) /
+ * Ctrl+Shift+C (Win/X11). No-op when no selection. */
+static int NbsCopy(ClientData cd, Tcl_Interp *interp, int objc,
+                   Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 1) {
+        Tcl_WrongNumArgs(interp, 1, objv, "");
+        return TCL_ERROR;
+    }
+    if (!g_sel_active || !g_term || !g_term->active) return TCL_OK;
+
+    int sr = g_sel_sr, sc = g_sel_sc;
+    int er = g_sel_er, ec = g_sel_ec;
+    sel_normalise(&sr, &sc, &er, &ec);
+
+    const ScreenBuffer *scr = g_term->active;
+    /* 64KB cap covers typical multi-screen selections; selection that
+     * overflows just truncates rather than crashing. */
+    static char buf[64 * 1024];
+    int len = 0;
+
+    for (int r = sr; r <= er && r < scr->rows; r++) {
+        int c0 = -1, c1 = -1;
+        row_sel_range(r, sr, sc, er, ec, scr->cols, &c0, &c1);
+        if (c0 >= 0) {
+            for (int c = c0; c < c1 && c < scr->cols; c++) {
+                const Cell *cell = screen_cell_const(scr, r, c);
+                if (cell->wide_cont) continue;
+                uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+                if (len + 4 < (int)sizeof buf) {
+                    len += utf8_emit(cp, buf + len, (int)sizeof buf - len);
+                }
+            }
+        }
+        /* Newline between rows (legacy nbsterm extracts row breaks
+         * even when the selection extends past the row's last cell). */
+        if (r < er && len + 1 < (int)sizeof buf) {
+            buf[len++] = '\n';
+        }
+    }
+
+    /* Clear + append via Tcl_EvalObjv (verify-no-eval-objex gate). */
+    {
+        const char *clear[] = {"clipboard", "clear", "-displayof", "."};
+        if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
+    }
+    Tcl_Obj *argv[6];
+    argv[0] = Tcl_NewStringObj("clipboard", -1);
+    argv[1] = Tcl_NewStringObj("append",    -1);
+    argv[2] = Tcl_NewStringObj("-displayof", -1);
+    argv[3] = Tcl_NewStringObj(".", -1);
+    argv[4] = Tcl_NewStringObj("--", -1);
+    argv[5] = Tcl_NewStringObj(buf, len);
+    for (int i = 0; i < 6; i++) Tcl_IncrRefCount(argv[i]);
+    int rc = Tcl_EvalObjv(interp, 6, argv, 0);
+    for (int i = 0; i < 6; i++) Tcl_DecrRefCount(argv[i]);
+    return rc;
+}
+
 /* F — mouse selection start/extend/end. NbsSelDown captures the
  * anchor cell + activates selection; NbsSelDrag/Up extends the end
  * cell. Tk binds wire ButtonPress-1 / B1-Motion / ButtonRelease-1
@@ -1407,6 +1470,7 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_sel_down",   NbsSelDown,   NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_sel_drag",   NbsSelDrag,   NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,     NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,      NULL, NULL);
 
     /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
      * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
@@ -1454,11 +1518,13 @@ int main(int argc, char *argv[]) {
             "if {[tk windowingsystem] eq \"aqua\"} {"
             "  bind .c <Command-v> "
             "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "  bind . <Command-comma> {nbs_open_prefs}"
+            "  bind . <Command-comma> {nbs_open_prefs};"
+            "  bind . <Command-c>     {nbs_copy; break}"
             "} else {"
             "  bind .c <Control-Shift-V> "
             "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "  bind . <Control-comma> {nbs_open_prefs}"
+            "  bind . <Control-comma>     {nbs_open_prefs};"
+            "  bind . <Control-Shift-C>   {nbs_copy; break}"
             "};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
