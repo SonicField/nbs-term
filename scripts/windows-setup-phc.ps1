@@ -279,6 +279,38 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TestExe)) {
 }
 Write-Host "Built $TestExe" -ForegroundColor Green
 
+# ---- Step 3.6: build build/test_pixel_to_cell.exe (F1 anchor, libc-only) ----
+# Pure-spec discriminator for F1 e0665eb selection arithmetic per pythia
+# #76 + supervisor 17:48:58. No Tcl/Tk link.
+$ShimSrc1  = Join-Path (Join-Path $RepoDir "tests") "test_pixel_to_cell.phc"
+$ShimC1    = Join-Path $BuildDir "test_pixel_to_cell.c"
+$ShimExe1  = Join-Path $BuildDir "test_pixel_to_cell.exe"
+$ShimPp1   = Join-Path $BuildDir "test_pixel_to_cell.i"
+Write-Host "Preprocessing $ShimSrc1 -> $ShimC1 ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $ShimSrc1 2>$null | Out-File -Encoding ASCII -FilePath $ShimPp1
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $ShimSrc1" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $ShimPp1 | & $PhcExe | Out-File -Encoding ASCII -FilePath $ShimC1
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $ShimSrc1" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$ShimExe1" $ShimC1 | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ShimExe1)) { Write-Host "ERROR: cl link failed for test_pixel_to_cell.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $ShimExe1" -ForegroundColor Green
+
+# ---- Step 3.7: build build/test_extract_utf8.exe (F2 anchor, libc-only) ----
+# Pure-spec discriminator for F2 f391992 byte-extract per pythia #77 +
+# supervisor 18:26:48. No Tcl/Tk link.
+$ShimSrc2  = Join-Path (Join-Path $RepoDir "tests") "test_extract_utf8.phc"
+$ShimC2    = Join-Path $BuildDir "test_extract_utf8.c"
+$ShimExe2  = Join-Path $BuildDir "test_extract_utf8.exe"
+$ShimPp2   = Join-Path $BuildDir "test_extract_utf8.i"
+Write-Host "Preprocessing $ShimSrc2 -> $ShimC2 ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $ShimSrc2 2>$null | Out-File -Encoding ASCII -FilePath $ShimPp2
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $ShimSrc2" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $ShimPp2 | & $PhcExe | Out-File -Encoding ASCII -FilePath $ShimC2
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $ShimSrc2" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$ShimExe2" $ShimC2 | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ShimExe2)) { Write-Host "ERROR: cl link failed for test_extract_utf8.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $ShimExe2" -ForegroundColor Green
+
 # ---- Static guard: no Python DLL import (mirrors POSIX verify-no-python-link) ----
 Write-Host "Verifying zero Python linkage..." -ForegroundColor Yellow
 $Deps = & dumpbin.exe /dependents $PtyExe 2>$null
@@ -323,6 +355,20 @@ if ($selftest_rc -eq 0) {
     Write-Host "  * ConPTY not supported (Windows 10 < 1809)." -ForegroundColor Yellow
 }
 
+# F1 + F2 regression-anchor shims (libc-only, headless). Run unconditionally
+# so a self-test failure doesn't mask a shim regression.
+Write-Host "Running F1 selection-arithmetic shim (build/test_pixel_to_cell.exe)..." -ForegroundColor Yellow
+& $ShimExe1
+$shim1_rc = $LASTEXITCODE
+if ($shim1_rc -eq 0) { Write-Host "F1 SHIM OK: pixel_to_cell arithmetic" -ForegroundColor Green }
+else                  { Write-Host "F1 SHIM FAILED (exit $shim1_rc)." -ForegroundColor Red }
+
+Write-Host "Running F2 byte-extract shim (build/test_extract_utf8.exe)..." -ForegroundColor Yellow
+& $ShimExe2
+$shim2_rc = $LASTEXITCODE
+if ($shim2_rc -eq 0) { Write-Host "F2 SHIM OK: utf8_emit + row_sel_range + extract walk" -ForegroundColor Green }
+else                  { Write-Host "F2 SHIM FAILED (exit $shim2_rc)." -ForegroundColor Red }
+
 # Exit codes: 0 = ok; 1 = setup fail; 2 = timeout (no marker); 3 = short read.
 if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
     Write-Host "DIAGNOSIS: burst PASS, self-test FAIL -> fault is in Tk-render layer (separable from PTY)." -ForegroundColor Yellow
@@ -332,6 +378,8 @@ if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
 
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
+if ($shim1_rc -ne 0)    { exit $shim1_rc }
+if ($shim2_rc -ne 0)    { exit $shim2_rc }
 
 Write-Host ""
 Write-Host "=== Build Complete ===" -ForegroundColor Green

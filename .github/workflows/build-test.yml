@@ -62,6 +62,25 @@ jobs:
           make build/test_pty_burst
           build/test_pty_burst
 
+      - name: F1 selection-arithmetic shim (test_pixel_to_cell)
+        # Bisect-grade discriminator for F1 e0665eb — pythia #76 +
+        # supervisor 17:48:58. Headless libc-only; PASS narrows any
+        # 'wrong cells' report to render-side (A2/A3a/C).
+        if: always()
+        run: |
+          make build/test_pixel_to_cell
+          build/test_pixel_to_cell
+
+      - name: F2 byte-extract shim (test_extract_utf8)
+        # Bisect-grade discriminator for F2 f391992 — pythia #77 +
+        # supervisor 18:26:48. Headless libc-only; PASS narrows any
+        # 'copy wrong' report to selection-state upstream OR Tk
+        # clipboard downstream.
+        if: always()
+        run: |
+          make build/test_extract_utf8
+          build/test_extract_utf8
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -100,6 +119,22 @@ jobs:
         run: |
           make build/test_pty_burst
           build/test_pty_burst
+
+      - name: F1 selection-arithmetic shim (test_pixel_to_cell)
+        # Bisect-grade discriminator for F1 e0665eb — pythia #76 +
+        # supervisor 17:48:58. Headless libc-only.
+        if: always()
+        run: |
+          make build/test_pixel_to_cell
+          build/test_pixel_to_cell
+
+      - name: F2 byte-extract shim (test_extract_utf8)
+        # Bisect-grade discriminator for F2 f391992 — pythia #77 +
+        # supervisor 18:26:48. Headless libc-only.
+        if: always()
+        run: |
+          make build/test_extract_utf8
+          build/test_extract_utf8
 
   win-build:
     name: Windows
