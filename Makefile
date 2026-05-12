@@ -156,7 +156,7 @@ $(BUILDDIR)/p3_pty.c: $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
 
 $(BUILDDIR)/p3_pty: $(BUILDDIR)/p3_pty.c $(TK_VENDOR_LIB)
-	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -o $@
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
 
 p3_pty: $(BUILDDIR)/p3_pty
 

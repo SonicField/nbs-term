@@ -52,6 +52,9 @@
 #include "vt_parser.phc"   /* pulls sgr.phc + screen.phc */
 #include "pty.phc"          /* cross-platform PTY abstraction */
 #include "config.phc"       /* nbs_config_load — honest-file at startup */
+#include "render_color.phc" /* render_gamma — H gamma transform per
+                             * theologian 14:43:30 + supervisor 14:43:37
+                             * pre-stage (theologian 2308147 extract) */
 
 /* Cell pixel grid — derived from TkFixedFont metrics at startup via
  * compute_cell_metrics() per feedback_tk_native_over_platform +
@@ -129,6 +132,18 @@ static const char *attrs_to_font_tag(CellAttr attrs) {
     if (bold)           return "font_bold";
     if (italic)         return "font_italic";
     return "font_normal";
+}
+
+/* Apply g_config.gamma to a #rrggbb hex color in-place via a caller-
+ * provided buffer. Identity passthrough at gamma==1.0 (the loader
+ * default; user-overridable in the honest file). Single funnel for
+ * every color literal that hits the Tk canvas — uniform application
+ * across canvas-widget -bg, per-cell bg, per-cell fg, cursor color,
+ * and inverted-overlay text fg is what prevents the 59ed176 Bug C v3
+ * 'cells lighter than slop' regression on Mac (gamma=1.2). */
+static const char *gamma_apply(const char *hex, char *out, int outsz) {
+    render_gamma(hex, g_config.gamma, out, outsz);
+    return out;
 }
 
 /* Two cells share a render span iff fg, bg, and attrs all match.
@@ -279,9 +294,16 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     }
     int cy = r * g_cell_h;
 
-    const char *cur_color = g_config.cursor.color[0]
-                              ? g_config.cursor.color
-                              : g_config.fg;
+    /* H gamma applied to both the cursor block fill and the inverted-
+     * overlay text fg (which is g_config.bg). Same uniform-gamma
+     * principle as flush_span/canvas widget — without it the cursor
+     * surface drifts off the gammaed cell beneath it. */
+    char cur_color_g[16], inv_text_g[16];
+    const char *cur_raw = g_config.cursor.color[0]
+                            ? g_config.cursor.color
+                            : g_config.fg;
+    const char *cur_color = gamma_apply(cur_raw, cur_color_g, sizeof cur_color_g);
+    const char *inv_text  = gamma_apply(g_config.bg, inv_text_g, sizeof inv_text_g);
 
     char xs[16], ys[16], x2s[16], y2s[16];
 
@@ -332,7 +354,7 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     const char *text[] = {canvas, "create", "text",
                           xs, ys,
                           "-anchor", "nw", "-text", ch,
-                          "-fill", g_config.bg, "-font", "font_normal",
+                          "-fill", inv_text, "-font", "font_normal",
                           "-tags", "cursor"};
     return EVAL_ARGV(interp, text);
 }
@@ -352,9 +374,16 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
     if (attrs & CellAttr_Inverse) {
         Color t = fg; fg = bg; bg = t;
     }
-    char fg_hex[16], bg_hex[16];
+    char fg_hex[16], bg_hex[16], fg_g[16], bg_g[16];
     color_to_hex(fg, g_config.fg, fg_hex, sizeof fg_hex);
     color_to_hex(bg, g_config.bg, bg_hex, sizeof bg_hex);
+    /* H gamma per supervisor 14:43:37 — apply uniformly to fg + bg
+     * (companion canvas-widget -bg gamma at main(); cursor-side gamma
+     * inside render_cursor). */
+    gamma_apply(fg_hex, fg_g, sizeof fg_g);
+    gamma_apply(bg_hex, bg_g, sizeof bg_g);
+    const char *fg_render = fg_g;
+    const char *bg_render = bg_g;
 
     const char *font_tag = attrs_to_font_tag(attrs);
 
@@ -383,7 +412,7 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
         snprintf(tag, sizeof tag, "bg%d_%d", r, span_start_col);
         const char *rect[] = {canvas, "create", "rectangle",
                               xs, ys, x2s, y2s,
-                              "-fill", bg_hex, "-outline", "",
+                              "-fill", bg_render, "-outline", "",
                               "-tags", tag};
         if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
     }
@@ -399,7 +428,7 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
     const char *text[] = {canvas, "create", "text",
                           xs, ys,
                           "-anchor", "nw", "-text", span_text,
-                          "-fill", fg_hex, "-font", font_tag,
+                          "-fill", fg_render, "-font", font_tag,
                           "-tags", tags_buf};
     if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
 
@@ -661,9 +690,17 @@ int main(int argc, char *argv[]) {
     char wstr[16], hstr[16];
     snprintf(wstr, sizeof wstr, "%d", g_config.cols * g_cell_w);
     snprintf(hstr, sizeof hstr, "%d", g_config.rows * g_cell_h);
+    /* Canvas widget -bg gets gamma-corrected to match per-cell bg
+     * paint downstream (flush_span runs gamma on every cell rect).
+     * 59ed176 Bug C v3: when canvas widget -bg is RAW and per-cell bg
+     * is GAMMAED, Mac (gamma=1.2) shows cells visibly darker than
+     * the canvas slop. Uniform application here closes that path. */
+    char canvas_bg_g[16];
+    const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g,
+                                         sizeof canvas_bg_g);
     const char *canvas[] = {"canvas", ".c",
                             "-width", wstr, "-height", hstr,
-                            "-bg", g_config.bg, "-highlightthickness", "0"};
+                            "-bg", canvas_bg, "-highlightthickness", "0"};
     /* Paste binding: Cmd-V on Aqua, Ctrl-Shift-V on Win/X11 — mirrors
      * nbsterm.py:1170-1200 legacy. Wrapping `clipboard get` in catch
      * makes empty/unset clipboard a no-op rather than a Tcl error.
