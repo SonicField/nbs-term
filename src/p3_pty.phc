@@ -75,23 +75,70 @@ static int                g_dirty = 0;        /* render scheduled flag */
 static int                g_child_alive = 1;
 static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
 
-/* Query Tk for the actual TkFixedFont character cell metrics so cursor
+/* Register the four named fonts the legacy nbs-term renderer expects
+ * (font_normal / font_bold / font_italic / font_bold_italic), all
+ * derived from TkFixedFont's family + size. Mirrors nbsterm.py:130-140
+ * — same name => same span attribute coverage in render_screen.
+ * Idempotent under repeated Tk_Init via 'font names' check (Tk forbids
+ * re-creating an existing named font; this guard keeps p3_pty re-entry
+ * safe even though current code creates the interp once). */
+static void register_named_fonts(Tcl_Interp *interp) {
+    Tcl_Eval(interp,
+        "set _phc_fam [font configure TkFixedFont -family];"
+        "set _phc_sz  [font configure TkFixedFont -size];"
+        "if {[lsearch -exact [font names] font_normal] < 0} {"
+        "  font create font_normal -family $_phc_fam -size $_phc_sz"
+        "};"
+        "if {[lsearch -exact [font names] font_bold] < 0} {"
+        "  font create font_bold -family $_phc_fam -size $_phc_sz -weight bold"
+        "};"
+        "if {[lsearch -exact [font names] font_italic] < 0} {"
+        "  font create font_italic -family $_phc_fam -size $_phc_sz -slant italic"
+        "};"
+        "if {[lsearch -exact [font names] font_bold_italic] < 0} {"
+        "  font create font_bold_italic -family $_phc_fam -size $_phc_sz "
+        "    -weight bold -slant italic"
+        "}");
+}
+
+/* Query Tk for the actual font_normal character cell metrics so cursor
  * + glyph layout align across platforms. 'M' is conventional for
- * monospace cell width (TkFixedFont is monospace, so any printable
- * ASCII gives the same answer; pick one explicitly so the contract
- * is obvious). 'font metrics -linespace' returns the recommended
- * inter-line vertical advance; matches the row spacing used by
- * '-anchor nw'-anchored text items. Tk requires Tk_Init first; this
- * runs after 'package require Tk' in main(). */
+ * monospace cell width (font_normal inherits TkFixedFont, monospace,
+ * so any printable ASCII gives the same answer; pick one explicitly
+ * so the contract is obvious). 'font metrics -linespace' returns the
+ * recommended inter-line vertical advance; matches the row spacing
+ * used by '-anchor nw'-anchored text items. Tk requires Tk_Init +
+ * register_named_fonts first; both run before this in main(). */
 static void compute_cell_metrics(Tcl_Interp *interp) {
-    if (Tcl_Eval(interp, "font measure TkFixedFont M") == TCL_OK) {
+    if (Tcl_Eval(interp, "font measure font_normal M") == TCL_OK) {
         int w = atoi(Tcl_GetStringResult(interp));
         if (w > 0 && w <= 1000) g_cell_w = w;
     }
-    if (Tcl_Eval(interp, "font metrics TkFixedFont -linespace") == TCL_OK) {
+    if (Tcl_Eval(interp, "font metrics font_normal -linespace") == TCL_OK) {
         int h = atoi(Tcl_GetStringResult(interp));
         if (h > 0 && h <= 1000) g_cell_h = h;
     }
+}
+
+/* Map CellAttr Bold/Italic combination to the legacy Tk named-font
+ * tag (matches nbsterm.py:131-140 _font_cache + extension.phc:988-991). */
+static const char *attrs_to_font_tag(CellAttr attrs) {
+    int bold   = (attrs & CellAttr_Bold)   != 0;
+    int italic = (attrs & CellAttr_Italic) != 0;
+    if (bold && italic) return "font_bold_italic";
+    if (bold)           return "font_bold";
+    if (italic)         return "font_italic";
+    return "font_normal";
+}
+
+/* Two cells share a render span iff fg, bg, and attrs all match. Color
+ * is a discriminated union with no embedded pointers so memcmp is
+ * safe for byte-equality. */
+static int cells_same_span(const Cell *a, const Cell *b) {
+    if (a->attrs != b->attrs) return 0;
+    if (memcmp(&a->fg, &b->fg, sizeof a->fg) != 0) return 0;
+    if (memcmp(&a->bg, &b->bg, sizeof b->bg) != 0) return 0;
+    return 1;
 }
 
 static int eval_argv(Tcl_Interp *interp, int objc, const char *argv[]) {
@@ -219,7 +266,7 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
 
     int cx = 0;
     {
-        const char *measure[] = {"font", "measure", "TkFixedFont", prefix};
+        const char *measure[] = {"font", "measure", "font_normal", prefix};
         if (EVAL_ARGV(interp, measure) == TCL_OK) {
             cx = atoi(Tcl_GetStringResult(interp));
         }
@@ -279,53 +326,139 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
     const char *text[] = {canvas, "create", "text",
                           xs, ys,
                           "-anchor", "nw", "-text", ch,
-                          "-fill", g_config.bg, "-font", "TkFixedFont",
+                          "-fill", g_config.bg, "-font", "font_normal",
                           "-tags", "cursor"};
     return EVAL_ARGV(interp, text);
 }
 
+/* Emit one render span — bg rect (when non-default) + text item with
+ * the span's font_tag and fg color. Mirrors extension.phc:1041-1047
+ * legacy no-selection branch (selection-aware split is the F-track
+ * port, not in A1 scope). Span pixel width comes from font.measure
+ * on the span's own font, falls back to cells * g_cell_w if measure
+ * fails. Returns updated x via *x_inout so the caller can advance. */
+static int flush_span(Tcl_Interp *interp, const char *canvas,
+                      int r, int span_start_col, int span_end_col,
+                      int y_pixel, const char *span_text,
+                      Color fg, Color bg, CellAttr attrs,
+                      int *x_inout) {
+    /* Apply Inverse: swap fg and bg before colour resolution. */
+    if (attrs & CellAttr_Inverse) {
+        Color t = fg; fg = bg; bg = t;
+    }
+    char fg_hex[16], bg_hex[16];
+    color_to_hex(fg, g_config.fg, fg_hex, sizeof fg_hex);
+    color_to_hex(bg, g_config.bg, bg_hex, sizeof bg_hex);
+
+    const char *font_tag = attrs_to_font_tag(attrs);
+
+    int x_pixel = *x_inout;
+    int span_w = (span_end_col - span_start_col) * g_cell_w;  /* fallback */
+    {
+        const char *measure[] = {"font", "measure", font_tag, span_text};
+        if (EVAL_ARGV(interp, measure) == TCL_OK) {
+            int m = atoi(Tcl_GetStringResult(interp));
+            if (m > 0) span_w = m;
+        }
+    }
+
+    char xs[16], ys[16], x2s[16], y2s[16], tag[32];
+    snprintf(xs,  sizeof xs,  "%d", x_pixel);
+    snprintf(ys,  sizeof ys,  "%d", y_pixel);
+
+    /* Bg rect — only when the span carries a non-default bg. The
+     * canvas widget's -bg shows through the gap otherwise. After-
+     * Inverse 'bg' here may be a previously-fg colour: still emit
+     * the rect when non-default so swapped colours render. */
+    int bg_default = color_is_default(bg) && !(attrs & CellAttr_Inverse);
+    if (!bg_default) {
+        snprintf(x2s, sizeof x2s, "%d", x_pixel + span_w);
+        snprintf(y2s, sizeof y2s, "%d", y_pixel + g_cell_h);
+        snprintf(tag, sizeof tag, "bg%d_%d", r, span_start_col);
+        const char *rect[] = {canvas, "create", "rectangle",
+                              xs, ys, x2s, y2s,
+                              "-fill", bg_hex, "-outline", "",
+                              "-tags", tag};
+        if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+    }
+
+    /* Two tags per text item: 'row{r}' is the row-wide aggregator
+     * (used by the self-test marker scan + future scrollback queries)
+     * and 'row{r}_{col}' is the per-span discriminator (lets future
+     * incremental render replace one span at a time). Tk -tags accepts
+     * a single string with space-separated tag names. */
+    char tags_buf[64];
+    snprintf(tags_buf, sizeof tags_buf, "row%d row%d_%d",
+             r, r, span_start_col);
+    const char *text[] = {canvas, "create", "text",
+                          xs, ys,
+                          "-anchor", "nw", "-text", span_text,
+                          "-fill", fg_hex, "-font", font_tag,
+                          "-tags", tags_buf};
+    if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
+
+    *x_inout = x_pixel + span_w;
+    return TCL_OK;
+}
+
+/* Per-row span walker: groups consecutive cells with identical
+ * (fg, bg, attrs) into one Tk text item; ports
+ * extension.phc:925-1156 row-loop minus the
+ * scrollback / dirty-region / selection-split / cursor-overlay
+ * branches (latter handled by render_cursor). */
 static int render_screen(Tcl_Interp *interp, const char *canvas,
                          const Terminal *term) {
     const ScreenBuffer *scr = term->active;
     const char *clear[] = {canvas, "delete", "all"};
     if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
 
-    char rowbuf[4096];
-    char xs[16], ys[16], x2s[16], y2s[16], tag[32], fg[16], bg[16];
-
     for (int r = 0; r < scr->rows; r++) {
-        int rowlen = 0;
-        for (int c = 0; c < scr->cols && rowlen < (int)sizeof(rowbuf) - 4; c++) {
+        int x_pixel = 0;
+        int y_pixel = r * g_cell_h;
+
+        char span_text[4096];
+        int  span_text_len = 0;
+        int  span_start_col = 0;
+        int  span_active = 0;
+        Cell span_proto;
+        memset(&span_proto, 0, sizeof span_proto);
+
+        for (int c = 0; c < scr->cols; c++) {
             const Cell *cell = screen_cell_const(scr, r, c);
             if (cell->wide_cont) continue;
+
+            int boundary = (!span_active) || !cells_same_span(&span_proto, cell);
+            if (boundary && span_active && span_text_len > 0) {
+                /* Flush the in-flight span before starting a new one. */
+                span_text[span_text_len] = '\0';
+                if (flush_span(interp, canvas, r, span_start_col, c,
+                               y_pixel, span_text,
+                               span_proto.fg, span_proto.bg, span_proto.attrs,
+                               &x_pixel) != TCL_OK) return TCL_ERROR;
+                span_text_len = 0;
+            }
+            if (boundary) {
+                span_active = 1;
+                span_proto = *cell;
+                span_start_col = c;
+            }
+
             uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
-            rowlen += utf8_emit(cp, rowbuf + rowlen,
-                                (int)sizeof(rowbuf) - rowlen);
-            if (color_is_default(cell->bg)) continue;
-            color_to_hex(cell->bg, g_config.bg, bg, sizeof bg);
-            snprintf(xs,  sizeof xs,  "%d", c * g_cell_w);
-            snprintf(ys,  sizeof ys,  "%d", r * g_cell_h);
-            snprintf(x2s, sizeof x2s, "%d", (c + 1) * g_cell_w);
-            snprintf(y2s, sizeof y2s, "%d", (r + 1) * g_cell_h);
-            snprintf(tag, sizeof tag, "bg%d_%d", r, c);
-            const char *rect[] = {canvas, "create", "rectangle",
-                                  xs, ys, x2s, y2s,
-                                  "-fill", bg, "-outline", "",
-                                  "-tags", tag};
-            if (EVAL_ARGV(interp, rect) != TCL_OK) return TCL_ERROR;
+            if (span_text_len + 4 < (int)sizeof span_text) {
+                span_text_len += utf8_emit(cp, span_text + span_text_len,
+                                           (int)sizeof span_text - span_text_len);
+            }
         }
-        rowbuf[rowlen] = 0;
-        color_to_hex(screen_cell_const(scr, r, 0)->fg, g_config.fg,
-                     fg, sizeof fg);
-        snprintf(xs,  sizeof xs,  "%d", 0);
-        snprintf(ys,  sizeof ys,  "%d", r * g_cell_h);
-        snprintf(tag, sizeof tag, "row%d", r);
-        const char *text[] = {canvas, "create", "text", xs, ys,
-                              "-anchor", "nw", "-text", rowbuf,
-                              "-fill", fg, "-font", "TkFixedFont",
-                              "-tags", tag};
-        if (EVAL_ARGV(interp, text) != TCL_OK) return TCL_ERROR;
+
+        if (span_active && span_text_len > 0) {
+            span_text[span_text_len] = '\0';
+            if (flush_span(interp, canvas, r, span_start_col, scr->cols,
+                           y_pixel, span_text,
+                           span_proto.fg, span_proto.bg, span_proto.attrs,
+                           &x_pixel) != TCL_OK) return TCL_ERROR;
+        }
     }
+
     if (render_cursor(interp, canvas, scr) != TCL_OK) return TCL_ERROR;
     return TCL_OK;
 }
@@ -498,9 +631,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "init: %s\n", Tcl_GetStringResult(g_interp));
         return 1;
     }
-    /* TkFixedFont metrics are valid only after Tk_Init; query now so
-     * canvas size, render_screen, render_cursor, and pty_resize all
-     * see the actual platform-derived cell dimensions. */
+    /* Register the legacy named fonts before any metrics query — the
+     * span renderer + cursor measure both reference 'font_normal'.
+     * compute_cell_metrics queries font_normal for the cell grid. */
+    register_named_fonts(g_interp);
     compute_cell_metrics(g_interp);
 
     g_term = terminal_new(g_config.rows, g_config.cols);
@@ -558,14 +692,18 @@ int main(int argc, char *argv[]) {
             /* Pump events until either child writes or 2s timeout. */
             for (int loops = 0; loops < 200 && g_child_alive; loops++) {
                 Tcl_DoOneEvent(TCL_DONT_WAIT | TCL_FILE_EVENTS | TCL_IDLE_EVENTS);
-                /* Look for the marker in the rendered first row. */
+                /* Look for the marker across all spans on each row.
+                 * row{r} tag aggregates every span on the row (one
+                 * text item per span, multiple per row possible after
+                 * A1 span-split port); concat their -text and search. */
                 Tcl_Eval(g_interp,
                     "set found 0;"
                     "for {set r 0} {$r < 24} {incr r} {"
                     "  set ids [.c find withtag row$r];"
                     "  if {[llength $ids] == 0} continue;"
-                    "  if {[string first phc_p3_round_trip_ok"
-                    "       [.c itemcget [lindex $ids 0] -text]] >= 0} {"
+                    "  set joined \"\";"
+                    "  foreach id $ids { append joined [.c itemcget $id -text] };"
+                    "  if {[string first phc_p3_round_trip_ok $joined] >= 0} {"
                     "    set found 1; break"
                     "  }"
                     "};"
