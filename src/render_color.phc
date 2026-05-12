@@ -1,0 +1,56 @@
+/*
+ * render_color.phc — Pure-C color filter helpers (gamma + dim)
+ *
+ * Extracted from extension.phc:607-636 per theologian 2026-05-12
+ * 14:43:30 + shepard 14:42:18 + supervisor 14:43:37 pre-stage of the
+ * H gamma precondition. No Python.h dependency — pure sscanf + pow +
+ * snprintf over "#rrggbb" hex strings. Safe to include from the
+ * pure-phc p3_pty.phc TU without breaking verify-phc-invariants.
+ *
+ * Both extension.phc (legacy EXTENSION_SO render_frame consumer) and
+ * p3_pty.phc (pure-phc renderer, H consumer when alexie greenlights
+ * gamma wiring) include this single copy. The static-function bodies
+ * may duplicate per TU at link time; that is acceptable — small
+ * functions, each TU resolves locally with no symbol conflict.
+ */
+#ifndef NBSTERM_RENDER_COLOR_H
+#define NBSTERM_RENDER_COLOR_H
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+static void render_gamma(const char *hex, double gamma, char *out, int outsize) {
+    if (gamma == 1.0 || strlen(hex) != 7 || hex[0] != '#') {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    int ro = (int)(255.0 * pow((double)r / 255.0, gamma));
+    int go = (int)(255.0 * pow((double)g / 255.0, gamma));
+    int bo = (int)(255.0 * pow((double)b / 255.0, gamma));
+    if (ro > 255) ro = 255;
+    if (go > 255) go = 255;
+    if (bo > 255) bo = 255;
+    snprintf(out, (size_t)outsize, "#%02x%02x%02x", ro, go, bo);
+}
+
+static void render_dim(const char *hex, char *out, int outsize) {
+    if (strlen(hex) != 7 || hex[0] != '#') {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    unsigned int r, g, b;
+    if (sscanf(hex + 1, "%02x%02x%02x", &r, &g, &b) != 3) {
+        snprintf(out, (size_t)outsize, "%s", hex);
+        return;
+    }
+    r &= 0xFF; g &= 0xFF; b &= 0xFF;
+    snprintf(out, (size_t)outsize, "#%02x%02x%02x", r / 2, g / 2, b / 2);
+}
+
+#endif /* NBSTERM_RENDER_COLOR_H */
