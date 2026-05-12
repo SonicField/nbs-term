@@ -131,13 +131,19 @@ static const char *attrs_to_font_tag(CellAttr attrs) {
     return "font_normal";
 }
 
-/* Two cells share a render span iff fg, bg, and attrs all match. Color
- * is a discriminated union with no embedded pointers so memcmp is
- * safe for byte-equality. */
+/* Two cells share a render span iff fg, bg, and attrs all match.
+ * Use color_equal (sgr.phc:123) — phc-generated Color_mk_Default
+ * leaves the union body bytes uninitialised stack garbage (only the
+ * tag is set), so memcmp on Color is unsafe across separate stack
+ * frames: two Default colours can have matching tag + diverging
+ * garbage bytes, breaking span-grouping on real shell output that
+ * resets via SGR 39/49. color_equal phc_match-dispatches on tag and
+ * compares only the variant-relevant fields. (Gatekeeper 15:22:14
+ * BLOCK on 439c7cc.) */
 static int cells_same_span(const Cell *a, const Cell *b) {
     if (a->attrs != b->attrs) return 0;
-    if (memcmp(&a->fg, &b->fg, sizeof a->fg) != 0) return 0;
-    if (memcmp(&a->bg, &b->bg, sizeof b->bg) != 0) return 0;
+    if (!color_equal(a->fg, b->fg)) return 0;
+    if (!color_equal(a->bg, b->bg)) return 0;
     return 1;
 }
 
