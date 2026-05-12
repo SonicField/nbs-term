@@ -410,6 +410,7 @@ typedef struct {
     int mode_bracketed_paste;
     int mode_app_cursor;       /* DECCKM: application cursor keys */
     int mode_app_keypad;       /* DECKPAM/DECKPNM */
+    int mode_cursor_visible;   /* DECTCEM: cursor visibility (1 = visible per DEC default) */
 
     /* Dirty tracking: one flag per row, set on modification */
     uint8_t *dirty;
@@ -435,6 +436,7 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
     scr->cursor.autowrap = 1;
     scr->scroll_top = 0;
     scr->scroll_bottom = rows - 1;
+    scr->mode_cursor_visible = 1;  /* DECTCEM default: visible */
     return scr;
 }
 
@@ -993,7 +995,7 @@ static inline VTState_Dcs_t VTState_as_Dcs(VTState v) {
     if (v.tag != VTState_Dcs) abort();
     return v.Dcs;
 }
-#line 719
+#line 721
 
 /* --- UTF-8 decoder state --- */
 
@@ -1208,7 +1210,7 @@ static void handle_csi_dispatch(Terminal *term, int *params, int param_count, in
                 switch (params[i]) {
                 case 1: scr->mode_app_cursor = 1; break;        /* DECCKM */
                 case 7: scr->cursor.autowrap = 1; break;         /* DECAWM */
-                case 25: /* cursor visible — TODO */ break;
+                case 25: scr->mode_cursor_visible = 1; break;     /* DECTCEM */
                 case 47:
                 case 1047: terminal_switch_alt(term, 1); break;
                 case 1049:
@@ -1224,7 +1226,7 @@ static void handle_csi_dispatch(Terminal *term, int *params, int param_count, in
                 switch (params[i]) {
                 case 1: scr->mode_app_cursor = 0; break;
                 case 7: scr->cursor.autowrap = 0; break;         /* DECAWM */
-                case 25: /* cursor hidden — TODO */ break;
+                case 25: scr->mode_cursor_visible = 0; break;     /* DECTCEM */
                 case 47:
                 case 1047: terminal_switch_alt(term, 0); break;
                 case 1049:
@@ -1582,7 +1584,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1312
+#line 1314
 
     return VTState_mk_Ground();
 }
@@ -1647,7 +1649,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1338
+#line 1340
 
 /* --- Input event types --- */
 
@@ -1740,7 +1742,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1347
+#line 1349
 
 /* --- UTF-8 encoding --- */
 
@@ -1893,7 +1895,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1434
+#line 1436
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -2027,7 +2029,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1566
+#line 1568
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2366,7 +2368,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1887
+#line 1889
 
 /* Config structs — mirrors Python dataclasses */
 

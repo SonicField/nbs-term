@@ -121,6 +121,7 @@ typedef struct {
     int mode_bracketed_paste;
     int mode_app_cursor;       /* DECCKM: application cursor keys */
     int mode_app_keypad;       /* DECKPAM/DECKPNM */
+    int mode_cursor_visible;   /* DECTCEM: cursor visibility (1 = visible per DEC default) */
 
     /* Dirty tracking: one flag per row, set on modification */
     uint8_t *dirty;
@@ -146,6 +147,7 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
     scr->cursor.autowrap = 1;
     scr->scroll_top = 0;
     scr->scroll_bottom = rows - 1;
+    scr->mode_cursor_visible = 1;  /* DECTCEM default: visible */
     return scr;
 }
 

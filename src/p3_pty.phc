@@ -92,6 +92,15 @@ static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in ma
 static int                g_is_mac = 0;       /* set in main() from [tk windowingsystem] eq aqua;
                                                * picks Alt mask 0x10 (Mac) vs 0x8 (Win/X11) for D special keys */
 
+/* C cursor blink (per legacy nbsterm.py:441-443 + 514-525): toggles
+ * g_blink_visible on a 530ms cadence when g_config.cursor.blink set;
+ * any pty output resets the timer + forces visible (cursor stays
+ * solid during active typing). render_cursor honors both this and
+ * scr->mode_cursor_visible (DECTCEM, vt_parser.phc:240/256). */
+#define NBS_BLINK_MS 530
+static int             g_blink_visible = 1;
+static Tcl_TimerToken  g_blink_after_id = NULL;
+
 /* Register the four named fonts the legacy nbs-term renderer expects
  * (font_normal / font_bold / font_italic / font_bold_italic), all
  * derived from TkFixedFont's family + size. Mirrors nbsterm.py:130-140
@@ -151,6 +160,33 @@ static const char *attrs_to_font_tag(CellAttr attrs) {
 /* Forward decl — render_screen end-of-paint reflow may schedule
  * another idle render (A2 bbox-calibration / compute_layout convergence). */
 static void schedule_render(void);
+
+/* C cursor blink — toggles visibility, repaints, reschedules itself.
+ * Cancelled (and re-armed visible) by on_pty_data on every PTY read,
+ * so the cursor stays solid during active typing then resumes blink
+ * 530ms after the last byte (matches legacy nbsterm.py:441-443). */
+static void blink_proc(ClientData cd) {
+    (void)cd;
+    g_blink_after_id = NULL;
+    if (!g_config.cursor.blink) return;
+    g_blink_visible = !g_blink_visible;
+    schedule_render();
+    g_blink_after_id = Tcl_CreateTimerHandler(NBS_BLINK_MS, blink_proc, NULL);
+}
+
+/* Force cursor visible + reset the blink timer. Called from
+ * on_pty_data after any received bytes so the user sees a solid
+ * cursor while output is streaming. */
+static void blink_reset(void) {
+    g_blink_visible = 1;
+    if (g_blink_after_id) {
+        Tcl_DeleteTimerHandler(g_blink_after_id);
+        g_blink_after_id = NULL;
+    }
+    if (g_config.cursor.blink) {
+        g_blink_after_id = Tcl_CreateTimerHandler(NBS_BLINK_MS, blink_proc, NULL);
+    }
+}
 
 /* Apply g_config.gamma to a #rrggbb hex color in-place via a caller-
  * provided buffer. Identity passthrough at gamma==1.0 (the loader
@@ -366,6 +402,14 @@ static int bbox_calibrate(Tcl_Interp *interp, const ScreenBuffer *scr) {
  * collects the previous frame's overlay in one pass. */
 static int render_cursor(Tcl_Interp *interp, const char *canvas,
                          const ScreenBuffer *scr) {
+    /* C — DECTCEM gate (vt_parser.phc:240/256 toggles
+     * mode_cursor_visible; default 1). Plus blink gate: when
+     * g_config.cursor.blink set, blink_proc toggles g_blink_visible
+     * on a 530ms cadence; on_pty_data forces g_blink_visible=1 +
+     * resets the timer for the active-typing-stays-solid behaviour. */
+    if (!scr->mode_cursor_visible) return TCL_OK;
+    if (g_config.cursor.blink && !g_blink_visible) return TCL_OK;
+
     int r = scr->cursor.row;
     int c = scr->cursor.col;
     if (r < 0) r = 0;
@@ -630,6 +674,9 @@ static void on_pty_data(void *cd) {
     pty_ssize_t n = pty_read(g_pty, buf, sizeof buf);
     if (n > 0) {
         vt_parser_feed(g_parser, buf, (int)n);
+        /* C — keep the cursor solid while output streams; resume blink
+         * 530ms after the last byte (legacy nbsterm.py:441-443). */
+        blink_reset();
         schedule_render();
         return;
     }
@@ -930,6 +977,12 @@ int main(int argc, char *argv[]) {
     }
 
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
+
+    /* C — kick off the blink timer if config enables it. blink_proc
+     * reschedules itself; on_pty_data resets via blink_reset(). */
+    if (g_config.cursor.blink) {
+        g_blink_after_id = Tcl_CreateTimerHandler(NBS_BLINK_MS, blink_proc, NULL);
+    }
 
     char wstr[16], hstr[16];
     snprintf(wstr, sizeof wstr, "%d", g_config.cols * g_cell_w);

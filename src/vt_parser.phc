@@ -237,7 +237,7 @@ static void handle_csi_dispatch(Terminal *term, int *params, int param_count, in
                 switch (params[i]) {
                 case 1: scr->mode_app_cursor = 1; break;        /* DECCKM */
                 case 7: scr->cursor.autowrap = 1; break;         /* DECAWM */
-                case 25: /* cursor visible — TODO */ break;
+                case 25: scr->mode_cursor_visible = 1; break;     /* DECTCEM */
                 case 47:
                 case 1047: terminal_switch_alt(term, 1); break;
                 case 1049:
@@ -253,7 +253,7 @@ static void handle_csi_dispatch(Terminal *term, int *params, int param_count, in
                 switch (params[i]) {
                 case 1: scr->mode_app_cursor = 0; break;
                 case 7: scr->cursor.autowrap = 0; break;         /* DECAWM */
-                case 25: /* cursor hidden — TODO */ break;
+                case 25: scr->mode_cursor_visible = 0; break;     /* DECTCEM */
                 case 47:
                 case 1047: terminal_switch_alt(term, 0); break;
                 case 1049:
