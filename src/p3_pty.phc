@@ -304,6 +304,53 @@ static int utf8_emit(uint32_t cp, char *buf, int bufsz) {
     return 0;
 }
 
+/* G — get the row of cells for the visible-window row r, compositing
+ * scrollback + active screen when scroll_offset > 0 && !using_alt.
+ * sb_idx = sb_count - scroll_offset + r:
+ *   - in [0, sb_count) → scrollback line
+ *   - in [sb_count, sb_count + scr->rows) → active screen row
+ *   - else → NULL (out of bounds; caller treats as blank row)
+ * Returns a pointer to scr->cols contiguous cells. Mirrors
+ * extension.phc:881-912 composite-screen branch. */
+static const Cell *view_row_cells(const Terminal *term, int r) {
+    if (!term || !term->active) return NULL;
+    const ScreenBuffer *scr = term->active;
+    if (term->scroll_offset > 0 && !term->using_alt) {
+        const Scrollback *sb = term->scrollback;
+        int sb_idx = sb->count - term->scroll_offset + r;
+        if (sb_idx >= 0 && sb_idx < sb->count) {
+            return scrollback_get(sb, sb_idx);
+        }
+        if (sb_idx >= sb->count) {
+            int sr = sb_idx - sb->count;
+            if (sr >= 0 && sr < scr->rows) return &scr->cells[sr * scr->cols];
+        }
+        return NULL;
+    }
+    if (r < 0 || r >= scr->rows) return NULL;
+    return &scr->cells[r * scr->cols];
+}
+
+/* G — bounds-clamp + dirty-mark wrappers for scroll_offset; mirrors
+ * extension.phc:1207-1237 Terminal_set_scroll_offset +
+ * Terminal_scroll_lines verbatim minus the Python plumbing.
+ * scroll_lines convention: positive delta = scroll into history. */
+static void nbs_set_scroll_offset(Terminal *term, int offset) {
+    if (!term || !term->scrollback || !term->active) return;
+    int max_off = term->scrollback->count;
+    if (offset < 0)        offset = 0;
+    if (offset > max_off)  offset = max_off;
+    if (offset != term->scroll_offset) {
+        term->scroll_offset = offset;
+        memset(term->active->dirty, 1, (size_t)term->active->rows);
+    }
+}
+
+static void nbs_scroll_lines_apply(Terminal *term, int delta) {
+    if (!term) return;
+    nbs_set_scroll_offset(term, term->scroll_offset + delta);
+}
+
 /* F — UTF-8 byte offset of the char_idx-th codepoint within text.
  * Mirrors extension.phc:819 utf8_byte_offset; used by flush_span's
  * selection split to slice span_text by cell index. */
@@ -389,10 +436,19 @@ static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
      * on platforms where font.measure(M) under-counts. */
     int max_w = 0;
     char rowbuf[4096];
+    /* G — measure the COMPOSITE view (scrollback + screen) so layout
+     * stays consistent when scrolled back. view_row_cells returns the
+     * scrollback-sourced row when applicable. */
     for (int r = 0; r < scr->rows; r++) {
         int rowlen = 0;
+        const Cell *row = view_row_cells(g_term, r);
         for (int c = 0; c < scr->cols && rowlen < (int)sizeof rowbuf - 4; c++) {
-            const Cell *cell = screen_cell_const(scr, r, c);
+            const Cell *cell = row ? &row[c] : NULL;
+            if (!cell) {
+                rowlen += utf8_emit(' ', rowbuf + rowlen,
+                                    (int)sizeof rowbuf - rowlen);
+                continue;
+            }
             if (cell->wide_cont) continue;
             uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
             rowlen += utf8_emit(cp, rowbuf + rowlen,
@@ -480,6 +536,10 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
      * resets the timer for the active-typing-stays-solid behaviour. */
     if (!scr->mode_cursor_visible) return TCL_OK;
     if (g_config.cursor.blink && !g_blink_visible) return TCL_OK;
+    /* G — hide cursor when scrolled back into history; the cursor
+     * lives at a screen-cell coordinate that may not be visible in
+     * the composite view. Painting it would mark the wrong cell. */
+    if (g_term && g_term->scroll_offset > 0 && !g_term->using_alt) return TCL_OK;
 
     int r = scr->cursor.row;
     int c = scr->cursor.col;
@@ -493,6 +553,8 @@ static int render_cursor(Tcl_Interp *interp, const char *canvas,
      * This is the byte sequence Tk has actually painted to the left
      * of the cursor cell — feeding it through 'font measure' gives
      * the exact pixel x where the cursor glyph starts. */
+    /* G — cursor lives on the live screen; scroll_offset==0 here per
+     * the early-return above. screen_cell_const is correct. */
     char prefix[4096];
     int  prefixlen = 0;
     for (int cc = 0; cc < c && prefixlen < (int)sizeof prefix - 4; cc++) {
@@ -772,8 +834,13 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
         Cell span_proto;
         memset(&span_proto, 0, sizeof span_proto);
 
+        /* G — pull cells from the composite (scrollback + screen) view
+         * via view_row_cells. NULL row → blank cells row. */
+        const Cell *view_row = view_row_cells(g_term, r);
+        Cell blank_cell = cell_empty();
+
         for (int c = 0; c < scr->cols; c++) {
-            const Cell *cell = screen_cell_const(scr, r, c);
+            const Cell *cell = view_row ? &view_row[c] : &blank_cell;
             if (cell->wide_cont) continue;
 
             int boundary = (!span_active) || !cells_same_span(&span_proto, cell);
@@ -840,6 +907,9 @@ static void on_pty_data(void *cd) {
         /* C — keep the cursor solid while output streams; resume blink
          * 530ms after the last byte (legacy nbsterm.py:441-443). */
         blink_reset();
+        /* G — auto-snap scroll-back view to live edge on any new
+         * output (matches Apple Terminal / iTerm / xterm UX). */
+        if (g_term) nbs_set_scroll_offset(g_term, 0);
         schedule_render();
         return;
     }
@@ -1066,6 +1136,27 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* G — Tcl command nbs_scroll_lines <delta>. Positive delta scrolls
+ * INTO history (toward older content); negative delta scrolls
+ * toward live edge. No-op on alt-screen (vim/less) so wheel events
+ * pass through to the app without disturbing its full-screen UI.
+ * Mirrors extension.phc:1223-1237 Terminal_scroll_lines minus the
+ * Python plumbing. */
+static int NbsScrollLines(ClientData cd, Tcl_Interp *interp, int objc,
+                          Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "delta");
+        return TCL_ERROR;
+    }
+    int delta = 0;
+    if (Tcl_GetIntFromObj(interp, objv[1], &delta) != TCL_OK) return TCL_ERROR;
+    if (!g_term || g_term->using_alt) return TCL_OK;
+    nbs_scroll_lines_apply(g_term, delta);
+    schedule_render();
+    return TCL_OK;
+}
+
 /* F2 — copy current selection to the Tk clipboard. Walks selected
  * cells (sr,sc) to (er,ec) in canonical order; emits utf8 per cell
  * with '\n' on row boundary; writes via 'clipboard clear/append'.
@@ -1095,8 +1186,16 @@ static int NbsCopy(ClientData cd, Tcl_Interp *interp, int objc,
         int c0 = -1, c1 = -1;
         row_sel_range(r, sr, sc, er, ec, scr->cols, &c0, &c1);
         if (c0 >= 0) {
+            /* G — copy from the same composite view paint sees, so
+             * selecting from scrollback content captures the visible
+             * bytes rather than whatever the live screen now holds. */
+            const Cell *view_row = view_row_cells(g_term, r);
             for (int c = c0; c < c1 && c < scr->cols; c++) {
-                const Cell *cell = screen_cell_const(scr, r, c);
+                if (!view_row) {
+                    if (len + 1 < (int)sizeof buf) buf[len++] = ' ';
+                    continue;
+                }
+                const Cell *cell = &view_row[c];
                 if (cell->wide_cont) continue;
                 uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
                 if (len + 4 < (int)sizeof buf) {
@@ -1471,6 +1570,7 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_sel_drag",   NbsSelDrag,   NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,     NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,      NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_scroll_lines", NbsScrollLines, NULL, NULL);
 
     /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
      * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
@@ -1515,6 +1615,24 @@ int main(int argc, char *argv[]) {
             "bind .c <ButtonPress-1>   {nbs_sel_down %x %y};"
             "bind .c <B1-Motion>       {nbs_sel_drag %x %y};"
             "bind .c <ButtonRelease-1> {nbs_sel_up   %x %y};"
+            /* G — wheel + keyboard scroll bindings. MouseWheel %D
+             * convention: positive = wheel up = scroll into history.
+             * Linux uses Button-4 (up) / Button-5 (down). Trailing
+             * 'break' on every bind is load-bearing per Bug B1
+             * (5525918 D-1776953112 nbsterm.py:298/304) — without
+             * it Ctrl-Shift-Up also fires the <Key> bind and
+             * leaks ESC[A to the PTY. */
+            "bind . <MouseWheel> "
+            "  {nbs_scroll_lines [expr {%D > 0 ? 3 : -3}]; break};"
+            "bind . <Button-4>   {nbs_scroll_lines  3; break};"
+            "bind . <Button-5>   {nbs_scroll_lines -3; break};"
+            /* Keyboard scrolls live on .c so the more-specific
+             * <Control-Shift-Up> match wins over .c's general <Key>
+             * binding (which would otherwise fire encode_special_key
+             * for Up and leak ESC[A to the PTY). Wheel binds stay on
+             * '.' since wheel events have no competing <Key>. */
+            "bind .c <Control-Shift-Up>   {nbs_scroll_lines  1; break};"
+            "bind .c <Control-Shift-Down> {nbs_scroll_lines -1; break};"
             "if {[tk windowingsystem] eq \"aqua\"} {"
             "  bind .c <Command-v> "
             "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
