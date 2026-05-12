@@ -55,6 +55,9 @@
 #include "render_color.phc" /* render_gamma — H gamma transform per
                              * theologian 14:43:30 + supervisor 14:43:37
                              * pre-stage (theologian 2308147 extract) */
+#include "input.phc"       /* encode_key_event + encode_special_key +
+                             * Modifier flags + SpecialKey enum — D
+                             * special-keys port per theologian 15:47:17 */
 
 /* Cell pixel grid — derived from TkFixedFont metrics at startup via
  * compute_cell_metrics() per feedback_tk_native_over_platform +
@@ -77,6 +80,8 @@ static PTYHandle         *g_pty    = NULL;
 static int                g_dirty = 0;        /* render scheduled flag */
 static int                g_child_alive = 1;
 static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
+static int                g_is_mac = 0;       /* set in main() from [tk windowingsystem] eq aqua;
+                                               * picks Alt mask 0x10 (Mac) vs 0x8 (Win/X11) for D special keys */
 
 /* Register the four named fonts the legacy nbs-term renderer expects
  * (font_normal / font_bold / font_italic / font_bold_italic), all
@@ -541,10 +546,10 @@ static void schedule_render(void) {
 }
 
 /* Tcl command: pty_write <bytes>. Bytes are the raw payload to push to
- * the child's stdin. Bound via `bind .c <Key> {pty_write %A}` — Tk's %A
- * substitution is the Unicode character; we transmit its UTF-8 form.
- * Special keys (arrows, function keys) need a keymap path through
- * input.phc; out of P3/P4 scope, comes in P3.5. */
+ * the child's stdin. Retained as a low-level escape hatch (e.g. pasted
+ * bytes from PtyPaste); the live <Key> bind now routes through
+ * pty_key_event for full input.phc coverage (D special-keys port,
+ * theologian 15:47:17 + supervisor 15:46:07). */
 static int PtyWrite(ClientData cd, Tcl_Interp *interp, int objc,
                     Tcl_Obj *const objv[]) {
     (void)cd;
@@ -621,6 +626,119 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* Tcl command: pty_key_event <keysym> <state> ?<char>?. Bound via
+ * `bind .c <Key> {pty_key_event %K %s %A}`. Mirrors
+ * extension.phc:248-322 Terminal_encode_tk_event line-for-line:
+ * special-key dispatch -> Return/BackSpace/Tab/Escape -> Ctrl+letter
+ * -> Alt+key -> regular character via encode_key_event. DECCKM via
+ * g_term->active->mode_app_cursor; Alt mask via g_is_mac. <char>
+ * optional because Tk's %A is empty for non-text keys (Up, F1, etc)
+ * and the <Key> binding's command tokenises with a missing trailing
+ * argument in that case. */
+static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
+                       Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "keysym state ?char?");
+        return TCL_ERROR;
+    }
+    int keysym_len = 0, char_len = 0;
+    const char *keysym = Tcl_GetStringFromObj(objv[1], &keysym_len);
+    int state = 0;
+    if (Tcl_GetIntFromObj(interp, objv[2], &state) != TCL_OK) return TCL_ERROR;
+    const char *char_str = (objc == 4)
+                              ? Tcl_GetStringFromObj(objv[3], &char_len)
+                              : "";
+
+    int char_code = 0;
+    if (char_len > 0) {
+        Tcl_UniChar uch = 0;
+        Tcl_UtfToUniChar(char_str, &uch);
+        char_code = (int)uch;
+    }
+
+    int alt_mask = g_is_mac ? 0x10 : 0x8;
+    int modifiers = 0;
+    if (state & 0x1)      modifiers |= Modifier_Shift;
+    if (state & alt_mask) modifiers |= Modifier_Alt;
+    if (state & 0x4)      modifiers |= Modifier_Ctrl;
+
+    int app_cursor = (g_term && g_term->active)
+                       ? g_term->active->mode_app_cursor : 0;
+    char buf[32];
+    int  n = 0;
+
+    /* Special keys — table verbatim from extension.phc:266-278. */
+    static const struct { const char *name; int key; } special_map[] = {
+        {"Up",     SpecialKey_Up},     {"Down",   SpecialKey_Down},
+        {"Right",  SpecialKey_Right},  {"Left",   SpecialKey_Left},
+        {"Home",   SpecialKey_Home},   {"End",    SpecialKey_End},
+        {"Insert", SpecialKey_Insert}, {"Delete", SpecialKey_Delete},
+        {"Prior",  SpecialKey_PageUp}, {"Next",   SpecialKey_PageDown},
+        {"F1",  SpecialKey_F1},  {"F2",  SpecialKey_F2},
+        {"F3",  SpecialKey_F3},  {"F4",  SpecialKey_F4},
+        {"F5",  SpecialKey_F5},  {"F6",  SpecialKey_F6},
+        {"F7",  SpecialKey_F7},  {"F8",  SpecialKey_F8},
+        {"F9",  SpecialKey_F9},  {"F10", SpecialKey_F10},
+        {"F11", SpecialKey_F11}, {"F12", SpecialKey_F12},
+        {NULL, 0}
+    };
+    for (int i = 0; special_map[i].name; i++) {
+        if (strcmp(keysym, special_map[i].name) == 0) {
+            n = encode_special_key(special_map[i].key, modifiers, app_cursor,
+                                   buf, (int)sizeof buf);
+            if (n > 0) (void)pty_write(g_pty, buf, (size_t)n);
+            return TCL_OK;
+        }
+    }
+
+    /* Simple keys. */
+    if (strcmp(keysym, "Return") == 0) {
+        (void)pty_write(g_pty, "\r", 1);
+        return TCL_OK;
+    }
+    if (strcmp(keysym, "BackSpace") == 0) {
+        (void)pty_write(g_pty, "\x7f", 1);
+        return TCL_OK;
+    }
+    if (strcmp(keysym, "Tab") == 0) {
+        (void)pty_write(g_pty, "\t", 1);
+        return TCL_OK;
+    }
+    if (strcmp(keysym, "Escape") == 0) {
+        (void)pty_write(g_pty, "\x1b", 1);
+        return TCL_OK;
+    }
+
+    /* Ctrl+letter — keysym is the unmodified letter ('a'..'z' / 'A'..'Z'),
+     * Tk reports 'a' on Ctrl-A on Linux/Mac and the same on Win. */
+    if ((state & 0x4) && keysym_len == 1 &&
+        ((keysym[0] >= 'a' && keysym[0] <= 'z') ||
+         (keysym[0] >= 'A' && keysym[0] <= 'Z'))) {
+        char ctrl = (char)(keysym[0] & 0x1F);
+        (void)pty_write(g_pty, &ctrl, 1);
+        return TCL_OK;
+    }
+
+    /* Alt+key — ESC prefix + the keysym character. */
+    if ((state & alt_mask) && keysym_len == 1) {
+        char ab[2] = {'\x1b', keysym[0]};
+        (void)pty_write(g_pty, ab, 2);
+        return TCL_OK;
+    }
+
+    /* Regular character via encode_key_event (handles Ctrl/Alt + char). */
+    if (char_code >= 1) {
+        n = encode_key_event(char_code, modifiers, app_cursor,
+                             buf, (int)sizeof buf);
+        if (n > 0) (void)pty_write(g_pty, buf, (size_t)n);
+        return TCL_OK;
+    }
+
+    /* Unhandled key — silent no-op (matches Py_RETURN_NONE legacy). */
+    return TCL_OK;
+}
+
 /* Build the argv vector for the child. If --ssh is the first user arg,
  * the rest of argv becomes the child argv; otherwise spawn $SHELL (or
  * /bin/sh on POSIX, cmd.exe on Win32) as a login shell calibration. */
@@ -682,9 +800,18 @@ int main(int argc, char *argv[]) {
     g_pty = pty_open(child_argv, g_config.rows, g_config.cols);
     if (!g_pty) return 1;
 
-    Tcl_CreateObjCommand(g_interp, "pty_write",  PtyWrite,  NULL, NULL);
-    Tcl_CreateObjCommand(g_interp, "pty_resize", PtyResize, NULL, NULL);
-    Tcl_CreateObjCommand(g_interp, "pty_paste",  PtyPaste,  NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_write",     PtyWrite,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_resize",    PtyResize,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_paste",     PtyPaste,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_key_event", PtyKeyEvent, NULL, NULL);
+
+    /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
+     * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
+     * but PtyKeyEvent fires on every keystroke; cache. */
+    if (Tcl_Eval(g_interp, "tk windowingsystem") == TCL_OK) {
+        g_is_mac = (strcmp(Tcl_GetStringResult(g_interp), "aqua") == 0);
+    }
+
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     char wstr[16], hstr[16];
@@ -710,7 +837,7 @@ int main(int argc, char *argv[]) {
         Tcl_Eval(g_interp,
             "pack .c -fill both -expand 1;"
             "focus .c;"
-            "bind .c <Key> {pty_write %A};"
+            "bind .c <Key> {pty_key_event %K %s %A};"
             "bind .c <Configure> {pty_resize %w %h};"
             "if {[tk windowingsystem] eq \"aqua\"} {"
             "  bind .c <Command-v> "
