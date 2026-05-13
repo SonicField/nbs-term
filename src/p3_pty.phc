@@ -1711,9 +1711,19 @@ int main(int argc, char *argv[]) {
     char canvas_bg_g[16];
     const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g,
                                          sizeof canvas_bg_g);
+    /* -borderwidth 0 mirrors legacy nbsterm.py:160 (was missing in
+     * pure-phc port). On Mac aqua the default canvas borderwidth
+     * draws a tinted frame OUTSIDE the canvas-item drawing area;
+     * bg_fill rect (which paints inside the drawing area) cannot
+     * cover it, leaving a visible margin asymmetry on wide windows.
+     * Combined with -highlightthickness 0 these zero out both
+     * widget chrome layers (alexie 2026-05-13 14:51:46 wide-window
+     * symptom + librarian 14:50:35 + supervisor 14:51:44 routing). */
     const char *canvas[] = {"canvas", ".c",
                             "-width", wstr, "-height", hstr,
-                            "-bg", canvas_bg, "-highlightthickness", "0"};
+                            "-bg", canvas_bg,
+                            "-borderwidth", "0",
+                            "-highlightthickness", "0"};
     /* Paste binding: Cmd-V on Aqua, Ctrl-Shift-V on Win/X11 — mirrors
      * nbsterm.py:1170-1200 legacy. Wrapping `clipboard get` in catch
      * makes empty/unset clipboard a no-op rather than a Tcl error.
