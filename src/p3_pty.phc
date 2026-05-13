@@ -1805,17 +1805,27 @@ int main(int argc, char *argv[]) {
              * '.' since wheel events have no competing <Key>. */
             "bind .c <Control-Shift-Up>   {nbs_scroll_lines  1; break};"
             "bind .c <Control-Shift-Down> {nbs_scroll_lines -1; break};"
-            "if {[tk windowingsystem] eq \"aqua\"} {"
-            "  bind .c <Command-v> "
-            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "  bind .c <Command-comma> {nbs_open_prefs; break};"
-            "  bind . <Command-c>     {nbs_copy; break}"
-            "} else {"
-            "  bind .c <Control-Shift-V> "
-            "    {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "  bind .c <Control-comma>    {nbs_open_prefs; break};"
-            "  bind . <Control-Shift-C>   {nbs_copy; break}"
-            "};"
+            /* Dual-bind both Cmd-X (Mac) AND Ctrl-Shift-X / Ctrl-X
+             * (non-Mac) accelerators unconditionally per supervisor
+             * 2026-05-13 15:53:44 + theologian 15:53:38. Removes the
+             * `tk windowingsystem eq aqua` runtime branch on this
+             * surface. <Command-X> is Mac-only in Tk (alias for
+             * Cmd modifier on aqua; not aliased to Ctrl on X11/Win
+             * — would-be misalias would steal terminal Ctrl-C SIGINT
+             * etc); inert no-op on non-Mac platforms. <Control-Shift-X>
+             * + <Control-comma> are user-meaningful on Win/Linux and
+             * also work on Mac as a power-user fallback. UX preserved
+             * (Mac Cmd-X / Win-Linux Ctrl-X both work as expected);
+             * machine-specifics removed per alexie 15:50:38 'avoid
+             * machine specifics'. */
+            "bind .c <Command-v> "
+            "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+            "bind .c <Control-Shift-V> "
+            "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+            "bind .c <Command-comma>    {nbs_open_prefs; break};"
+            "bind .c <Control-comma>    {nbs_open_prefs; break};"
+            "bind . <Command-c>         {nbs_copy; break};"
+            "bind . <Control-Shift-C>   {nbs_copy; break};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
