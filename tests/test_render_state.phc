@@ -73,16 +73,35 @@ static int NbsTestFeedBytes(ClientData cd, Tcl_Interp *interp, int objc,
 }
 
 /* nbs_test_render — synchronous render_screen call. Skips the idle
- * scheduler so the dump that follows sees the post-render canvas. */
+ * scheduler so the dump that follows sees the post-render canvas.
+ *
+ * Pre-render after-idle defer + vwait drains Tk's event queue
+ * (including WM Map events) before render_screen's compute_layout
+ * queries winfo width/height. Without this, Win Tk 8.6 returns
+ * winfo = 1 until the toplevel is mapped, which propagates into
+ * bg_fill rect dimensions (testkeeper 12:00:23 Win artifact: bg_fill
+ * rect 0,0,1.0,1.0). Pattern matches legacy nbsterm.py:1281-1283
+ * after_idle defer per librarian 12:06:44 + memory
+ * feedback_legacy_port_as_spec. after-idle + vwait avoids the
+ * event-loop reentry risk that full "update" carries — the script
+ * has already returned to event-loop control by the time vwait
+ * pumps; only the inner after-idle callback runs. */
 static int NbsTestRender(ClientData cd, Tcl_Interp *interp, int objc,
                          Tcl_Obj *const objv[]) {
     (void)cd; (void)objc; (void)objv;
     g_dirty = 0;
     if (!g_term) return TCL_OK;
+    Tcl_Eval(interp,
+             "set ::nbs_test_layout_done 0;"
+             "after idle {set ::nbs_test_layout_done 1};"
+             "vwait ::nbs_test_layout_done");
     int rc = render_screen(interp, ".c", g_term);
-    /* Force Tk to flush pending geometry/painting so introspection sees
-     * the freshly-painted state. */
-    Tcl_Eval(interp, "update idletasks");
+    /* Post-render same-pattern flush — ensures any geometry/painting
+     * deferred during render is processed before introspection. */
+    Tcl_Eval(interp,
+             "set ::nbs_test_layout_done 0;"
+             "after idle {set ::nbs_test_layout_done 1};"
+             "vwait ::nbs_test_layout_done");
     return rc;
 }
 
@@ -485,7 +504,10 @@ int main(int argc, char *argv[]) {
                             "-bg", canvas_bg, "-highlightthickness", "0"};
     if (EVAL_ARGV(g_interp, canvas) != TCL_OK ||
         Tcl_Eval(g_interp,
-                 "pack .c -fill both -expand 1; update idletasks") != TCL_OK) {
+                 "pack .c -fill both -expand 1;"
+                 "set ::nbs_test_layout_done 0;"
+                 "after idle {set ::nbs_test_layout_done 1};"
+                 "vwait ::nbs_test_layout_done") != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
         return 1;
     }
