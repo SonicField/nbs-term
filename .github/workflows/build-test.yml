@@ -167,6 +167,28 @@ jobs:
           path: tests/goldens/a1_color.*.actual
           if-no-files-found: ignore
 
+      - name: T0 A3a PreferencesDialog (test_render_state + a3a_prefs.tcl)
+        # Bucket B per-surface test for A3a (commit 2e57d0d — Prefs
+        # Toplevel + Ctrl+, / Cmd+, bind). Discriminator: if alexie
+        # reports 'Prefs does not open' OR 'Prefs fields show wrong
+        # values' AND this passes, bug is in keybinding chain (Tk
+        # infrastructure); if this fails, regression is inside
+        # NbsOpenPrefs widget construction or g_config → ::prefs_*
+        # var population. Per theologian 12:53:01 Option 1 — script
+        # asserts inline; harness exits non-zero on Tcl error.
+        id: t0_a3a_prefs
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/a3a_prefs.tcl tests/goldens/a3a_prefs.golden.txt
+
+      - name: Upload T0 A3a Prefs .actual on failure
+        if: always() && steps.t0_a3a_prefs.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-a3a-prefs-linux
+          path: tests/goldens/a3a_prefs.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -294,6 +316,22 @@ jobs:
         with:
           name: t0-actual-a1-color-mac
           path: tests/goldens/a1_color.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 A3a PreferencesDialog (test_render_state + a3a_prefs.tcl)
+        # Bucket B per-surface test for A3a (commit 2e57d0d). macOS Aqua
+        # direct, no Xvfb. Discriminator per linux-build job comment.
+        id: t0_a3a_prefs
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/a3a_prefs.tcl tests/goldens/a3a_prefs.golden.txt
+
+      - name: Upload T0 A3a Prefs .actual on failure
+        if: always() && steps.t0_a3a_prefs.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-a3a-prefs-mac
+          path: tests/goldens/a3a_prefs.*.actual
           if-no-files-found: ignore
 
   win-build:

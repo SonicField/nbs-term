@@ -486,6 +486,16 @@ $t0_a1_color_rc = $LASTEXITCODE
 if ($t0_a1_color_rc -eq 0) { Write-Host "T0 A1 COLOR OK: per-span fg emission verified" -ForegroundColor Green }
 else                       { Write-Host "T0 A1 COLOR FAILED (exit $t0_a1_color_rc). Inspect a1_color.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# Bucket B A3a (theologian 12:53:01 Option 1 + commit 2e57d0d):
+# PreferencesDialog construction + var-binding inline assertions.
+Write-Host "Running T0 A3a Prefs (build/test_render_state.exe + a3a_prefs.tcl)..." -ForegroundColor Yellow
+$T0A3aScript = Join-Path (Join-Path $RepoDir "tests") "scripts\a3a_prefs.tcl"
+$T0A3aGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\a3a_prefs.golden.txt"
+& $T0Exe $T0A3aScript $T0A3aGolden
+$t0_a3a_prefs_rc = $LASTEXITCODE
+if ($t0_a3a_prefs_rc -eq 0) { Write-Host "T0 A3a PREFS OK: dialog construction + var bindings verified" -ForegroundColor Green }
+else                        { Write-Host "T0 A3a PREFS FAILED (exit $t0_a3a_prefs_rc). Inspect a3a_prefs.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -533,6 +543,7 @@ if ($t3_rc -ne 0)       { exit $t3_rc }
 if ($t4_rc -ne 0)       { exit $t4_rc }
 if ($t0_rc -ne 0)       { exit $t0_rc }
 if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
+if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
