@@ -1420,9 +1420,22 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "set ::prefs_cols          %d;"
         "set ::prefs_refresh_hz    %d;"
 
+        /* A3a font picker: monospace-filtered ttk::combobox per alexie
+         * 2026-05-13 11:17:33 ('humans cannot remember font names').
+         * Probe each family's [list family 12] spec — fixed-width if
+         * font measure 'M' == measure 'i'. State left editable so power
+         * users can still type a custom family not in the system list. */
         "set row 0;"
+        "set ::prefs_font_families {TkFixedFont};"
+        "foreach __fam [lsort -unique [font families]] {"
+        "  if {[font measure [list $__fam 12] M] == [font measure [list $__fam 12] i]} {"
+        "    lappend ::prefs_font_families $__fam;"
+        "  };"
+        "};"
+        "unset -nocomplain __fam;"
         "label .prefs.lf  -text {Font family:};  grid .prefs.lf  -row $row -column 0 -sticky e;"
-        "entry .prefs.ef  -textvariable ::prefs_font_family -width 24;"
+        "ttk::combobox .prefs.ef -values $::prefs_font_families "
+        "  -textvariable ::prefs_font_family -width 24;"
         "  grid .prefs.ef -row $row -column 1 -sticky w; incr row;"
         "label .prefs.ls  -text {Font size:};    grid .prefs.ls -row $row -column 0 -sticky e;"
         "spinbox .prefs.es -from 6 -to 72 -textvariable ::prefs_font_size -width 6;"
