@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -250,6 +250,20 @@ $(BUILDDIR)/test_compute_layout: $(BUILDDIR)/test_compute_layout.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_compute_layout: $(BUILDDIR)/test_compute_layout
+
+# test_pty_resize — J-resize TIOCSWINSZ regression anchor (generalist
+# shim per supervisor 2026-05-13 09:47:45). SPEC COPY of pty_resize
+# POSIX body from pty.phc:255-261, calls it on a real openpty() master
+# fd, verifies via TIOCGWINSZ round-trip. Win32 path SKIPPED (needs
+# ConPTY harness — out of unit-test scope). -lutil for openpty on Linux;
+# macOS pulls openpty from libSystem so -lutil is harmless.
+$(BUILDDIR)/test_pty_resize.c: $(TESTDIR)/test_pty_resize.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_pty_resize: $(BUILDDIR)/test_pty_resize.c
+	$(CC) $(P1_CFLAGS) $< -lutil -o $@
+
+test_pty_resize: $(BUILDDIR)/test_pty_resize
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,
