@@ -496,6 +496,16 @@ $t0_a3a_prefs_rc = $LASTEXITCODE
 if ($t0_a3a_prefs_rc -eq 0) { Write-Host "T0 A3a PREFS OK: dialog construction + var bindings verified" -ForegroundColor Green }
 else                        { Write-Host "T0 A3a PREFS FAILED (exit $t0_a3a_prefs_rc). Inspect a3a_prefs.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# Bucket B F1 (commit e0665eb): mouse selection split-render
+# (3 sub-spans with fg<->bg swap on selected segment).
+Write-Host "Running T0 F mouse (build/test_render_state.exe + f_mouse.tcl)..." -ForegroundColor Yellow
+$T0FmScript = Join-Path (Join-Path $RepoDir "tests") "scripts\f_mouse.tcl"
+$T0FmGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\f_mouse.golden.txt"
+& $T0Exe $T0FmScript $T0FmGolden
+$t0_f_mouse_rc = $LASTEXITCODE
+if ($t0_f_mouse_rc -eq 0) { Write-Host "T0 F MOUSE OK: split-render selection highlight verified" -ForegroundColor Green }
+else                      { Write-Host "T0 F MOUSE FAILED (exit $t0_f_mouse_rc). Inspect f_mouse.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -544,6 +554,7 @@ if ($t4_rc -ne 0)       { exit $t4_rc }
 if ($t0_rc -ne 0)       { exit $t0_rc }
 if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
 if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }
+if ($t0_f_mouse_rc -ne 0) { exit $t0_f_mouse_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 

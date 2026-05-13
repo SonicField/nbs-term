@@ -189,6 +189,28 @@ jobs:
           path: tests/goldens/a3a_prefs.*.actual
           if-no-files-found: ignore
 
+      - name: T0 F mouse selection (test_render_state + f_mouse.tcl)
+        # Bucket B per-surface test for F1 (commit e0665eb — port of
+        # legacy extension.phc:1240+ Terminal_draw_selection split-
+        # render + flush_span emit_sub helper at p3_pty.phc:716-719).
+        # Discriminator: if alexie reports 'selection highlight wrong
+        # / missing' AND this passes, bug is in NbsSelDown/Drag/Up
+        # button-event arithmetic OR Tk binding chain (pixel→cell
+        # mapping covered by F1 test_pixel_to_cell unit test); if
+        # this fails, regression is inside flush_span split-render.
+        id: t0_f_mouse
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/f_mouse.tcl tests/goldens/f_mouse.golden.txt
+
+      - name: Upload T0 F mouse .actual on failure
+        if: always() && steps.t0_f_mouse.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-f-mouse-linux
+          path: tests/goldens/f_mouse.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -332,6 +354,22 @@ jobs:
         with:
           name: t0-actual-a3a-prefs-mac
           path: tests/goldens/a3a_prefs.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 F mouse selection (test_render_state + f_mouse.tcl)
+        # Bucket B per-surface test for F1 (commit e0665eb). macOS Aqua
+        # direct, no Xvfb. Discriminator per linux-build job comment.
+        id: t0_f_mouse
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/f_mouse.tcl tests/goldens/f_mouse.golden.txt
+
+      - name: Upload T0 F mouse .actual on failure
+        if: always() && steps.t0_f_mouse.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-f-mouse-mac
+          path: tests/goldens/f_mouse.*.actual
           if-no-files-found: ignore
 
   win-build:
