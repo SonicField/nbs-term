@@ -506,6 +506,16 @@ $t0_f_mouse_rc = $LASTEXITCODE
 if ($t0_f_mouse_rc -eq 0) { Write-Host "T0 F MOUSE OK: split-render selection highlight verified" -ForegroundColor Green }
 else                      { Write-Host "T0 F MOUSE FAILED (exit $t0_f_mouse_rc). Inspect f_mouse.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# Bucket B F2 (commit f391992): clipboard write via NbsCopy walk +
+# utf8_emit + Tk clipboard.
+Write-Host "Running T0 F copy (build/test_render_state.exe + f_copy.tcl)..." -ForegroundColor Yellow
+$T0FcScript = Join-Path (Join-Path $RepoDir "tests") "scripts\f_copy.tcl"
+$T0FcGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\f_copy.golden.txt"
+& $T0Exe $T0FcScript $T0FcGolden
+$t0_f_copy_rc = $LASTEXITCODE
+if ($t0_f_copy_rc -eq 0) { Write-Host "T0 F COPY OK: NbsCopy + utf8 + clipboard round-trip verified" -ForegroundColor Green }
+else                     { Write-Host "T0 F COPY FAILED (exit $t0_f_copy_rc). Inspect f_copy.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -555,6 +565,7 @@ if ($t0_rc -ne 0)       { exit $t0_rc }
 if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
 if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }
 if ($t0_f_mouse_rc -ne 0) { exit $t0_f_mouse_rc }
+if ($t0_f_copy_rc -ne 0) { exit $t0_f_copy_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 

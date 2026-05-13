@@ -211,6 +211,27 @@ jobs:
           path: tests/goldens/f_mouse.*.actual
           if-no-files-found: ignore
 
+      - name: T0 F copy clipboard (test_render_state + f_copy.tcl)
+        # Bucket B per-surface test for F2 (commit f391992 — NbsCopy
+        # walk + utf8_emit + Tk clipboard via Tcl_EvalObjv).
+        # Discriminator: if alexie reports 'copy gives wrong text'
+        # AND this passes, bug is in selection-state upstream OR Tk
+        # clipboard daemon downstream; if this fails, regression is
+        # inside NbsCopy walk OR utf8_emit + row_sel_range (covered
+        # by F2 test_extract_utf8 unit test).
+        id: t0_f_copy
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/f_copy.tcl tests/goldens/f_copy.golden.txt
+
+      - name: Upload T0 F copy .actual on failure
+        if: always() && steps.t0_f_copy.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-f-copy-linux
+          path: tests/goldens/f_copy.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -370,6 +391,22 @@ jobs:
         with:
           name: t0-actual-f-mouse-mac
           path: tests/goldens/f_mouse.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 F copy clipboard (test_render_state + f_copy.tcl)
+        # Bucket B per-surface test for F2 (commit f391992). macOS Aqua
+        # direct, no Xvfb. Discriminator per linux-build job comment.
+        id: t0_f_copy
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/f_copy.tcl tests/goldens/f_copy.golden.txt
+
+      - name: Upload T0 F copy .actual on failure
+        if: always() && steps.t0_f_copy.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-f-copy-mac
+          path: tests/goldens/f_copy.*.actual
           if-no-files-found: ignore
 
   win-build:
