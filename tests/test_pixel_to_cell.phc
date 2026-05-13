@@ -7,18 +7,30 @@
  * and C cursor render gating (a348556). Manual git checkout <hash>^
  * across 4 hashes is the only bisect path without a discriminator.
  *
- * This test isolates the pixel_to_cell ARITHMETIC. If alexie reports
- * 'wrong cells' AND this test passes, the bug is render-side (A2/A3a/C
- * mutating live globals before a real Tk session); if this test fails
- * the bug is selection-arithmetic (F1 e0665eb regression).
+ * Two specs tested:
+ * (1) UNIFORM-DIVIDE pixel_to_cell at p3_pty.phc:427 (cold-start
+ *     fallback + non-render scenarios).
+ * (2) TEXT-AWARE pixel_to_cell_text_aware at p3_pty.phc:447+
+ *     (per-span font.measure walk + binary-search prefix; Bug A Mac
+ *     CoreText subadditivity discharge axis).
  *
- * Approach — pure-spec test: copies the algorithm from src/p3_pty.phc:388
- * (pixel_to_cell static at file scope) into a parameterised local
- * function. Tests the SPEC, not the actual function. Coupling: if the
- * spec at p3_pty.phc:388-401 changes, this file must be updated to match
- * — drift between this and the production function is itself a bug to
- * be caught by code review (gatekeeper at next p3_pty.phc render-coords
- * touch).
+ * If alexie reports 'wrong cells' AND both specs pass, the bug is
+ * render-side (A2/A3a/C mutating live globals before a real Tk
+ * session) or platform-render-side (Mac click-alignment under
+ * CoreText subadditivity — requires alexie smoke discharge per
+ * supervisor 2026-05-13 17:34:58 forward bind, since Linux Xvfb
+ * default font is uniform-monospace and cannot exhibit the failure
+ * mode that motivates the text-aware port).
+ *
+ * Approach — pure-spec test: copies the algorithm from src/p3_pty.phc
+ * into parameterised local functions. The text-aware version takes
+ * a measure_fn callback in place of Tk's `font measure`; this lets
+ * the test exercise the per-span walk + binary-search math headless,
+ * AND lets us simulate a subadditive font to confirm the walk is
+ * correct independent of the underlying measurement family. Coupling:
+ * if either spec at p3_pty.phc changes, this file must be updated to
+ * match — drift is itself a bug, catchable at next p3_pty.phc
+ * render-coords code review.
  *
  * Headless (no Tcl, no Tk, no PTY); links libc only.
  */
@@ -44,6 +56,107 @@ static void pixel_to_cell_spec(int px, int py,
     if (rr < 0) rr = 0;
     *out_c = cc;
     *out_r = rr;
+}
+
+/* SPEC COPY of pixel_to_cell_text_aware from src/p3_pty.phc:447+,
+ * parameterised over a measure_fn callback (in production this is
+ * Tk's `font measure <font_tag> <text>` via Tcl_Eval; the callback
+ * lets us test the walk + binary-search math headless).
+ *
+ * Span model: a row is a sequence of spans; each span has a
+ * codepoint sequence + a font_tag (which the measure_fn may use to
+ * vary per-span widths). For test simplicity we elide wide chars
+ * (1 codepoint == 1 cell), matching the dominant case; production
+ * handles wide chars via span_cell_at_cp. */
+typedef int (*measure_fn_t)(const char *font_tag, const char *text,
+                            int cp_count);
+
+typedef struct {
+    const char *text;       /* span text (ASCII for test simplicity) */
+    const char *font_tag;
+    int        start_col;   /* first cell column of this span */
+    int        cp_count;    /* codepoint count == cell count (no wides) */
+} TestSpan;
+
+static void pixel_to_cell_text_aware_spec(int px, int py,
+                                          int origin_x, int origin_y,
+                                          int cell_h, int cols, int rows,
+                                          const TestSpan *spans, int n_spans,
+                                          measure_fn_t measure,
+                                          int *out_r, int *out_c) {
+    int y = py - origin_y;
+    int rr = (y < 0) ? 0 : y / cell_h;
+    if (rr >= rows) rr = rows - 1;
+    if (rr < 0)     rr = 0;
+    *out_r = rr;
+
+    int cur_x = origin_x;
+    for (int s = 0; s < n_spans; s++) {
+        int span_w = measure(spans[s].font_tag, spans[s].text,
+                             spans[s].cp_count);
+        if (px < cur_x + span_w) {
+            int local_x = px - cur_x;
+            if (local_x < 0) local_x = 0;
+            int lo = 0, hi = spans[s].cp_count;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                /* Measure prefix text[:mid+1] — for test simplicity
+                 * we slice ASCII directly. */
+                char prefix[256];
+                int n = mid + 1;
+                if (n >= (int)sizeof prefix) n = (int)sizeof prefix - 1;
+                memcpy(prefix, spans[s].text, (size_t)n);
+                prefix[n] = '\0';
+                int prefix_w = measure(spans[s].font_tag, prefix, n);
+                if (local_x < prefix_w) hi = mid;
+                else                    lo = mid + 1;
+            }
+            int col;
+            if (lo >= spans[s].cp_count) {
+                col = spans[s].start_col + spans[s].cp_count - 1;
+            } else {
+                col = spans[s].start_col + lo;
+            }
+            if (col < 0)     col = 0;
+            if (col >= cols) col = cols - 1;
+            *out_c = col;
+            return;
+        }
+        cur_x += span_w;
+    }
+    *out_c = cols - 1;
+}
+
+/* Uniform 9px-per-codepoint measurement. Models a clean monospace
+ * font (Linux Xvfb DejaVu Sans Mono baseline). */
+static int measure_uniform_9px(const char *font_tag, const char *text,
+                               int cp_count) {
+    (void)font_tag; (void)text;
+    return cp_count * 9;
+}
+
+/* Subadditive measurement: 9px per codepoint MINUS a small kerning
+ * amount that grows with codepoint count. Models Mac CoreText
+ * subadditivity (font.measure(c*N) < N * font.measure(c)). The
+ * per-span walk + binary search must still produce correct cell
+ * results despite the non-linear measurement — that's the property
+ * the algorithm gives us. */
+static int measure_subadditive(const char *font_tag, const char *text,
+                               int cp_count) {
+    (void)font_tag; (void)text;
+    int w = cp_count * 9;
+    if (cp_count >= 5) w -= cp_count / 5;  /* 1px shave per 5 cps */
+    return w;
+}
+
+/* Per-tag width: bold spans are 11px/cp (wider), normal 9px/cp.
+ * Tests that the measure_fn / font_tag mapping is honoured correctly
+ * across span boundaries. */
+static int measure_per_tag(const char *font_tag, const char *text,
+                           int cp_count) {
+    (void)text;
+    if (font_tag && strstr(font_tag, "bold")) return cp_count * 11;
+    return cp_count * 9;
 }
 
 struct case_ {
@@ -97,8 +210,143 @@ int main(void) {
             fail++;
         }
     }
+    /* === text-aware spec cases === */
+
+    /* Single-span uniform measurement: "hello world" 11 cps at 9px/cp,
+     * origin_x=4, click at x=22 (= 4 + 2*9) → col 2 ('l' of 'hello'). */
+    {
+        TestSpan spans[] = {{"hello world", "font_normal", 0, 11}};
+        int r, c;
+        pixel_to_cell_text_aware_spec(22, 4, 4, 4, 16, 80, 24,
+                                      spans, 1, measure_uniform_9px, &r, &c);
+        if (r != 0 || c != 2) {
+            printf("FAIL T1 single-span uniform mid: got (%d,%d) want (0,2)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Same input, subadditive measurement — span_w shrinks slightly
+     * but the per-span walk + binary search still maps the click to
+     * the correct cell because we measure prefixes the same way. */
+    {
+        TestSpan spans[] = {{"hello world", "font_normal", 0, 11}};
+        int r, c;
+        pixel_to_cell_text_aware_spec(22, 4, 4, 4, 16, 80, 24,
+                                      spans, 1, measure_subadditive, &r, &c);
+        /* prefix[2] = "he" → measure 18 (no shave under 5cps); 22-4=18,
+         * 18 < 18? no → lo advances. prefix[3] = "hel" → 27, 18 < 27
+         * → hi=2. converges to lo=2. col=2. */
+        if (r != 0 || c != 2) {
+            printf("FAIL T2 single-span subadd mid: got (%d,%d) want (0,2)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Click at origin (target_x == origin_x) → first cell of first span. */
+    {
+        TestSpan spans[] = {{"hello", "font_normal", 0, 5}};
+        int r, c;
+        pixel_to_cell_text_aware_spec(4, 4, 4, 4, 16, 80, 24,
+                                      spans, 1, measure_uniform_9px, &r, &c);
+        if (r != 0 || c != 0) {
+            printf("FAIL T3 click at origin: got (%d,%d) want (0,0)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Click past end of all spans → cols-1 fallback. */
+    {
+        TestSpan spans[] = {{"hi", "font_normal", 0, 2}};
+        int r, c;
+        pixel_to_cell_text_aware_spec(1000, 4, 4, 4, 16, 80, 24,
+                                      spans, 1, measure_uniform_9px, &r, &c);
+        if (r != 0 || c != 79) {
+            printf("FAIL T4 past last span: got (%d,%d) want (0,79)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Click before origin → first cell of first span (local_x clamped to 0). */
+    {
+        TestSpan spans[] = {{"hi", "font_normal", 0, 2}};
+        int r, c;
+        pixel_to_cell_text_aware_spec(0, 4, 10, 4, 16, 80, 24,
+                                      spans, 1, measure_uniform_9px, &r, &c);
+        if (r != 0 || c != 0) {
+            printf("FAIL T5 before origin: got (%d,%d) want (0,0)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Multi-span: normal (0..4) + bold (5..9). Bold span is wider per
+     * measure_per_tag (11px/cp vs 9). Click at x = 4 + 5*9 + 2*11 = 71
+     * → cell 5+2 = 7 (third cell of bold span). */
+    {
+        TestSpan spans[] = {
+            {"abcde", "font_normal", 0, 5},
+            {"FGHIJ", "font_bold",   5, 5},
+        };
+        int r, c;
+        pixel_to_cell_text_aware_spec(71, 4, 4, 4, 16, 80, 24,
+                                      spans, 2, measure_per_tag, &r, &c);
+        if (r != 0 || c != 7) {
+            printf("FAIL T6 multi-span per-tag: got (%d,%d) want (0,7)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Multi-span boundary click: x = 4 + 5*9 = 49 → exactly between
+     * span1 (0..4) and span2 (5..9). Should map to first cell of span2
+     * (cell 5) since 49 - 4 = 45 = 5*9 = full width of span1, and the
+     * binary search of span2 finds lo=0 → col = span2.start_col + 0 = 5. */
+    {
+        TestSpan spans[] = {
+            {"abcde", "font_normal", 0, 5},
+            {"FGHIJ", "font_bold",   5, 5},
+        };
+        int r, c;
+        pixel_to_cell_text_aware_spec(49, 4, 4, 4, 16, 80, 24,
+                                      spans, 2, measure_per_tag, &r, &c);
+        if (r != 0 || c != 5) {
+            printf("FAIL T7 span boundary: got (%d,%d) want (0,5)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Subadditive multi-span: same shape as T6 but with measure_subadd,
+     * confirming non-linear measurement still maps clicks correctly via
+     * the per-prefix binary search. */
+    {
+        TestSpan spans[] = {
+            {"abcde", "font_normal", 0, 5},
+            {"fghij", "font_normal", 5, 5},
+        };
+        int r, c;
+        /* span1_w = 5*9 - 1 = 44 (shave at >=5 cps); cur_x after = 48.
+         * Click x=58: in span2; local_x=10. prefix "f"=9, 10<9? no →
+         * lo=1. prefix "fg"=18, 10<18 → hi=1. col = 5 + 1 = 6. */
+        pixel_to_cell_text_aware_spec(58, 4, 4, 4, 16, 80, 24,
+                                      spans, 2, measure_subadditive, &r, &c);
+        if (r != 0 || c != 6) {
+            printf("FAIL T8 multi-span subadd: got (%d,%d) want (0,6)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
+    /* Empty span list → uniform fallback equivalent: click maps based
+     * on cols-1 since the walk completes without entering a span. */
+    {
+        int r, c;
+        pixel_to_cell_text_aware_spec(50, 4, 4, 4, 16, 80, 24,
+                                      NULL, 0, measure_uniform_9px, &r, &c);
+        if (r != 0 || c != 79) {
+            printf("FAIL T9 empty span list: got (%d,%d) want (0,79)\n", r, c);
+            fail++; n++;
+        } else { n++; }
+    }
+
     if (fail == 0) {
-        printf("test_pixel_to_cell ok: %d/%d cases PASS (spec at p3_pty.phc:388)\n", n, n);
+        printf("test_pixel_to_cell ok: %d/%d cases PASS (uniform spec @ p3_pty.phc:427 + text-aware spec @ p3_pty.phc:447)\n", n, n);
         return 0;
     }
     printf("test_pixel_to_cell FAILED: %d/%d cases\n", fail, n);

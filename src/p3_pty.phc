@@ -419,11 +419,11 @@ static int sel_normalise(int *sr, int *sc, int *er, int *ec) {
     return 0;
 }
 
-/* F — mouse pixel -> cell (row, col). Uniform divide by g_cell_w/h
- * with origin offset; text-aware refinement (font.measure binary
- * search per nbsterm.py:286-337) deferred per theologian 16:19:22
- * trap (Mac CoreText subadditivity is a separate axis). Clamps to
- * the active screen bounds. */
+/* F — mouse pixel -> cell (row, col), uniform-divide fallback.
+ * Uniform divide by g_cell_w/h with origin offset; clamps to active
+ * screen bounds. Used by pixel_to_cell_text_aware as the cold-start
+ * fallback when no rendered row data is available (no g_term, empty
+ * row, or measurement Tcl_Eval failure). */
 static void pixel_to_cell(int px, int py, int *r, int *c) {
     int x = px - g_origin_x;
     int y = py - g_origin_y;
@@ -437,6 +437,142 @@ static void pixel_to_cell(int px, int py, int *r, int *c) {
     }
     *c = cc;
     *r = rr;
+}
+
+/* F — text-aware mouse pixel -> cell. Walks the row's spans the same
+ * way render_screen does (cells_same_span boundary), measures each
+ * span via Tk's `font measure <font_tag> <text>`, and binary-searches
+ * the prefix of the target span to map local_x to a codepoint index;
+ * the codepoint index maps back to a cell column via a per-codepoint
+ * cell lookup table built during the walk (handles wide chars: each
+ * non-wide_cont cell contributes one codepoint, wide_cont cells are
+ * skipped from the codepoint sequence per render_screen).
+ *
+ * Mirrors nbsterm.py:286-337 _pixel_to_cell_text_aware (per memory
+ * feedback_legacy_port_as_spec). Bug A axis: uniform-divide breaks
+ * on Mac where CoreText subadditivity makes
+ * font.measure(c*N) != N * font.measure(c); per-span walk handles
+ * subadditivity uniformly via Tk's generic font.measure (per memory
+ * feedback_tk_native_over_platform — no Mac special-case).
+ *
+ * Cold-start fallback: uniform pixel_to_cell when the row is absent
+ * (NULL view_row) or when `font measure` Tcl_Eval fails. */
+static void pixel_to_cell_text_aware(Tcl_Interp *interp, int px, int py,
+                                     int *r, int *c) {
+    int y = py - g_origin_y;
+    int rr = (y < 0) ? 0 : y / g_cell_h;
+    if (!g_term || !g_term->active) {
+        pixel_to_cell(px, py, r, c);
+        return;
+    }
+    int cols = g_term->active->cols;
+    int rows = g_term->active->rows;
+    if (rr >= rows) rr = rows - 1;
+    if (rr < 0)     rr = 0;
+    *r = rr;
+
+    const Cell *view_row = view_row_cells(g_term, rr);
+    if (!view_row) {
+        int x = px - g_origin_x;
+        int cc = (x < 0) ? 0 : x / g_cell_w;
+        if (cc >= cols) cc = cols - 1;
+        if (cc < 0)     cc = 0;
+        *c = cc;
+        return;
+    }
+
+    int cur_x = g_origin_x;
+    int span_active = 0;
+    Cell span_proto;
+    memset(&span_proto, 0, sizeof span_proto);
+    char span_text[4096];
+    int  span_text_len = 0;
+    int  span_codepoints = 0;
+    /* span_cell_at_cp[i] = cell column of i-th codepoint in current
+     * span; lets binary-search result (codepoint index) map back to
+     * cell column even when wide chars make codepoint != cell offset. */
+    int  span_cell_at_cp[1024];
+
+    /* Walk cc=[0..cols] inclusive — final iteration cc==cols flushes
+     * the trailing in-flight span (mirrors render_screen end-of-row
+     * flush at line 997-1004). */
+    for (int cc = 0; cc <= cols; cc++) {
+        const Cell *cell = (cc < cols) ? &view_row[cc] : NULL;
+        int boundary = (cc == cols) || !span_active ||
+                       (cell && !cells_same_span(&span_proto, cell));
+        if (boundary && span_active && span_text_len > 0) {
+            span_text[span_text_len] = '\0';
+            const char *font_tag = attrs_to_font_tag(span_proto.attrs);
+            const char *measure[] = {"font", "measure", font_tag, span_text};
+            int span_w = 0;
+            if (EVAL_ARGV(interp, measure) != TCL_OK) {
+                /* Measurement failed — fall back to uniform on this row. */
+                pixel_to_cell(px, py, r, c);
+                return;
+            }
+            span_w = atoi(Tcl_GetStringResult(interp));
+            if (px < cur_x + span_w) {
+                int local_x = px - cur_x;
+                if (local_x < 0) local_x = 0;
+                /* Binary search smallest i s.t. measure(text[:i+1]) > local_x.
+                 * Mirrors nbsterm.py:273-284 _binary_search_char. */
+                int lo = 0, hi = span_codepoints;
+                while (lo < hi) {
+                    int mid = (lo + hi) / 2;
+                    int byte_off = utf8_byte_offset(span_text, span_text_len,
+                                                    mid + 1);
+                    char saved = span_text[byte_off];
+                    span_text[byte_off] = '\0';
+                    const char *m2[] = {"font", "measure", font_tag, span_text};
+                    int prefix_w = 0;
+                    int ok = (EVAL_ARGV(interp, m2) == TCL_OK);
+                    if (ok) prefix_w = atoi(Tcl_GetStringResult(interp));
+                    span_text[byte_off] = saved;
+                    if (!ok) {
+                        pixel_to_cell(px, py, r, c);
+                        return;
+                    }
+                    if (local_x < prefix_w) hi = mid;
+                    else                    lo = mid + 1;
+                }
+                int col;
+                if (lo >= span_codepoints) {
+                    /* Past span's right edge — return the last cell of
+                     * the span (cc-1 = the cell just before the next-span
+                     * boundary or end-of-row sentinel). */
+                    col = cc - 1;
+                } else {
+                    col = span_cell_at_cp[lo];
+                }
+                if (col < 0)     col = 0;
+                if (col >= cols) col = cols - 1;
+                *c = col;
+                return;
+            }
+            cur_x += span_w;
+            span_text_len = 0;
+            span_codepoints = 0;
+        }
+        if (cc == cols) break;
+        if (cell->wide_cont) continue;
+        if (boundary) {
+            span_active = 1;
+            span_proto = *cell;
+        }
+        if (span_codepoints <
+            (int)(sizeof span_cell_at_cp / sizeof span_cell_at_cp[0])) {
+            span_cell_at_cp[span_codepoints] = cc;
+        }
+        uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+        if (span_text_len + 4 < (int)sizeof span_text) {
+            span_text_len += utf8_emit(cp, span_text + span_text_len,
+                                       (int)sizeof span_text - span_text_len);
+            span_codepoints++;
+        }
+    }
+
+    /* Fell off the right edge of all spans — return last column. */
+    *c = cols - 1;
 }
 
 /* F — per-row selection cell range under the canonical (sr,sc)<=(er,ec)
@@ -1370,7 +1506,7 @@ static int NbsSelDown(ClientData cd, Tcl_Interp *interp, int objc,
     if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
     int r = 0, c = 0;
-    pixel_to_cell(px, py, &r, &c);
+    pixel_to_cell_text_aware(interp, px, py, &r, &c);
     g_sel_sr = g_sel_er = r;
     g_sel_sc = g_sel_ec = c;
     g_sel_active = 1;
@@ -1390,7 +1526,7 @@ static int NbsSelDrag(ClientData cd, Tcl_Interp *interp, int objc,
     if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
     int r = 0, c = 0;
-    pixel_to_cell(px, py, &r, &c);
+    pixel_to_cell_text_aware(interp, px, py, &r, &c);
     g_sel_er = r;
     g_sel_ec = c;
     schedule_render();
@@ -1409,7 +1545,7 @@ static int NbsSelUp(ClientData cd, Tcl_Interp *interp, int objc,
     if (Tcl_GetIntFromObj(interp, objv[1], &px) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &py) != TCL_OK) return TCL_ERROR;
     int r = 0, c = 0;
-    pixel_to_cell(px, py, &r, &c);
+    pixel_to_cell_text_aware(interp, px, py, &r, &c);
     g_sel_er = r;
     g_sel_ec = c;
     /* If user clicked without dragging — start cell == end cell —
