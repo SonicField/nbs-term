@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -264,6 +264,19 @@ $(BUILDDIR)/test_pty_resize: $(BUILDDIR)/test_pty_resize.c
 	$(CC) $(P1_CFLAGS) $< -lutil -o $@
 
 test_pty_resize: $(BUILDDIR)/test_pty_resize
+
+# test_blink_step — C cursor blink state-machine regression anchor
+# (generalist shim per medic 2026-05-13 13:50:09 + supervisor
+# 13:44:26). SPEC COPY of blink_proc + blink_reset state transforms
+# from p3_pty.phc:188-213, minus the Tcl_CreateTimerHandler /
+# schedule_render side effects. Headless; libc only.
+$(BUILDDIR)/test_blink_step.c: $(TESTDIR)/test_blink_step.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_blink_step: $(BUILDDIR)/test_blink_step.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_blink_step: $(BUILDDIR)/test_blink_step
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,

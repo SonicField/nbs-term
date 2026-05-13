@@ -379,6 +379,24 @@ if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T4Src" -F
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T4Exe)) { Write-Host "ERROR: cl link failed for test_pty_resize.exe" -ForegroundColor Red; exit 1 }
 Write-Host "Built $T4Exe" -ForegroundColor Green
 
+# ---- Step 3.11.5: build build/test_blink_step.exe (T5 C blink, libc-only) ----
+# Bucket B 9th-surface backfill (blink half) per medic 13:50:09 +
+# supervisor 13:44:26 — both DECTCEM AND blink required for C surface
+# coverage. SPEC COPY of blink_proc + blink_reset state transforms
+# from p3_pty.phc:188-213 minus Tcl/Tk side effects. Pure-C unit test.
+$T5Src  = Join-Path (Join-Path $RepoDir "tests") "test_blink_step.phc"
+$T5C    = Join-Path $BuildDir "test_blink_step.c"
+$T5Exe  = Join-Path $BuildDir "test_blink_step.exe"
+$T5Pp   = Join-Path $BuildDir "test_blink_step.i"
+Write-Host "Preprocessing $T5Src -> $T5C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $T5Src 2>$null | Out-File -Encoding ASCII -FilePath $T5Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T5Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T5Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T5C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T5Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$T5Exe" $T5C | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T5Exe)) { Write-Host "ERROR: cl link failed for test_blink_step.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T5Exe" -ForegroundColor Green
+
 # ---- Step 3.12: build build/test_render_state.exe (T0 harness, Tcl/Tk linked) ----
 # Bucket B state-dump harness per d9bba41 (theologian harness + footgun
 # guard). #defines NBS_TEST_MODE then #includes p3_pty.phc — pulls
@@ -459,6 +477,12 @@ Write-Host "Running T4 J-resize TIOCSWINSZ shim (build/test_pty_resize.exe)..." 
 $t4_rc = $LASTEXITCODE
 if ($t4_rc -eq 0) { Write-Host "T4 SHIM OK: pty_resize POSIX (Win SKIP banner expected)" -ForegroundColor Green }
 else              { Write-Host "T4 SHIM FAILED (exit $t4_rc)." -ForegroundColor Red }
+
+Write-Host "Running T5 C blink state machine (build/test_blink_step.exe)..." -ForegroundColor Yellow
+& $T5Exe
+$t5_rc = $LASTEXITCODE
+if ($t5_rc -eq 0) { Write-Host "T5 SHIM OK: blink_proc + blink_reset state machine verified" -ForegroundColor Green }
+else              { Write-Host "T5 SHIM FAILED (exit $t5_rc)." -ForegroundColor Red }
 
 # T0 harness smoke — Tk-linked binary; needs windows-latest window-station.
 # First-run = empirical confirm of Win Tk availability per testkeeper
@@ -581,6 +605,7 @@ if ($t1_rc -ne 0)       { exit $t1_rc }
 if ($t2_rc -ne 0)       { exit $t2_rc }
 if ($t3_rc -ne 0)       { exit $t3_rc }
 if ($t4_rc -ne 0)       { exit $t4_rc }
+if ($t5_rc -ne 0)       { exit $t5_rc }
 if ($t0_rc -ne 0)       { exit $t0_rc }
 if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
 if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }

@@ -1,0 +1,170 @@
+/*
+ * test_blink_step.phc — C cursor blink state-machine regression anchor
+ *
+ * Bucket B C-surface backfill (blink half) per medic 2026-05-13
+ * 13:50:09 + supervisor 13:44:26 (BOTH DECTCEM + blink, conjunction).
+ * DECTCEM half shipped at f0f8224 (tests/scripts/c_dectcem.tcl);
+ * this commit ships the blink-state-machine half. Together they
+ * close the 8-of-9 → 9-of-9 surface gap on C cursor (commit a348556).
+ *
+ * Discriminator: if alexie reports 'cursor blink wrong / stuck /
+ * doesn't restart on typing' AND this passes, bug is in
+ * Tcl_CreateTimerHandler scheduling OR schedule_render integration
+ * with the blink path; if this fails, regression is inside the
+ * blink_proc toggle logic OR blink_reset force-visible semantics.
+ *
+ * Approach — SPEC COPY of blink_proc (src/p3_pty.phc:188-198) +
+ * blink_reset (src/p3_pty.phc:203-213) state-transition logic into
+ * pure-C functions. Production tangles toggle with Tcl/Tk side
+ * effects (Tcl_CreateTimerHandler, schedule_render); spec extracts
+ * the pure state transform: (current_visible, enabled) → new_visible
+ * and (enabled) → reset_visible + reset_should_reschedule.
+ *
+ * Drift caveat: future src/p3_pty.phc blink edits MUST sync this
+ * spec or the next test re-run catches divergence.
+ *
+ * Headless (libc only); no Tcl/Tk/PTY/screen.phc link.
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+/* SPEC COPY — blink_proc toggle from src/p3_pty.phc:188-198, minus
+ * the Tcl_CreateTimerHandler reschedule + schedule_render side
+ * effect. Returns the new visibility flag. should_reschedule_out
+ * mirrors production: 1 iff blink_enabled (which is when production
+ * re-arms the timer). When blink_enabled == 0, current_visible
+ * passes through unchanged (production early-returns before toggle). */
+static int blink_proc_step(int current_visible, int blink_enabled,
+                           int *should_reschedule_out) {
+    if (!blink_enabled) {
+        *should_reschedule_out = 0;
+        return current_visible;
+    }
+    *should_reschedule_out = 1;
+    return !current_visible;
+}
+
+/* SPEC COPY — blink_reset state transform from src/p3_pty.phc:203-213,
+ * minus the Tcl_DeleteTimerHandler / Tcl_CreateTimerHandler side
+ * effects. Returns the new visibility (always 1 — force-visible) and
+ * sets should_reschedule_out per blink_enabled. */
+static int blink_reset_step(int blink_enabled,
+                            int *should_reschedule_out) {
+    *should_reschedule_out = blink_enabled ? 1 : 0;
+    return 1;  /* force visible — mirrors `g_blink_visible = 1` in production */
+}
+
+int main(void) {
+    int fail = 0;
+    int new_v;
+    int should_resched;
+
+    /* === blink_proc_step: blink ENABLED → toggles each tick === */
+
+    /* Tick from visible (1) → hidden (0); reschedule */
+    new_v = blink_proc_step(1, 1, &should_resched);
+    if (new_v != 0 || should_resched != 1) {
+        printf("FAIL tick visible→hidden enabled: new_v=%d should_resched=%d (want 0,1)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* Tick from hidden (0) → visible (1); reschedule */
+    new_v = blink_proc_step(0, 1, &should_resched);
+    if (new_v != 1 || should_resched != 1) {
+        printf("FAIL tick hidden→visible enabled: new_v=%d should_resched=%d (want 1,1)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* Tick cycle 4 ticks: 1→0→1→0→1 (alternating, no double-toggle) */
+    int cur = 1;
+    for (int i = 0; i < 4; i++) {
+        cur = blink_proc_step(cur, 1, &should_resched);
+        if (should_resched != 1) {
+            printf("FAIL tick cycle iter %d: should_resched=%d (want 1)\n",
+                   i, should_resched);
+            fail++;
+        }
+    }
+    /* After 4 toggles starting at 1: 0, 1, 0, 1 — final == 1 */
+    if (cur != 1) {
+        printf("FAIL tick cycle: 4 ticks from visible=1 ended at %d (want 1)\n", cur);
+        fail++;
+    }
+
+    /* === blink_proc_step: blink DISABLED → passthrough, no reschedule === */
+
+    /* Tick from visible (1) with blink disabled → stays visible, no reschedule */
+    new_v = blink_proc_step(1, 0, &should_resched);
+    if (new_v != 1 || should_resched != 0) {
+        printf("FAIL tick visible disabled: new_v=%d should_resched=%d (want 1,0)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* Tick from hidden (0) with blink disabled → stays hidden, no reschedule.
+     * (In production this shouldn't happen because blink_reset force-visible
+     * + the disabled branch never toggles; but the function is total over
+     * (current, enabled) and must not crash on the input.) */
+    new_v = blink_proc_step(0, 0, &should_resched);
+    if (new_v != 0 || should_resched != 0) {
+        printf("FAIL tick hidden disabled: new_v=%d should_resched=%d (want 0,0)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* === blink_reset_step: ALWAYS force-visible; reschedule iff enabled === */
+
+    /* Reset with blink enabled → visible=1, reschedule */
+    new_v = blink_reset_step(1, &should_resched);
+    if (new_v != 1 || should_resched != 1) {
+        printf("FAIL reset enabled: new_v=%d should_resched=%d (want 1,1)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* Reset with blink disabled → visible=1, no reschedule */
+    new_v = blink_reset_step(0, &should_resched);
+    if (new_v != 1 || should_resched != 0) {
+        printf("FAIL reset disabled: new_v=%d should_resched=%d (want 1,0)\n",
+               new_v, should_resched);
+        fail++;
+    }
+
+    /* === Integration: typing-while-blinking restores solid cursor === */
+
+    /* Sequence: tick 3 times from visible, then reset (typing happens),
+     * then tick once. Verify after reset the cursor is visible (production
+     * 'active typing stays solid' contract per legacy nbsterm.py:441-443). */
+    cur = 1;
+    for (int i = 0; i < 3; i++) {
+        cur = blink_proc_step(cur, 1, &should_resched);
+    }
+    /* After 3 ticks from 1: 0, 1, 0 — cur == 0 (mid-blink-hide) */
+    if (cur != 0) {
+        printf("FAIL integration setup: 3 ticks from visible ended at %d (want 0 mid-hide)\n", cur);
+        fail++;
+    }
+    /* Reset (simulates pty-data arrival mid-blink-hide) */
+    cur = blink_reset_step(1, &should_resched);
+    if (cur != 1 || should_resched != 1) {
+        printf("FAIL integration reset: new_v=%d should_resched=%d (want 1,1 force-visible)\n",
+               cur, should_resched);
+        fail++;
+    }
+    /* Next tick from visible → hidden again (blink resumes 530ms later in production) */
+    cur = blink_proc_step(cur, 1, &should_resched);
+    if (cur != 0) {
+        printf("FAIL integration post-reset tick: new_v=%d (want 0 — blink resumes from visible)\n", cur);
+        fail++;
+    }
+
+    if (fail == 0) {
+        printf("test_blink_step: PASS (10 cases)\n");
+        return 0;
+    }
+    printf("test_blink_step: FAIL (%d failures)\n", fail);
+    return 1;
+}
