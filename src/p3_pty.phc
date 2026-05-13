@@ -1824,8 +1824,8 @@ int main(int argc, char *argv[]) {
             "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
             "bind .c <Command-comma>    {nbs_open_prefs; break};"
             "bind .c <Control-comma>    {nbs_open_prefs; break};"
-            "bind . <Command-c>         {nbs_copy; break};"
-            "bind . <Control-Shift-C>   {nbs_copy; break};"
+            "bind .c <Command-c>        {nbs_copy; break};"
+            "bind .c <Control-Shift-C>  {nbs_copy; break};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
