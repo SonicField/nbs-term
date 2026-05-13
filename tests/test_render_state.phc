@@ -1,0 +1,545 @@
+/*
+ * tests/test_render_state.phc — Tk-introspection state-dump shim harness
+ *
+ * State-dump-shim test harness per theologian design (chat 09:52:42 +
+ * supervisor 09:53:13 GO). Drives the p3_pty render pipeline via Tcl
+ * scripts, dumps post-render canvas state to text, compares to golden.
+ *
+ * Build: make build/test_render_state
+ * Run:   build/test_render_state <script.tcl> <golden.txt> [--update]
+ *
+ * Approach: #define NBS_TEST_MODE then #include "p3_pty.phc". This
+ * pulls all of p3_pty's file-scope statics (render_screen, render_cursor,
+ * flush_span, compute_layout, all the Nbs* + Pty* Tcl commands, the
+ * g_term/g_parser/g_config/g_sel_* globals) into our TU. p3_pty.phc's
+ * own main() is suppressed by the NBS_TEST_MODE guard so we provide our
+ * own — no PTY child fork, no event-loop vwait.
+ *
+ * Harness API (registered as Tcl commands, called from per-surface scripts):
+ *   nbs_test_feed_bytes <bytes>           feed vt_parser
+ *   nbs_test_render                       synchronous render_screen call
+ *   nbs_test_set_sel <r1> <c1> <r2> <c2>  set selection range
+ *   nbs_test_fire_bind <event-string>     synthesize a Tk event on .c
+ *   nbs_test_get_clipboard                returns current Tk clipboard
+ *   nbs_test_complete                     signals dump+exit
+ *
+ * Determinism: g_config.cursor.blink forced off; fixed canvas geometry
+ * (cols*cell_w x rows*cell_h); render_screen called synchronously (not
+ * idle-scheduled).
+ *
+ * Golden format: see emit_state_dump() — sorted by canvas item id for
+ * stability; newline-separated; one item per line.
+ *
+ * Exit codes: 0 = PASS / golden match (or --update success); 1 = setup
+ * or script failure; 2 = golden mismatch (see stderr diff + .actual file
+ * preserved next to the golden for inspection).
+ */
+#if !defined(_WIN32)
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#endif
+
+/* Suppress p3_pty.phc's main() so we provide our own. */
+#define NBS_TEST_MODE
+#include "p3_pty.phc"
+
+#if !defined(_WIN32)
+#  include <unistd.h>   /* unlink */
+#endif
+
+/* Test driver state: signals when the script has called nbs_test_complete. */
+static int g_test_complete = 0;
+
+/* nbs_test_feed_bytes <bytes> — feeds raw bytes (escape sequences allowed
+ * via Tcl backslash-escapes; Tcl_GetStringFromObj returns the post-escape
+ * payload). */
+static int NbsTestFeedBytes(ClientData cd, Tcl_Interp *interp, int objc,
+                            Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "bytes");
+        return TCL_ERROR;
+    }
+    int len = 0;
+    const char *s = Tcl_GetStringFromObj(objv[1], &len);
+    if (len > 0 && g_parser) {
+        vt_parser_feed(g_parser, (const uint8_t *)s, (size_t)len);
+    }
+    return TCL_OK;
+}
+
+/* nbs_test_render — synchronous render_screen call. Skips the idle
+ * scheduler so the dump that follows sees the post-render canvas. */
+static int NbsTestRender(ClientData cd, Tcl_Interp *interp, int objc,
+                         Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    g_dirty = 0;
+    if (!g_term) return TCL_OK;
+    int rc = render_screen(interp, ".c", g_term);
+    /* Force Tk to flush pending geometry/painting so introspection sees
+     * the freshly-painted state. */
+    Tcl_Eval(interp, "update idletasks");
+    return rc;
+}
+
+/* nbs_test_set_sel <sr> <sc> <er> <ec> — set the selection range used by
+ * F highlight render. Coords are screen cells. */
+static int NbsTestSetSel(ClientData cd, Tcl_Interp *interp, int objc,
+                         Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 5) {
+        Tcl_WrongNumArgs(interp, 1, objv, "sr sc er ec");
+        return TCL_ERROR;
+    }
+    int sr, sc, er, ec;
+    if (Tcl_GetIntFromObj(interp, objv[1], &sr) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &sc) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &er) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &ec) != TCL_OK) return TCL_ERROR;
+    g_sel_active = 1;
+    g_sel_sr = sr; g_sel_sc = sc;
+    g_sel_er = er; g_sel_ec = ec;
+    return TCL_OK;
+}
+
+/* nbs_test_fire_bind <event-string> — synthesize a Tk event on .c via
+ * 'event generate'. event-string follows Tk syntax e.g. <Command-c> or
+ * <Key-a>. Per-surface scripts must set up the corresponding bind first
+ * (the harness does not auto-register p3_pty's main() bind block). */
+static int NbsTestFireBind(ClientData cd, Tcl_Interp *interp, int objc,
+                           Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "event-string");
+        return TCL_ERROR;
+    }
+    const char *bind = Tcl_GetString(objv[1]);
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "event generate .c %s", bind);
+    return Tcl_Eval(interp, cmd);
+}
+
+/* nbs_test_get_clipboard — returns Tk clipboard contents (or "" if
+ * unset/empty). Wrapped in catch so empty clipboard isn't a Tcl error. */
+static int NbsTestGetClipboard(ClientData cd, Tcl_Interp *interp, int objc,
+                               Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    Tcl_Eval(interp, "if {[catch {clipboard get} t]} { set t \"\" }; set t");
+    return TCL_OK;
+}
+
+/* nbs_test_complete — signals the harness driver to dump state + exit. */
+static int NbsTestComplete(ClientData cd, Tcl_Interp *interp, int objc,
+                           Tcl_Obj *const objv[]) {
+    (void)cd; (void)interp; (void)objc; (void)objv;
+    g_test_complete = 1;
+    return TCL_OK;
+}
+
+/* Quote a string for golden output: single-line, escape backslash + quote
+ * + control chars. Returns bytes written into out (excluding trailing NUL). */
+static size_t quote_for_golden(const char *s, char *out, size_t outsz) {
+    size_t o = 0;
+    if (outsz == 0) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (o + 5 >= outsz) break;
+        unsigned char c = *p;
+        if (c == '\\' || c == '"') {
+            out[o++] = '\\'; out[o++] = (char)c;
+        } else if (c == '\n') {
+            out[o++] = '\\'; out[o++] = 'n';
+        } else if (c == '\r') {
+            out[o++] = '\\'; out[o++] = 'r';
+        } else if (c == '\t') {
+            out[o++] = '\\'; out[o++] = 't';
+        } else if (c < 0x20 || c == 0x7f) {
+            int n = snprintf(out + o, outsz - o, "\\x%02x", c);
+            if (n > 0) o += (size_t)n;
+        } else {
+            out[o++] = (char)c;
+        }
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/* Item record: collected during the per-item scan, then sorted by
+ * (type, x1, y1) for emission. Sorting by item-id would be fragile —
+ * Tk re-uses ids monotonically across delete+redraw cycles (any
+ * Bucket B test that triggers G composite scroll → delete all →
+ * redraw would shift every id), breaking golden stability. Geometry
+ * sort is stable across re-renders since the same logical items end
+ * up at the same coordinates regardless of allocation order.
+ * Per testkeeper 09:54:34 review tweak (1). */
+typedef struct {
+    char type[16];     /* "text" / "rect" / "line" / other */
+    double x1;
+    double y1;
+    char line[16384];  /* full emitted line — sized to hold the 8KB qbuf
+                        * text payload + format overhead (font/fill/coords
+                        * are each <=128 bytes). Heap-allocated array so
+                        * the per-record size is fine. */
+} ItemRec;
+
+static int item_compare(const void *a, const void *b) {
+    const ItemRec *ra = (const ItemRec *)a;
+    const ItemRec *rb = (const ItemRec *)b;
+    int c = strcmp(ra->type, rb->type);
+    if (c != 0) return c;
+    if (ra->x1 < rb->x1) return -1;
+    if (ra->x1 > rb->x1) return 1;
+    if (ra->y1 < rb->y1) return -1;
+    if (ra->y1 > rb->y1) return 1;
+    /* Final tiebreaker: full-line strcmp keeps duplicates deterministic. */
+    return strcmp(ra->line, rb->line);
+}
+
+/* Append current canvas state to FILE *out, sorted by (type, x1, y1)
+ * for deterministic golden comparison across re-renders. Format per item:
+ *   text    x1 y1 ... font=<name> fill=<#rgb> text="<utf8>"
+ *   rect    x1 y1 ... fill=<#rgb>
+ *   line    x1 y1 ... fill=<#rgb> width=<n>
+ *   <type>  <coords>            (any other type, raw)
+ * Header:  WINDOW <w>x<h> ORIGIN <ox>,<oy> CELL <cw>x<ch>
+ * Footer:  CLIPBOARD "<utf8-or-empty>"  (always emitted, per testkeeper
+ *          09:54:34 tweak 3 for stable diff regardless of script behaviour). */
+static int emit_state_dump(Tcl_Interp *interp, FILE *out) {
+    fprintf(out, "WINDOW %dx%d ORIGIN %d,%d CELL %dx%d\n",
+            g_config.cols * g_cell_w,
+            g_config.rows * g_cell_h,
+            g_origin_x, g_origin_y, g_cell_w, g_cell_h);
+
+    if (Tcl_Eval(interp, "lsort -integer [.c find all]") != TCL_OK) {
+        fprintf(stderr, "dump: list-items: %s\n", Tcl_GetStringResult(interp));
+        return 1;
+    }
+    Tcl_Obj *list = Tcl_GetObjResult(interp);
+    Tcl_IncrRefCount(list);
+    int n_items = 0;
+    Tcl_Obj **items = NULL;
+    if (Tcl_ListObjGetElements(interp, list, &n_items, &items) != TCL_OK) {
+        Tcl_DecrRefCount(list);
+        return 1;
+    }
+    ItemRec *recs = (ItemRec *)calloc((size_t)(n_items > 0 ? n_items : 1),
+                                      sizeof(ItemRec));
+    if (!recs) {
+        Tcl_DecrRefCount(list);
+        return 1;
+    }
+    int n_recs = 0;
+    char qbuf[8192];
+    char buf[256];
+    for (int i = 0; i < n_items; i++) {
+        const char *id_str = Tcl_GetString(items[i]);
+        ItemRec *r = &recs[n_recs];
+
+        snprintf(buf, sizeof buf, ".c type %s", id_str);
+        if (Tcl_Eval(interp, buf) != TCL_OK) continue;
+        snprintf(r->type, sizeof r->type, "%s", Tcl_GetStringResult(interp));
+
+        snprintf(buf, sizeof buf, ".c coords %s", id_str);
+        if (Tcl_Eval(interp, buf) != TCL_OK) continue;
+        char coords_copy[128];
+        snprintf(coords_copy, sizeof coords_copy, "%s", Tcl_GetStringResult(interp));
+        /* Parse leading two doubles for sort keys; remaining coords stay
+         * in coords_copy for line emission. sscanf on coords text is
+         * cheap; a malformed coords string falls through with x1=y1=0
+         * and the line still emits (just sorts among the zeros). */
+        r->x1 = 0; r->y1 = 0;
+        sscanf(coords_copy, "%lf %lf", &r->x1, &r->y1);
+
+        if (strcmp(r->type, "text") == 0) {
+            snprintf(buf, sizeof buf, ".c itemcget %s -font", id_str);
+            Tcl_Eval(interp, buf);
+            char font_copy[64];
+            snprintf(font_copy, sizeof font_copy, "%s", Tcl_GetStringResult(interp));
+
+            snprintf(buf, sizeof buf, ".c itemcget %s -fill", id_str);
+            Tcl_Eval(interp, buf);
+            char fill_copy[16];
+            snprintf(fill_copy, sizeof fill_copy, "%s", Tcl_GetStringResult(interp));
+
+            snprintf(buf, sizeof buf, ".c itemcget %s -text", id_str);
+            Tcl_Eval(interp, buf);
+            quote_for_golden(Tcl_GetStringResult(interp), qbuf, sizeof qbuf);
+
+            snprintf(r->line, sizeof r->line,
+                     "text %s font=%s fill=%s text=\"%s\"",
+                     coords_copy, font_copy, fill_copy, qbuf);
+        } else if (strcmp(r->type, "rectangle") == 0) {
+            /* Normalise canvas type "rectangle" → "rect" in emitted line
+             * for compactness; sort key still uses canonical "rectangle". */
+            snprintf(buf, sizeof buf, ".c itemcget %s -fill", id_str);
+            Tcl_Eval(interp, buf);
+            snprintf(r->line, sizeof r->line, "rect %s fill=%s",
+                     coords_copy, Tcl_GetStringResult(interp));
+        } else if (strcmp(r->type, "line") == 0) {
+            snprintf(buf, sizeof buf, ".c itemcget %s -fill", id_str);
+            Tcl_Eval(interp, buf);
+            char fill_copy[16];
+            snprintf(fill_copy, sizeof fill_copy, "%s", Tcl_GetStringResult(interp));
+            snprintf(buf, sizeof buf, ".c itemcget %s -width", id_str);
+            Tcl_Eval(interp, buf);
+            snprintf(r->line, sizeof r->line, "line %s fill=%s width=%s",
+                     coords_copy, fill_copy, Tcl_GetStringResult(interp));
+        } else {
+            snprintf(r->line, sizeof r->line, "%s %s", r->type, coords_copy);
+        }
+        n_recs++;
+    }
+    Tcl_DecrRefCount(list);
+
+    qsort(recs, (size_t)n_recs, sizeof(ItemRec), item_compare);
+    for (int i = 0; i < n_recs; i++) {
+        fprintf(out, "%s\n", recs[i].line);
+    }
+    free(recs);
+
+    /* Always emit CLIPBOARD line for fixed format (per testkeeper
+     * 09:54:34 tweak 3). Empty value emits as: CLIPBOARD "" */
+    Tcl_Eval(interp, "if {[catch {clipboard get} t]} { set t \"\" }; set t");
+    const char *clip = Tcl_GetStringResult(interp);
+    quote_for_golden(clip ? clip : "", qbuf, sizeof qbuf);
+    fprintf(out, "CLIPBOARD \"%s\"\n", qbuf);
+    return 0;
+}
+
+/* Map Tk windowingsystem → platform suffix for per-platform goldens.
+ * Returns one of: "linux" / "mac" / "win" / "other". TkFixedFont
+ * resolves to DejaVu Sans Mono on Linux, Menlo on Mac, Consolas on
+ * Win — same canvas dump differs across platforms, so each platform
+ * gets its own golden file (per testkeeper 09:54:34 tweak 2). */
+static const char *platform_suffix(Tcl_Interp *interp) {
+    if (Tcl_Eval(interp, "tk windowingsystem") != TCL_OK) return "other";
+    const char *ws = Tcl_GetStringResult(interp);
+    if (strcmp(ws, "x11") == 0)   return "linux";
+    if (strcmp(ws, "aqua") == 0)  return "mac";
+    if (strcmp(ws, "win32") == 0) return "win";
+    return "other";
+}
+
+/* Insert ".<platform>" before the first "." in basename(golden_path).
+ * tests/goldens/foo.golden.txt + linux -> tests/goldens/foo.linux.golden.txt
+ * If basename has no "." we append .<platform> to the whole path.
+ * Per testkeeper 09:54:34 tweak 2.
+ *
+ * Refuses (exit 1) if the input basename already contains a platform
+ * suffix (.linux. / .mac. / .win. / .other.) — guards against the
+ * double-suffix footgun that would silently produce e.g.
+ * smoke_hello.linux.linux.golden.txt if a caller accidentally passes
+ * the platform-specific path instead of the base. Per gatekeeper
+ * 10:12:52 finding. Callers must pass the base path
+ * tests/goldens/<surface>.golden.txt; the harness owns the platform
+ * splice. */
+static void platform_golden_path(const char *base, const char *platform,
+                                 char *out, size_t outsz) {
+    const char *bn = strrchr(base, '/');
+    bn = bn ? bn + 1 : base;
+
+    static const char *guarded[] = {
+        ".linux.", ".mac.", ".win.", ".other.", NULL,
+    };
+    for (int i = 0; guarded[i]; i++) {
+        if (strstr(bn, guarded[i])) {
+            fprintf(stderr,
+                    "platform_golden_path: input '%s' already contains "
+                    "platform suffix '%s' — pass the base path "
+                    "(tests/goldens/<surface>.golden.txt) instead\n",
+                    base, guarded[i]);
+            exit(1);
+        }
+    }
+
+    const char *dot = strchr(bn, '.');
+    if (!dot) {
+        snprintf(out, outsz, "%s.%s", base, platform);
+        return;
+    }
+    size_t prefix_len = (size_t)(dot - base);
+    snprintf(out, outsz, "%.*s.%s%s",
+             (int)prefix_len, base, platform, dot);
+}
+
+/* Compare actual to golden. Returns 0 on match, 2 on mismatch (matches
+ * exit-code contract in file header). On mismatch, prints first 10
+ * differing lines to stderr and leaves both files in place. */
+static int compare_to_golden(const char *actual_path, const char *golden_path) {
+    FILE *fa = fopen(actual_path, "r");
+    FILE *fg = fopen(golden_path, "r");
+    if (!fa) {
+        fprintf(stderr, "cannot open actual %s\n", actual_path);
+        if (fg) fclose(fg);
+        return 1;
+    }
+    if (!fg) {
+        fprintf(stderr, "cannot open golden %s — run with --update to create\n",
+                golden_path);
+        fclose(fa);
+        return 1;
+    }
+    char la[2048], lg[2048];
+    int line = 0;
+    int mismatches = 0;
+    for (;;) {
+        char *ra = fgets(la, sizeof la, fa);
+        char *rg = fgets(lg, sizeof lg, fg);
+        line++;
+        if (!ra && !rg) break;
+        if (!ra || !rg) {
+            fprintf(stderr, "GOLDEN MISMATCH line %d: %s short\n",
+                    line, ra ? "golden" : "actual");
+            mismatches++;
+            break;
+        }
+        if (strcmp(la, lg) != 0) {
+            if (mismatches < 10) {
+                fprintf(stderr, "GOLDEN MISMATCH line %d:\n", line);
+                fprintf(stderr, "  expected: %s", lg);
+                fprintf(stderr, "  actual:   %s", la);
+            }
+            mismatches++;
+        }
+    }
+    fclose(fa);
+    fclose(fg);
+    if (mismatches > 10) {
+        fprintf(stderr, "... %d more mismatches\n", mismatches - 10);
+    }
+    return mismatches == 0 ? 0 : 2;
+}
+
+int main(int argc, char *argv[]) {
+    Tcl_FindExecutable(argv[0]);
+
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s <script.tcl> <golden.txt> [--update]\n",
+                argv[0]);
+        return 1;
+    }
+    const char *script_path = argv[1];
+    const char *golden_path = argv[2];
+    int update = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--update") == 0) update = 1;
+    }
+
+    nbs_config_load(&g_config);
+    /* Determinism: blink off (timer would fire mid-dump and perturb canvas). */
+    g_config.cursor.blink = 0;
+
+    g_interp = Tcl_CreateInterp();
+    if (Tcl_Init(g_interp) != TCL_OK ||
+        Tcl_Eval(g_interp, "package require Tk") != TCL_OK) {
+        fprintf(stderr, "init: %s\n", Tcl_GetStringResult(g_interp));
+        return 1;
+    }
+    register_named_fonts(g_interp);
+    compute_cell_metrics(g_interp);
+
+    g_term = terminal_new(g_config.rows, g_config.cols);
+    if (!g_term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
+    g_parser = vt_parser_new(g_term);
+    if (!g_parser) { fprintf(stderr, "vt_parser_new failed\n"); return 1; }
+
+    if (Tcl_Eval(g_interp, "tk windowingsystem") == TCL_OK) {
+        g_is_mac = (strcmp(Tcl_GetStringResult(g_interp), "aqua") == 0);
+    }
+
+    /* Production Tcl commands so per-surface scripts can drive the same
+     * surfaces p3_pty does. PtyWrite is registered but g_pty stays NULL —
+     * scripts that hit it will fail cleanly via the NULL-safe check
+     * inside pty_write rather than silently no-op. */
+    Tcl_CreateObjCommand(g_interp, "pty_write",      PtyWrite,       NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_resize",     PtyResize,      NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_paste",      PtyPaste,       NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "pty_key_event",  PtyKeyEvent,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_open_prefs", NbsOpenPrefs,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_save_prefs", NbsSavePrefs,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_down",   NbsSelDown,     NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_drag",   NbsSelDrag,     NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,       NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,        NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_scroll_lines", NbsScrollLines, NULL, NULL);
+
+    /* Harness commands. */
+    Tcl_CreateObjCommand(g_interp, "nbs_test_feed_bytes",    NbsTestFeedBytes,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_test_render",        NbsTestRender,       NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_test_set_sel",       NbsTestSetSel,       NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_test_fire_bind",     NbsTestFireBind,     NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_test_get_clipboard", NbsTestGetClipboard, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_test_complete",      NbsTestComplete,     NULL, NULL);
+
+    /* Fixed canvas geometry for deterministic dump. */
+    char wstr[16], hstr[16];
+    snprintf(wstr, sizeof wstr, "%d", g_config.cols * g_cell_w);
+    snprintf(hstr, sizeof hstr, "%d", g_config.rows * g_cell_h);
+    char canvas_bg_g[16];
+    const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g, sizeof canvas_bg_g);
+    const char *canvas[] = {"canvas", ".c",
+                            "-width", wstr, "-height", hstr,
+                            "-bg", canvas_bg, "-highlightthickness", "0"};
+    if (EVAL_ARGV(g_interp, canvas) != TCL_OK ||
+        Tcl_Eval(g_interp,
+                 "pack .c -fill both -expand 1; update idletasks") != TCL_OK) {
+        fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
+        return 1;
+    }
+
+    if (Tcl_EvalFile(g_interp, script_path) != TCL_OK) {
+        fprintf(stderr, "script %s: %s\n",
+                script_path, Tcl_GetStringResult(g_interp));
+        return 1;
+    }
+    if (!g_test_complete) {
+        fprintf(stderr, "script %s: did not call nbs_test_complete\n",
+                script_path);
+        return 1;
+    }
+
+    /* Per-platform golden path — TkFixedFont resolves differently on
+     * each platform so each gets its own golden file (testkeeper
+     * 09:54:34 tweak 2). The argv golden_path is the base; we splice
+     * .<platform> in front of the .golden.txt suffix. */
+    char real_golden[512];
+    platform_golden_path(golden_path, platform_suffix(g_interp),
+                         real_golden, sizeof real_golden);
+
+    /* tmp_path needs +8 bytes for the ".actual" suffix + NUL. */
+    char tmp_path[520];
+    snprintf(tmp_path, sizeof tmp_path, "%s.actual", real_golden);
+    FILE *out = fopen(tmp_path, "w");
+    if (!out) {
+        fprintf(stderr, "cannot open %s for write\n", tmp_path);
+        return 1;
+    }
+    if (emit_state_dump(g_interp, out) != 0) {
+        fclose(out);
+        return 1;
+    }
+    fclose(out);
+
+    if (update) {
+        if (rename(tmp_path, real_golden) != 0) {
+            fprintf(stderr, "cannot rename %s -> %s\n", tmp_path, real_golden);
+            return 1;
+        }
+        fprintf(stderr, "updated golden: %s\n", real_golden);
+        return 0;
+    }
+    int rc = compare_to_golden(tmp_path, real_golden);
+    if (rc == 0) {
+#if !defined(_WIN32)
+        unlink(tmp_path);
+#else
+        remove(tmp_path);
+#endif
+    } else {
+        fprintf(stderr, "actual dump preserved at %s for inspection\n", tmp_path);
+    }
+    return rc;
+}

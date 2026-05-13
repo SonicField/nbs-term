@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -224,6 +224,51 @@ $(BUILDDIR)/test_render_gamma: $(BUILDDIR)/test_render_gamma.c
 	$(CC) $(P1_CFLAGS) $< -lm -o $@
 
 test_render_gamma: $(BUILDDIR)/test_render_gamma
+
+# test_render_state — Tk-introspection state-dump shim harness for Bucket B
+# (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,
+# with testkeeper 09:54:34 review tweaks 1-4 applied). Drives the p3_pty
+# render pipeline via per-surface Tcl scripts, dumps post-render canvas
+# state via .c bbox/find/itemcget queries, sorts by (type, x1, y1) for
+# re-render stability, compares to per-platform golden text at
+# tests/goldens/<surface>.{linux,mac,win}.golden.txt. Per-surface scripts
+# live in tests/scripts/<surface>.tcl. Same TCLTK_LIBS link chain as
+# test_pty_burst — Tcl/Tk linked, vendored. Headless via Xvfb on Linux;
+# Mac/Win run direct (Aqua / window-station available per testkeeper
+# 09:52:11 b-pattern; first Bucket B Mac/Win result = empirical confirm).
+#
+# Approach: #define NBS_TEST_MODE then #include p3_pty.phc — pulls all
+# render pipeline statics (render_screen / render_cursor / flush_span /
+# compute_layout / NbsCopy / NbsSelDown etc.) into the test TU. p3_pty's
+# main() is suppressed by the NBS_TEST_MODE guard so the harness
+# provides its own (no PTY child fork, no event-loop vwait).
+$(BUILDDIR)/test_render_state.c: $(TESTDIR)/test_render_state.phc $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(SRCDIR)/config.phc $(SRCDIR)/render_color.phc $(SRCDIR)/input.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_render_state: $(BUILDDIR)/test_render_state.c $(TK_VENDOR_LIB)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
+
+test_render_state: $(BUILDDIR)/test_render_state
+
+# update-goldens — re-run all per-surface scripts in --update mode to
+# regenerate the platform-specific golden files. Invoke after an
+# intentional render-output change; review the diff in the resulting
+# tests/goldens/*.{linux,mac,win}.golden.txt files before commit.
+#
+# CI guard (per testkeeper 09:54:34 tweak 4): refuse to run if CI=true
+# is set in the environment — defense-in-depth so a CI pipeline that
+# accidentally invokes this would fail loudly instead of silently
+# rewriting goldens and masking a regression.
+update-goldens: $(BUILDDIR)/test_render_state
+	@if [ "$$CI" = "true" ]; then \
+		echo "REFUSING: update-goldens must not run in CI (CI=true detected)"; \
+		exit 1; \
+	fi
+	@for s in $(TESTDIR)/scripts/*.tcl; do \
+		name=$$(basename $$s .tcl); \
+		echo "updating golden for $$name"; \
+		./$(BUILDDIR)/test_render_state $$s $(TESTDIR)/goldens/$$name.golden.txt --update; \
+	done
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \

@@ -1529,6 +1529,14 @@ static char **build_child_argv(int argc, char *argv[]) {
     return out;
 }
 
+/* NBS_TEST_MODE: when defined, suppress this file's main() so a test
+ * binary (tests/test_render_state.phc) can #include p3_pty.phc and
+ * provide its own main() while reusing all the file-scope statics
+ * (render_screen / flush_span / render_cursor / pixel_to_cell / etc).
+ * Per theologian state-dump-shim harness design (chat 09:52:42 +
+ * supervisor 09:53:13 GO). Production p3_pty build does NOT define
+ * NBS_TEST_MODE; behaviour is unchanged for the live binary. */
+#ifndef NBS_TEST_MODE
 int main(int argc, char *argv[]) {
     Tcl_FindExecutable(argv[0]);
 
@@ -1707,3 +1715,4 @@ int main(int argc, char *argv[]) {
     terminal_free(g_term);
     return 0;
 }
+#endif  /* !NBS_TEST_MODE */
