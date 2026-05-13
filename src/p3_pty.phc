@@ -89,8 +89,6 @@ static PTYHandle         *g_pty    = NULL;
 static int                g_dirty = 0;        /* render scheduled flag */
 static int                g_child_alive = 1;
 static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
-static int                g_is_mac = 0;       /* set in main() from [tk windowingsystem] eq aqua;
-                                               * picks Alt mask 0x10 (Mac) vs 0x8 (Win/X11) for D special keys */
 
 /* C cursor blink (per legacy nbsterm.py:441-443 + 514-525): toggles
  * g_blink_visible on a 530ms cadence when g_config.cursor.blink set;
@@ -1286,29 +1284,39 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
-/* Tcl command: pty_key_event <keysym> <state> ?<char>?. Bound via
- * `bind .c <Key> {pty_key_event %K %s %A}`. Mirrors
- * extension.phc:248-322 Terminal_encode_tk_event line-for-line:
- * special-key dispatch -> Return/BackSpace/Tab/Escape -> Ctrl+letter
- * -> Alt+key -> regular character via encode_key_event. DECCKM via
- * g_term->active->mode_app_cursor; Alt mask via g_is_mac. <char>
+/* Tcl command: pty_key_event <keysym> <state> ?<char>? ?<alt>?. Bound
+ * via `bind .c <Key> {pty_key_event %K %s %A 0}` for the base case
+ * and `bind .c <Alt-Key> {pty_key_event %K %s %A 1; break}` for
+ * Alt-modified keystrokes. Mirrors extension.phc:248-322
+ * Terminal_encode_tk_event: special-key dispatch -> Return/BackSpace/
+ * Tab/Escape -> Ctrl+letter -> Alt+key -> regular character via
+ * encode_key_event. DECCKM via g_term->active->mode_app_cursor.
+ * The <alt> arg is set by Tk's <Alt-Key> bind layer (which abstracts
+ * the platform-specific Alt modifier — Mac Option vs X11/Win Alt —
+ * inside Tk itself), so we no longer read a hardcoded mod-bit
+ * (formerly 0x10 on aqua, 0x8 elsewhere) from %s. <char>/<alt>
  * optional because Tk's %A is empty for non-text keys (Up, F1, etc)
  * and the <Key> binding's command tokenises with a missing trailing
  * argument in that case. */
 static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
                        Tcl_Obj *const objv[]) {
     (void)cd;
-    if (objc < 3 || objc > 4) {
-        Tcl_WrongNumArgs(interp, 1, objv, "keysym state ?char?");
+    if (objc < 3 || objc > 5) {
+        Tcl_WrongNumArgs(interp, 1, objv, "keysym state ?char? ?alt?");
         return TCL_ERROR;
     }
     int keysym_len = 0, char_len = 0;
     const char *keysym = Tcl_GetStringFromObj(objv[1], &keysym_len);
     int state = 0;
     if (Tcl_GetIntFromObj(interp, objv[2], &state) != TCL_OK) return TCL_ERROR;
-    const char *char_str = (objc == 4)
+    const char *char_str = (objc >= 4)
                               ? Tcl_GetStringFromObj(objv[3], &char_len)
                               : "";
+    int alt_pressed = 0;
+    if (objc == 5 &&
+        Tcl_GetIntFromObj(interp, objv[4], &alt_pressed) != TCL_OK) {
+        return TCL_ERROR;
+    }
 
     int char_code = 0;
     if (char_len > 0) {
@@ -1317,11 +1325,10 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
         char_code = (int)uch;
     }
 
-    int alt_mask = g_is_mac ? 0x10 : 0x8;
     int modifiers = 0;
-    if (state & 0x1)      modifiers |= Modifier_Shift;
-    if (state & alt_mask) modifiers |= Modifier_Alt;
-    if (state & 0x4)      modifiers |= Modifier_Ctrl;
+    if (state & 0x1) modifiers |= Modifier_Shift;
+    if (alt_pressed) modifiers |= Modifier_Alt;
+    if (state & 0x4) modifiers |= Modifier_Ctrl;
 
     int app_cursor = (g_term && g_term->active)
                        ? g_term->active->mode_app_cursor : 0;
@@ -1380,8 +1387,12 @@ static int PtyKeyEvent(ClientData cd, Tcl_Interp *interp, int objc,
         return TCL_OK;
     }
 
-    /* Alt+key — ESC prefix + the keysym character. */
-    if ((state & alt_mask) && keysym_len == 1) {
+    /* Alt+key — ESC prefix + the keysym character. alt_pressed comes
+     * from the explicit <alt> arg set by the Tk <Alt-Key> bind, not
+     * from a hardcoded modifier-bit query on %s; Tk's bind layer
+     * handles the platform-specific Alt modifier mapping (Mac Option
+     * vs X11/Win Alt) so this code path is platform-agnostic. */
+    if (alt_pressed && keysym_len == 1) {
         char ab[2] = {'\x1b', keysym[0]};
         (void)pty_write(g_pty, ab, 2);
         return TCL_OK;
@@ -1870,13 +1881,6 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,      NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_scroll_lines", NbsScrollLines, NULL, NULL);
 
-    /* Cache windowingsystem once for PtyKeyEvent's Alt-mask choice
-     * (Mac aqua = 0x10, Win/X11 = 0x8). [tk windowingsystem] is cheap
-     * but PtyKeyEvent fires on every keystroke; cache. */
-    if (Tcl_Eval(g_interp, "tk windowingsystem") == TCL_OK) {
-        g_is_mac = (strcmp(Tcl_GetStringResult(g_interp), "aqua") == 0);
-    }
-
     pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     /* C — kick off the blink timer if config enables it. blink_proc
@@ -1918,7 +1922,17 @@ int main(int argc, char *argv[]) {
         Tcl_Eval(g_interp,
             "pack .c -fill both -expand 1;"
             "focus .c;"
-            "bind .c <Key> {pty_key_event %K %s %A};"
+            /* Base <Key> bind passes alt=0; Tk's more-specific
+             * <Alt-Key> match wins for Alt-modified keystrokes (next
+             * line) and passes alt=1 + ; break to consume the chain.
+             * Tk abstracts the platform Alt-modifier mapping (Mac
+             * Option / X11+Win Alt) inside the bind layer, so the C
+             * dispatcher no longer reads a hardcoded mod-bit; removes
+             * the [tk windowingsystem]-driven g_is_mac runtime branch
+             * that previously selected 0x10 vs 0x8 on %s (alexie
+             * 2026-05-13 15:50:38 'avoid machine-specifics'). */
+            "bind .c <Key>     {pty_key_event %K %s %A 0};"
+            "bind .c <Alt-Key> {pty_key_event %K %s %A 1; break};"
             "bind .c <Configure> {pty_resize %w %h};"
             "bind .c <ButtonPress-1>   {nbs_sel_down %x %y};"
             "bind .c <B1-Motion>       {nbs_sel_drag %x %y};"

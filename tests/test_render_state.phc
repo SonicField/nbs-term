@@ -465,10 +465,6 @@ int main(int argc, char *argv[]) {
     g_parser = vt_parser_new(g_term);
     if (!g_parser) { fprintf(stderr, "vt_parser_new failed\n"); return 1; }
 
-    if (Tcl_Eval(g_interp, "tk windowingsystem") == TCL_OK) {
-        g_is_mac = (strcmp(Tcl_GetStringResult(g_interp), "aqua") == 0);
-    }
-
     /* Production Tcl commands so per-surface scripts can drive the same
      * surfaces p3_pty does. PtyWrite is registered but g_pty stays NULL —
      * scripts that hit it will fail cleanly via the NULL-safe check
