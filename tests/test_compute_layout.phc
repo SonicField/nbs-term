@@ -35,18 +35,22 @@
 /* SPEC COPY — compute_layout post-measurement clamp from
  * src/p3_pty.phc:464-481. Returns new_x + new_y for given inputs.
  * Production also writes g_origin_x/g_origin_y + returns 'changed';
- * test only validates the math. */
+ * test only validates the math.
+ *
+ * Cap removed entirely per alexie 2026-05-13 14:51:46 framework
+ * ('measure real numbers, scale with window') + supervisor
+ * 14:53:12 option (i) routing. Pure (canvas_w - max_w) / 2
+ * centering, clamp to >=0 only. */
 static void compute_layout_spec(int canvas_w, int canvas_h, int max_w,
                                 int g_cell_w, int g_cell_h, int rows,
                                 int *out_x, int *out_y) {
+    (void)g_cell_w;  /* no longer used — cap removed */
     int new_x, new_y;
     if (max_w == 0 || canvas_w == 0 || canvas_h == 0) {
         new_x = NBS_PADDING;
         new_y = NBS_PADDING;
     } else {
-        int half = (canvas_w - max_w) / 2;
-        int cap  = 2 * g_cell_w;
-        new_x = (half < cap) ? half : cap;
+        new_x = (canvas_w - max_w) / 2;
         if (new_x < 0) new_x = 0;
         int text_h = rows * g_cell_h;
         new_y = (canvas_h - text_h) / 2;
@@ -89,27 +93,25 @@ int main(void) {
     compute_layout_spec(800, 600, 0, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: max_w=0 (no text)");
 
-    /* === compute_layout centering (half < cap, narrow text) === */
+    /* === compute_layout pure (canvas_w - max_w) / 2 centering === */
 
-    /* Text 100px wide in 800px canvas: half = (800-100)/2 = 350.
-     * cap = 2*9 = 18. min(350, 18) = 18. So slop-cap kicks in. */
+    /* Text 100px wide in 800px canvas: x = (800-100)/2 = 350.
+     * No cap; pure half-width centering. */
     compute_layout_spec(800, 600, 100, 9, 18, 24, &x, &y);
     /* text_h = 24*18 = 432; new_y = (600-432)/2 = 84 */
-    fail += eq_xy(x, y, 18, 84, "narrow text -> slop-cap (cap < half)");
+    fail += eq_xy(x, y, 350, 84, "narrow text -> centered, no cap");
 
-    /* Text 780px wide in 800px canvas: half = (800-780)/2 = 10.
-     * cap = 2*9 = 18. min(10, 18) = 10. Half wins. */
+    /* Text 780px wide in 800px canvas: x = (800-780)/2 = 10. */
     compute_layout_spec(800, 600, 780, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 10, 84, "wide text -> half wins (half < cap)");
+    fail += eq_xy(x, y, 10, 84, "wide text -> small left margin");
 
-    /* Edge: text exactly fills canvas: half = 0 */
+    /* Edge: text exactly fills canvas: x = 0 */
     compute_layout_spec(800, 600, 800, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, 0, 84, "text fills canvas: x=0");
 
-    /* === compute_layout asymmetric clamp (text wider than canvas) === */
+    /* === compute_layout clamp (text wider than canvas) === */
 
-    /* Text 900px wide in 800px canvas: half = (800-900)/2 = -50.
-     * cap = 2*9 = 18. min(-50, 18) = -50 -> clamp to 0. */
+    /* Text 900px wide in 800px canvas: x = (800-900)/2 = -50 -> clamp 0 */
     compute_layout_spec(800, 600, 900, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, 0, 84, "text overflows canvas: x clamped to 0");
 
@@ -117,29 +119,38 @@ int main(void) {
 
     /* 100 rows * 18 = 1800 text_h; canvas_h=600 -> (600-1800)/2 = -600 -> clamp 0 */
     compute_layout_spec(800, 600, 100, 9, 18, 100, &x, &y);
-    fail += eq_xy(x, y, 18, 0, "text taller than canvas: y clamped to 0");
+    fail += eq_xy(x, y, 350, 0, "text taller than canvas: y clamped to 0");
 
-    /* === compute_layout slop-cap with very small cell width === */
+    /* === g_cell_w doesn't affect origin (cap removed) === */
 
-    /* If g_cell_w = 1, cap = 2. Even very narrow text gets capped at 2. */
     compute_layout_spec(800, 600, 100, 1, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 2, 84, "tiny cell -> tiny cap");
+    fail += eq_xy(x, y, 350, 84, "tiny cell, narrow text -> still centered");
 
-    /* === compute_layout slop-cap with large cell width === */
-
-    /* If g_cell_w = 100, cap = 200. half = (800-100)/2 = 350. min = 200. */
     compute_layout_spec(800, 600, 100, 100, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 200, 84, "large cell -> large cap");
+    fail += eq_xy(x, y, 350, 84, "large cell, narrow text -> still centered");
+
+    /* === wide canvas: more margin both sides === */
+
+    /* canvas_w=1600, max_w=800: x = (1600-800)/2 = 400. Symmetric
+     * centering on wide window — alexie 14:51:46 directive. */
+    compute_layout_spec(1600, 600, 800, 9, 18, 24, &x, &y);
+    fail += eq_xy(x, y, 400, 84, "wide canvas, half-width text -> symmetric");
+
+    /* === tiny canvas === */
+
+    /* canvas_w=80, max_w=20: x = (80-20)/2 = 30. */
+    compute_layout_spec(80, 600, 20, 9, 18, 24, &x, &y);
+    fail += eq_xy(x, y, 30, 84, "tiny canvas -> small centered");
 
     /* === compute_layout y-centering with various row counts === */
 
     /* 0 rows: text_h = 0; new_y = canvas_h/2 = 300 */
     compute_layout_spec(800, 600, 100, 9, 18, 0, &x, &y);
-    fail += eq_xy(x, y, 18, 300, "zero rows -> y center of canvas");
+    fail += eq_xy(x, y, 350, 300, "zero rows -> y center of canvas");
 
     /* 1 row: text_h = 18; new_y = (600-18)/2 = 291 */
     compute_layout_spec(800, 600, 100, 9, 18, 1, &x, &y);
-    fail += eq_xy(x, y, 18, 291, "one row -> y near center");
+    fail += eq_xy(x, y, 350, 291, "one row -> y near center");
 
     /* === bbox_calibrate WIDEN (asymmetric) === */
 
@@ -165,7 +176,7 @@ int main(void) {
     if (new_w != 9) { printf("FAIL bbox eq-boundary: got %d want 9 (eq is not >)\n", new_w); fail++; }
 
     if (fail == 0) {
-        printf("test_compute_layout: PASS (18 cases)\n");
+        printf("test_compute_layout: PASS (20 cases)\n");
         return 0;
     }
     printf("test_compute_layout: FAIL (%d failures)\n", fail);

@@ -482,9 +482,18 @@ static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
         new_x = NBS_PADDING;
         new_y = NBS_PADDING;
     } else {
-        int half = (canvas_w - max_w) / 2;
-        int cap  = 2 * g_cell_w;
-        new_x = (half < cap) ? half : cap;
+        /* Pure measurement-based centering — origin_x = (canvas_w -
+         * max_w) / 2 with no cap. Per alexie 2026-05-13 14:51:46
+         * framework ('measure real numbers, scale with window') +
+         * supervisor 14:53:12 option (i) routing. Both prior pure-
+         * phc cap forms (2 * g_cell_w from d390acc + the canvas_w/8
+         * from d7ef58d) clamped origin_x; both produced wide-window
+         * asymmetry to varying degrees. Removing the cap aligns with
+         * the framework directive. Risk: sparse-content slop returns
+         * (alexie 2026-04-29 17:56 prior); fall-back path is option
+         * (iii) conditional cap on max_w < canvas_w/2 if smoke
+         * fires the slop class. */
+        new_x = (canvas_w - max_w) / 2;
         if (new_x < 0) new_x = 0;
         int text_h = scr->rows * g_cell_h;
         new_y = (canvas_h - text_h) / 2;
