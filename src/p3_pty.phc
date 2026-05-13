@@ -118,22 +118,37 @@ static int g_sel_er = 0, g_sel_ec = 0;
  * re-creating an existing named font; this guard keeps p3_pty re-entry
  * safe even though current code creates the interp once). */
 static void register_named_fonts(Tcl_Interp *interp) {
-    Tcl_Eval(interp,
-        "set _phc_fam [font configure TkFixedFont -family];"
-        "set _phc_sz  [font configure TkFixedFont -size];"
+    /* Use g_config.font.{family,size} so the user's saved font (loaded
+     * from ~/.nbs/nbs-term.honest by nbs_config_load() before this in
+     * main()) takes effect at startup. Prior version derived from
+     * TkFixedFont's family/size and IGNORED g_config — alexie 2026-05-13
+     * 11:23:44: 'font size is not being applied at startup correctly.
+     * Once started and Cmd^, is used - it picks it up' (because
+     * nbs_open_prefs at p3_pty.phc:1305-1314 explicitly font configure'd
+     * the named fonts to g_config values, masking the startup gap).
+     * Defaults from nbs_config_default (config.phc:91-92) are
+     * 'TkFixedFont' / size 14, so the cold-start path still resolves to
+     * the prior behaviour when no config file exists. */
+    char init[2048];
+    snprintf(init, sizeof init,
         "if {[lsearch -exact [font names] font_normal] < 0} {"
-        "  font create font_normal -family $_phc_fam -size $_phc_sz"
+        "  font create font_normal -family {%s} -size %d"
         "};"
         "if {[lsearch -exact [font names] font_bold] < 0} {"
-        "  font create font_bold -family $_phc_fam -size $_phc_sz -weight bold"
+        "  font create font_bold -family {%s} -size %d -weight bold"
         "};"
         "if {[lsearch -exact [font names] font_italic] < 0} {"
-        "  font create font_italic -family $_phc_fam -size $_phc_sz -slant italic"
+        "  font create font_italic -family {%s} -size %d -slant italic"
         "};"
         "if {[lsearch -exact [font names] font_bold_italic] < 0} {"
-        "  font create font_bold_italic -family $_phc_fam -size $_phc_sz "
+        "  font create font_bold_italic -family {%s} -size %d "
         "    -weight bold -slant italic"
-        "}");
+        "}",
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size,
+        g_config.font.family, g_config.font.size);
+    Tcl_Eval(interp, init);
 }
 
 /* Query Tk for the actual font_normal character cell metrics so cursor
