@@ -121,7 +121,12 @@ if [ ! -x deps/phc/build/phc ]; then
     echo "ERROR: phc build failed."
     exit 1
 fi
-echo "phc: $(deps/phc/build/phc 2>&1 || true | head -1)"
+# phc reads stdin until EOF; without explicit < /dev/null, in `curl ... | bash`
+# mode the spawned phc inherits bash's stdin (the script-streaming pipe) and
+# consumes the rest of the script source as its input — bash then has nothing
+# left to execute and the install silently terminates after step 4. alexie
+# 2026-05-13 10:19:04 hit this; generalist 10:23:49 diagnosed.
+echo "phc: $(deps/phc/build/phc < /dev/null 2>&1 | head -1 || true)"
 
 # ---- Step 5: build the pure-phc terminal binary against vendored Tcl/Tk ----
 # Override Makefile's pkg-config-based TCLTK_CFLAGS/TCLTK_LIBS so it uses the
