@@ -253,6 +253,28 @@ jobs:
           path: tests/goldens/g_composite.*.actual
           if-no-files-found: ignore
 
+      - name: T0 C cursor DECTCEM (test_render_state + c_dectcem.tcl)
+        # Bucket B 9th-surface backfill per medic 13:43:35 +
+        # supervisor 13:44:26 (gap caught after 8-of-9 milestone).
+        # Tests vt_parser.phc:240/256 DECTCEM toggle + render_cursor
+        # early-return at p3_pty.phc:552 when !mode_cursor_visible
+        # (commit a348556). Inline assertion shape (theologian
+        # 12:53:01 Option 1) — no canvas-state golden compare needed;
+        # script raises TCL_ERROR on mismatch. Blink (530ms timer)
+        # deferred per supervisor 13:44:26 split.
+        id: t0_c_dectcem
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/c_dectcem.tcl tests/goldens/c_dectcem.golden.txt
+
+      - name: Upload T0 C DECTCEM .actual on failure
+        if: always() && steps.t0_c_dectcem.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-c-dectcem-linux
+          path: tests/goldens/c_dectcem.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -444,6 +466,22 @@ jobs:
         with:
           name: t0-actual-g-composite-mac
           path: tests/goldens/g_composite.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 C cursor DECTCEM (test_render_state + c_dectcem.tcl)
+        # Bucket B 9th-surface backfill per medic 13:43:35. macOS Aqua
+        # direct, no Xvfb. Discriminator per linux-build job comment.
+        id: t0_c_dectcem
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/c_dectcem.tcl tests/goldens/c_dectcem.golden.txt
+
+      - name: Upload T0 C DECTCEM .actual on failure
+        if: always() && steps.t0_c_dectcem.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-c-dectcem-mac
+          path: tests/goldens/c_dectcem.*.actual
           if-no-files-found: ignore
 
   win-build:

@@ -526,6 +526,16 @@ $t0_g_composite_rc = $LASTEXITCODE
 if ($t0_g_composite_rc -eq 0) { Write-Host "T0 G COMPOSITE OK: scrollback + screen composite render verified" -ForegroundColor Green }
 else                          { Write-Host "T0 G COMPOSITE FAILED (exit $t0_g_composite_rc). Inspect g_composite.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# Bucket B 9th-surface backfill (commit a348556 + medic 13:43:35
+# coverage gap): C cursor DECTCEM toggle (CSI ?25l hide / ?25h show).
+Write-Host "Running T0 C DECTCEM (build/test_render_state.exe + c_dectcem.tcl)..." -ForegroundColor Yellow
+$T0CdScript = Join-Path (Join-Path $RepoDir "tests") "scripts\c_dectcem.tcl"
+$T0CdGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\c_dectcem.golden.txt"
+& $T0Exe $T0CdScript $T0CdGolden
+$t0_c_dectcem_rc = $LASTEXITCODE
+if ($t0_c_dectcem_rc -eq 0) { Write-Host "T0 C DECTCEM OK: cursor visibility toggle verified" -ForegroundColor Green }
+else                        { Write-Host "T0 C DECTCEM FAILED (exit $t0_c_dectcem_rc). Inspect c_dectcem.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -577,6 +587,7 @@ if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }
 if ($t0_f_mouse_rc -ne 0) { exit $t0_f_mouse_rc }
 if ($t0_f_copy_rc -ne 0) { exit $t0_f_copy_rc }
 if ($t0_g_composite_rc -ne 0) { exit $t0_g_composite_rc }
+if ($t0_c_dectcem_rc -ne 0) { exit $t0_c_dectcem_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
