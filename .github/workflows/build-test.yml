@@ -287,6 +287,27 @@ jobs:
           path: tests/goldens/c_dectcem.*.actual
           if-no-files-found: ignore
 
+      - name: T0 INVERSE+DIM end-to-end (test_render_state + inverse_dim.tcl)
+        # Companion test for ac4480d (flush_span colour-pipeline
+        # reorder). Discriminator for the two simultaneous fixes:
+        # INVERSE Default+Default no-op (alexie 14:16:47 cursor
+        # invisible in claude-code) + DIM ignored at render (alexie
+        # 14:16:47 dimmed text rendered same as normal). 3 inline
+        # assertions: INVERSE-only fill=#1a1a1a / DIM-only fill=
+        # #686868 / INVERSE+DIM combined fill=#1a1a1a.
+        id: t0_inverse_dim
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/inverse_dim.tcl tests/goldens/inverse_dim.golden.txt
+
+      - name: Upload T0 INVERSE+DIM .actual on failure
+        if: always() && steps.t0_inverse_dim.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-inverse-dim-linux
+          path: tests/goldens/inverse_dim.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -503,6 +524,22 @@ jobs:
         with:
           name: t0-actual-c-dectcem-mac
           path: tests/goldens/c_dectcem.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 INVERSE+DIM end-to-end (test_render_state + inverse_dim.tcl)
+        # Companion test for ac4480d. macOS Aqua direct, no Xvfb.
+        # Discriminator per linux-build job comment.
+        id: t0_inverse_dim
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/inverse_dim.tcl tests/goldens/inverse_dim.golden.txt
+
+      - name: Upload T0 INVERSE+DIM .actual on failure
+        if: always() && steps.t0_inverse_dim.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-inverse-dim-mac
+          path: tests/goldens/inverse_dim.*.actual
           if-no-files-found: ignore
 
   win-build:

@@ -560,6 +560,17 @@ $t0_c_dectcem_rc = $LASTEXITCODE
 if ($t0_c_dectcem_rc -eq 0) { Write-Host "T0 C DECTCEM OK: cursor visibility toggle verified" -ForegroundColor Green }
 else                        { Write-Host "T0 C DECTCEM FAILED (exit $t0_c_dectcem_rc). Inspect c_dectcem.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# INVERSE+DIM companion test for ac4480d (flush_span colour-pipeline
+# reorder). 3 inline assertions cover INVERSE Default+Default + DIM
+# render path through flush_span.
+Write-Host "Running T0 INVERSE+DIM (build/test_render_state.exe + inverse_dim.tcl)..." -ForegroundColor Yellow
+$T0IdScript = Join-Path (Join-Path $RepoDir "tests") "scripts\inverse_dim.tcl"
+$T0IdGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\inverse_dim.golden.txt"
+& $T0Exe $T0IdScript $T0IdGolden
+$t0_inverse_dim_rc = $LASTEXITCODE
+if ($t0_inverse_dim_rc -eq 0) { Write-Host "T0 INVERSE+DIM OK: Default+Default swap + DIM render verified" -ForegroundColor Green }
+else                          { Write-Host "T0 INVERSE+DIM FAILED (exit $t0_inverse_dim_rc). Inspect inverse_dim.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -613,6 +624,7 @@ if ($t0_f_mouse_rc -ne 0) { exit $t0_f_mouse_rc }
 if ($t0_f_copy_rc -ne 0) { exit $t0_f_copy_rc }
 if ($t0_g_composite_rc -ne 0) { exit $t0_g_composite_rc }
 if ($t0_c_dectcem_rc -ne 0) { exit $t0_c_dectcem_rc }
+if ($t0_inverse_dim_rc -ne 0) { exit $t0_inverse_dim_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
