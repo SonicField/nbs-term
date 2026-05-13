@@ -473,6 +473,19 @@ $t0_rc = $LASTEXITCODE
 if ($t0_rc -eq 0) { Write-Host "T0 HARNESS OK: render_screen round-trip + golden compare" -ForegroundColor Green }
 else              { Write-Host "T0 HARNESS FAILED (exit $t0_rc). If Win window-station unavailable, escalate per testkeeper 09:54:34 fallback gate." -ForegroundColor Red }
 
+# Bucket B per-surface T0 scripts (testkeeper 12:38:19 Option 1 + supervisor
+# 12:20:28 GO + 09:52:11 start order). a1_color: A1 span renderer per-attr
+# fg/bg/font emission discriminator. Win artifact upload via .yml is atomic
+# (catches any tests/goldens/*.actual via wildcard) — no per-surface upload
+# needed in .ps1.
+Write-Host "Running T0 A1 color (build/test_render_state.exe + a1_color.tcl)..." -ForegroundColor Yellow
+$T0A1Script = Join-Path (Join-Path $RepoDir "tests") "scripts\a1_color.tcl"
+$T0A1Golden = Join-Path (Join-Path $RepoDir "tests") "goldens\a1_color.golden.txt"
+& $T0Exe $T0A1Script $T0A1Golden
+$t0_a1_color_rc = $LASTEXITCODE
+if ($t0_a1_color_rc -eq 0) { Write-Host "T0 A1 COLOR OK: per-span fg emission verified" -ForegroundColor Green }
+else                       { Write-Host "T0 A1 COLOR FAILED (exit $t0_a1_color_rc). Inspect a1_color.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -519,6 +532,7 @@ if ($t2_rc -ne 0)       { exit $t2_rc }
 if ($t3_rc -ne 0)       { exit $t3_rc }
 if ($t4_rc -ne 0)       { exit $t4_rc }
 if ($t0_rc -ne 0)       { exit $t0_rc }
+if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 

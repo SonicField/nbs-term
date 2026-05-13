@@ -145,6 +145,28 @@ jobs:
           path: tests/goldens/*.actual
           if-no-files-found: ignore
 
+      - name: T0 A1 color renderer (test_render_state + a1_color.tcl)
+        # Bucket B per-surface test for A1 (per testkeeper 12:38:19 Option 1
+        # per-surface step shape + supervisor 12:20:28 GO + 09:52:11 start
+        # order). Discriminator for A1 (commit 439c7cc + c776668 — port of
+        # legacy extension.phc:982-1107 span-split renderer): if alexie
+        # reports 'colours wrong / row-uniform' AND this passes, bug is in
+        # g_config palette load OR cell color storage upstream of
+        # render_screen; if this fails, regression is inside flush_span /
+        # cells_same_span / per-span fg/bg/font emission.
+        id: t0_a1_color
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/a1_color.tcl tests/goldens/a1_color.golden.txt
+
+      - name: Upload T0 A1 color .actual on failure
+        if: always() && steps.t0_a1_color.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-a1-color-linux
+          path: tests/goldens/a1_color.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -254,6 +276,24 @@ jobs:
         with:
           name: t0-actual-mac
           path: tests/goldens/*.actual
+          if-no-files-found: ignore
+
+      - name: T0 A1 color renderer (test_render_state + a1_color.tcl)
+        # Bucket B per-surface test for A1 (per testkeeper 12:38:19 Option 1
+        # per-surface step shape + supervisor 12:20:28 GO + 09:52:11 start
+        # order). macOS Aqua direct, no Xvfb. Discriminator per linux-build
+        # job comment.
+        id: t0_a1_color
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/a1_color.tcl tests/goldens/a1_color.golden.txt
+
+      - name: Upload T0 A1 color .actual on failure
+        if: always() && steps.t0_a1_color.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-a1-color-mac
+          path: tests/goldens/a1_color.*.actual
           if-no-files-found: ignore
 
   win-build:
