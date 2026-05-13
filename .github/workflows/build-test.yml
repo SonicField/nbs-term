@@ -123,10 +123,27 @@ jobs:
         # golden compare via xvfb-run on Linux. Per-platform goldens at
         # tests/goldens/<surface>.{linux,mac,win}.golden.txt; harness
         # owns the platform splice (footgun guard refuses pre-suffixed paths).
+        id: t0_smoke
         if: always()
         run: |
           make build/test_render_state
           xvfb-run -a build/test_render_state tests/scripts/smoke_hello.tcl tests/goldens/smoke_hello.golden.txt
+
+      - name: Upload T0 .actual artifacts on T0 failure
+        # When T0 golden compare fails, the harness writes the on-disk
+        # canvas dump to tests/goldens/<surface>.<platform>.golden.txt.actual.
+        # Capturing these as workflow artifacts is the canonical way to
+        # bootstrap per-platform goldens (per testkeeper 10:47:03 fix-forward
+        # plan + supervisor 11:17:11 GO option A): a maintainer downloads
+        # the artifact, inspects, commits the file as the golden — preserves
+        # the CI=true update-goldens guard (defense-in-depth against silent
+        # masking) by keeping the commit-the-golden step human-mediated.
+        if: always() && steps.t0_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-linux
+          path: tests/goldens/*.actual
+          if-no-files-found: ignore
 
   mac-build:
     name: macOS
@@ -219,16 +236,25 @@ jobs:
 
       - name: T0 state-dump harness smoke (test_render_state + smoke_hello.tcl)
         # Bucket B harness round-trip per d9bba41. macOS Aqua window-server
-        # is built-in (no Xvfb wrapper needed); first Mac CI result on this
-        # step = empirical confirm of macos-latest aqua availability per
-        # testkeeper 09:52:11 b-pattern + supervisor 09:53:13 GO. If this
-        # step exits non-zero on a no-display ground, escalate per
-        # testkeeper 09:54:34 fallback gate (drop to Linux+Mac CI + named
-        # alexie-Win-smoke gate, NOT silent skip).
+        # is built-in (no Xvfb wrapper needed); empirically confirmed
+        # available per CI run 25793943968 2026-05-13 (T0 binary built +
+        # ran + generated dump on macos-latest).
+        id: t0_smoke
         if: always()
         run: |
           make build/test_render_state
           build/test_render_state tests/scripts/smoke_hello.tcl tests/goldens/smoke_hello.golden.txt
+
+      - name: Upload T0 .actual artifacts on T0 failure
+        # See linux-build job comment — same fix-forward plan to bootstrap
+        # the per-platform mac golden (testkeeper 10:47:03 + supervisor
+        # 11:17:11 GO option A).
+        if: always() && steps.t0_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-mac
+          path: tests/goldens/*.actual
+          if-no-files-found: ignore
 
   win-build:
     name: Windows
@@ -256,3 +282,17 @@ jobs:
         # unconditionally inside the script. Burst test uses direct-exec producer
         # (post-(iii) canonicalisation, a0ed609).
         run: .\scripts\windows-setup-phc.ps1
+
+      - name: Upload T0 .actual artifacts (always; .ps1 atomicity)
+        # Win .ps1 is atomic — can't isolate T0 step outcome the way Linux/Mac
+        # .yml jobs can. Always upload to capture T0 .actual when present;
+        # if-no-files-found: ignore handles the success-case (no .actual
+        # exists when T0 PASSes). Same fix-forward plan to bootstrap the
+        # per-platform win golden (testkeeper 10:47:03 + supervisor 11:17:11
+        # GO option A).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-win
+          path: tests/goldens/*.actual
+          if-no-files-found: ignore
