@@ -232,6 +232,27 @@ jobs:
           path: tests/goldens/f_copy.*.actual
           if-no-files-found: ignore
 
+      - name: T0 G composite scrollback (test_render_state + g_composite.tcl)
+        # Bucket B per-surface test for G (commit e45fbca — scrollback
+        # UI: composite render of scrollback ring + active screen via
+        # view_row_cells at p3_pty.phc:323-349). Discriminator: if
+        # alexie reports 'scrollback missing / wrong content' AND this
+        # passes, bug is in scroll-trigger bindings or scrollback ring
+        # upstream; if this fails, regression is inside view_row_cells
+        # composite path OR nbs_set_scroll_offset bounds-clamp.
+        id: t0_g_composite
+        if: always()
+        run: |
+          xvfb-run -a build/test_render_state tests/scripts/g_composite.tcl tests/goldens/g_composite.golden.txt
+
+      - name: Upload T0 G composite .actual on failure
+        if: always() && steps.t0_g_composite.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-g-composite-linux
+          path: tests/goldens/g_composite.*.actual
+          if-no-files-found: ignore
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -407,6 +428,22 @@ jobs:
         with:
           name: t0-actual-f-copy-mac
           path: tests/goldens/f_copy.*.actual
+          if-no-files-found: ignore
+
+      - name: T0 G composite scrollback (test_render_state + g_composite.tcl)
+        # Bucket B per-surface test for G (commit e45fbca). macOS Aqua
+        # direct, no Xvfb. Discriminator per linux-build job comment.
+        id: t0_g_composite
+        if: always()
+        run: |
+          build/test_render_state tests/scripts/g_composite.tcl tests/goldens/g_composite.golden.txt
+
+      - name: Upload T0 G composite .actual on failure
+        if: always() && steps.t0_g_composite.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: t0-actual-g-composite-mac
+          path: tests/goldens/g_composite.*.actual
           if-no-files-found: ignore
 
   win-build:

@@ -516,6 +516,16 @@ $t0_f_copy_rc = $LASTEXITCODE
 if ($t0_f_copy_rc -eq 0) { Write-Host "T0 F COPY OK: NbsCopy + utf8 + clipboard round-trip verified" -ForegroundColor Green }
 else                     { Write-Host "T0 F COPY FAILED (exit $t0_f_copy_rc). Inspect f_copy.win.golden.txt.actual artifact." -ForegroundColor Red }
 
+# Bucket B G (commit e45fbca): scrollback composite render
+# (view_row_cells pulls from scrollback ring when scroll_offset > 0).
+Write-Host "Running T0 G composite (build/test_render_state.exe + g_composite.tcl)..." -ForegroundColor Yellow
+$T0GcScript = Join-Path (Join-Path $RepoDir "tests") "scripts\g_composite.tcl"
+$T0GcGolden = Join-Path (Join-Path $RepoDir "tests") "goldens\g_composite.golden.txt"
+& $T0Exe $T0GcScript $T0GcGolden
+$t0_g_composite_rc = $LASTEXITCODE
+if ($t0_g_composite_rc -eq 0) { Write-Host "T0 G COMPOSITE OK: scrollback + screen composite render verified" -ForegroundColor Green }
+else                          { Write-Host "T0 G COMPOSITE FAILED (exit $t0_g_composite_rc). Inspect g_composite.win.golden.txt.actual artifact." -ForegroundColor Red }
+
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
 # exit codes. Burst PASS + self-test FAIL isolates fault to the Tk/render
@@ -566,6 +576,7 @@ if ($t0_a1_color_rc -ne 0) { exit $t0_a1_color_rc }
 if ($t0_a3a_prefs_rc -ne 0) { exit $t0_a3a_prefs_rc }
 if ($t0_f_mouse_rc -ne 0) { exit $t0_f_mouse_rc }
 if ($t0_f_copy_rc -ne 0) { exit $t0_f_copy_rc }
+if ($t0_g_composite_rc -ne 0) { exit $t0_g_composite_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
