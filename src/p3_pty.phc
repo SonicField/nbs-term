@@ -129,6 +129,30 @@ static void register_named_fonts(Tcl_Interp *interp) {
      * Defaults from nbs_config_default (config.phc:91-92) are
      * 'TkFixedFont' / size 14, so the cold-start path still resolves to
      * the prior behaviour when no config file exists. */
+    /* Resolve g_config.font.family via [font actual {fam} -family]
+     * BEFORE passing to font create. TkFixedFont (the cold-start
+     * default per nbs_config_default config.phc:91) is a Tk
+     * named-font alias not a real family — `font create -family
+     * TkFixedFont -weight bold` resolves the alias for the family
+     * but DROPS the -weight/-slant variants because Tk's family-
+     * lookup chain doesn't propagate the modifier through the
+     * alias. Result: font_bold = font_italic = font_normal in actual
+     * rendering (alexie 2026-05-13 15:30:08 'Bold and italic do not
+     * appear to work' + theologian 15:36:51 root cause). [font
+     * actual] returns the resolved real family name (Menlo on
+     * darwin / DejaVu on Linux / Courier New on Win); idempotent on
+     * already-resolved families. Mirrors legacy nbsterm.py:55-63
+     * default_font_family() pattern per memory feedback_legacy_port_
+     * as_spec. */
+    char fam[128];
+    snprintf(fam, sizeof fam, "%s", g_config.font.family);
+    char resolve_cmd[256];
+    snprintf(resolve_cmd, sizeof resolve_cmd,
+             "font actual {%s} -family", fam);
+    if (Tcl_Eval(interp, resolve_cmd) == TCL_OK) {
+        const char *r = Tcl_GetStringResult(interp);
+        if (r && *r) snprintf(fam, sizeof fam, "%s", r);
+    }
     char init[2048];
     snprintf(init, sizeof init,
         "if {[lsearch -exact [font names] font_normal] < 0} {"
@@ -144,10 +168,10 @@ static void register_named_fonts(Tcl_Interp *interp) {
         "  font create font_bold_italic -family {%s} -size %d "
         "    -weight bold -slant italic"
         "}",
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size);
+        fam, g_config.font.size,
+        fam, g_config.font.size,
+        fam, g_config.font.size,
+        fam, g_config.font.size);
     Tcl_Eval(interp, init);
 }
 
@@ -1404,6 +1428,20 @@ static int NbsSelUp(ClientData cd, Tcl_Interp *interp, int objc,
  * shifts, blink_reset, schedule_render. Called from PrefsSave +
  * (future) honest-file watcher. */
 static void nbs_apply_config(Tcl_Interp *interp) {
+    /* Resolve g_config.font.family via [font actual] before passing
+     * to font configure — same alias-resolution as register_named_
+     * fonts (theologian 2026-05-13 15:36:51). Without this, saving
+     * Prefs with TkFixedFont (or any other Tk alias) reconfigures
+     * font_bold/italic to lose -weight/-slant variants again. */
+    char fam[128];
+    snprintf(fam, sizeof fam, "%s", g_config.font.family);
+    char resolve_cmd[256];
+    snprintf(resolve_cmd, sizeof resolve_cmd,
+             "font actual {%s} -family", fam);
+    if (Tcl_Eval(interp, resolve_cmd) == TCL_OK) {
+        const char *r = Tcl_GetStringResult(interp);
+        if (r && *r) snprintf(fam, sizeof fam, "%s", r);
+    }
     /* Reconfigure the four named fonts to the new family/size. */
     char fontcmd[1024];
     snprintf(fontcmd, sizeof fontcmd,
@@ -1411,10 +1449,10 @@ static void nbs_apply_config(Tcl_Interp *interp) {
         "font configure font_bold         -family {%s} -size %d -weight bold;"
         "font configure font_italic       -family {%s} -size %d -slant italic;"
         "font configure font_bold_italic  -family {%s} -size %d -weight bold -slant italic",
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size,
-        g_config.font.family, g_config.font.size);
+        fam, g_config.font.size,
+        fam, g_config.font.size,
+        fam, g_config.font.size,
+        fam, g_config.font.size);
     Tcl_Eval(interp, fontcmd);
 
     compute_cell_metrics(interp);
