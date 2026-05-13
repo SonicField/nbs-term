@@ -821,6 +821,26 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
     const char *clear[] = {canvas, "delete", "all"};
     if (EVAL_ARGV(interp, clear) != TCL_OK) return TCL_ERROR;
 
+    /* P bg_fill — paint the WHOLE canvas with the gamma-corrected bg
+     * before any text / per-cell-rect items, so margins (uncovered
+     * widget-bg pixels left/right of the centered text block) render
+     * uniform with the text area. Hides the cap-at-2*g_cell_w origin-x
+     * asymmetry that exposes Mac aqua-tinted widget surface; on Linux/
+     * Win the change is a no-op visually (widget -bg already paints
+     * uniform). Pure-Tk canvas create_rectangle, no platform-specific
+     * code per memory feedback_tk_native_over_platform. Mirrors legacy
+     * nbsterm.py:474-478 (commit 5feed64 Bug C v3 + 4dcfc94 integration)
+     * per memory feedback_legacy_port_as_spec. alexie 2026-05-13
+     * 11:27:24 #2 + theologian 11:31:18 root cause + fix shape. */
+    char bg_hex[16];
+    gamma_apply(g_config.bg, bg_hex, sizeof bg_hex);
+    char bg_fill_cmd[256];
+    snprintf(bg_fill_cmd, sizeof bg_fill_cmd,
+        "%s create rectangle 0 0 [winfo width %s] [winfo height %s] "
+        "-fill %s -outline {} -tags bg_fill",
+        canvas, canvas, canvas, bg_hex);
+    if (Tcl_Eval(interp, bg_fill_cmd) != TCL_OK) return TCL_ERROR;
+
     /* F — normalise selection once per render so flush_span sees a
      * canonical (sr,sc)<=(er,ec) range. Reverse-drag handled here. */
     int sel_sr = g_sel_sr, sel_sc = g_sel_sc;
