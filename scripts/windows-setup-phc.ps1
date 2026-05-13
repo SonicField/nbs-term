@@ -311,6 +311,95 @@ if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $ShimSrc2"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ShimExe2)) { Write-Host "ERROR: cl link failed for test_extract_utf8.exe" -ForegroundColor Red; exit 1 }
 Write-Host "Built $ShimExe2" -ForegroundColor Green
 
+# ---- Step 3.8: build build/test_render_gamma.exe (T1 H gamma anchor, libc + math) ----
+# Discriminator for H gamma transform (commit 17fe5dc) per testkeeper
+# coverage 09:41:25 + alexie 09:46:53 automated-suite directive. Math in
+# MSVC CRT (no separate libm needed on Win).
+$T1Src  = Join-Path (Join-Path $RepoDir "tests") "test_render_gamma.phc"
+$T1C    = Join-Path $BuildDir "test_render_gamma.c"
+$T1Exe  = Join-Path $BuildDir "test_render_gamma.exe"
+$T1Pp   = Join-Path $BuildDir "test_render_gamma.i"
+Write-Host "Preprocessing $T1Src -> $T1C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $T1Src 2>$null | Out-File -Encoding ASCII -FilePath $T1Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T1Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T1Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T1C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T1Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$T1Exe" $T1C | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T1Exe)) { Write-Host "ERROR: cl link failed for test_render_gamma.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T1Exe" -ForegroundColor Green
+
+# ---- Step 3.9: build build/test_input_keys.exe (T2 D anchor, libc-only) ----
+# Discriminator for D port (commit a592576) per testkeeper coverage
+# 09:41:25. Direct-include of input.phc; transitive sgr/screen defs via
+# cl /EP. No Tcl/Tk link.
+$T2Src  = Join-Path (Join-Path $RepoDir "tests") "test_input_keys.phc"
+$T2C    = Join-Path $BuildDir "test_input_keys.c"
+$T2Exe  = Join-Path $BuildDir "test_input_keys.exe"
+$T2Pp   = Join-Path $BuildDir "test_input_keys.i"
+Write-Host "Preprocessing $T2Src -> $T2C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $T2Src 2>$null | Out-File -Encoding ASCII -FilePath $T2Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T2Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T2Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T2C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T2Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$T2Exe" $T2C | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T2Exe)) { Write-Host "ERROR: cl link failed for test_input_keys.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T2Exe" -ForegroundColor Green
+
+# ---- Step 3.10: build build/test_compute_layout.exe (T3 A2 anchor, libc-only) ----
+# Discriminator for A2 port (commit b37fcd1) per testkeeper coverage
+# 09:41:25. SPEC COPY of p3_pty.phc:466-477 + 506-510. No Tcl/Tk link.
+$T3Src  = Join-Path (Join-Path $RepoDir "tests") "test_compute_layout.phc"
+$T3C    = Join-Path $BuildDir "test_compute_layout.c"
+$T3Exe  = Join-Path $BuildDir "test_compute_layout.exe"
+$T3Pp   = Join-Path $BuildDir "test_compute_layout.i"
+Write-Host "Preprocessing $T3Src -> $T3C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $T3Src 2>$null | Out-File -Encoding ASCII -FilePath $T3Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T3Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T3Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T3C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T3Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$T3Exe" $T3C | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T3Exe)) { Write-Host "ERROR: cl link failed for test_compute_layout.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T3Exe" -ForegroundColor Green
+
+# ---- Step 3.11: build build/test_pty_resize.exe (T4 J-resize anchor, libc-only) ----
+# Discriminator for pty_resize POSIX (pty.phc:255-261) per testkeeper
+# coverage 09:41:25. On Win the source compiles to a SKIP banner main()
+# under #if defined(_WIN32) (ConPTY ResizePseudoConsole needs spawned-child
+# harness, out of unit-test scope).
+$T4Src  = Join-Path (Join-Path $RepoDir "tests") "test_pty_resize.phc"
+$T4C    = Join-Path $BuildDir "test_pty_resize.c"
+$T4Exe  = Join-Path $BuildDir "test_pty_resize.exe"
+$T4Pp   = Join-Path $BuildDir "test_pty_resize.i"
+Write-Host "Preprocessing $T4Src -> $T4C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" $T4Src 2>$null | Out-File -Encoding ASCII -FilePath $T4Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T4Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T4Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T4C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T4Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"$T4Exe" $T4C | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T4Exe)) { Write-Host "ERROR: cl link failed for test_pty_resize.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T4Exe" -ForegroundColor Green
+
+# ---- Step 3.12: build build/test_render_state.exe (T0 harness, Tcl/Tk linked) ----
+# Bucket B state-dump harness per d9bba41 (theologian harness + footgun
+# guard). #defines NBS_TEST_MODE then #includes p3_pty.phc — pulls
+# render_screen / render_cursor / flush_span / compute_layout / etc into
+# the test TU. Same Tcl/Tk import-lib link as p3_pty.exe. First Win CI
+# result on this binary = empirical confirm of windows-latest window-
+# station availability per testkeeper 09:52:11 b-pattern.
+$T0Src  = Join-Path (Join-Path $RepoDir "tests") "test_render_state.phc"
+$T0C    = Join-Path $BuildDir "test_render_state.c"
+$T0Exe  = Join-Path $BuildDir "test_render_state.exe"
+$T0Pp   = Join-Path $BuildDir "test_render_state.i"
+Write-Host "Preprocessing $T0Src -> $T0C ..." -ForegroundColor Yellow
+& cl.exe /nologo /EP /TC /I"$SrcDir" /I"$TclInclude" $T0Src 2>$null | Out-File -Encoding ASCII -FilePath $T0Pp
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: cl /EP failed on $T0Src" -ForegroundColor Red; exit 1 }
+Get-Content -Raw $T0Pp | & $PhcExe | Out-File -Encoding ASCII -FilePath $T0C
+if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: phc transform failed on $T0Src" -ForegroundColor Red; exit 1 }
+& cl.exe /nologo /std:c11 /W3 /D_CRT_SECURE_NO_WARNINGS /I"$TclInclude" /Fe"$T0Exe" $T0C `
+    /link $($TclImport.FullName) $($TkImport.FullName) kernel32.lib user32.lib shell32.lib advapi32.lib | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $T0Exe)) { Write-Host "ERROR: cl link failed for test_render_state.exe" -ForegroundColor Red; exit 1 }
+Write-Host "Built $T0Exe" -ForegroundColor Green
+
 # ---- Static guard: no Python DLL import (mirrors POSIX verify-no-python-link) ----
 Write-Host "Verifying zero Python linkage..." -ForegroundColor Yellow
 $Deps = & dumpbin.exe /dependents $PtyExe 2>$null
@@ -342,6 +431,47 @@ Write-Host "Running F2 byte-extract shim (build/test_extract_utf8.exe)..." -Fore
 $shim2_rc = $LASTEXITCODE
 if ($shim2_rc -eq 0) { Write-Host "F2 SHIM OK: utf8_emit + row_sel_range + extract walk" -ForegroundColor Green }
 else                  { Write-Host "F2 SHIM FAILED (exit $shim2_rc)." -ForegroundColor Red }
+
+# Run the new T1-T4 + T0 shims BEFORE burst/selftest so their pass/fail
+# signal is observed in CI even when the burst step exits the script via
+# the rc cascade (Win-CI burst longstanding fail per testkeeper 2026-05-12
+# 20:23:30 audit; path-c posture). Each shim captures its own rc.
+Write-Host "Running T1 H gamma + dim shim (build/test_render_gamma.exe)..." -ForegroundColor Yellow
+& $T1Exe
+$t1_rc = $LASTEXITCODE
+if ($t1_rc -eq 0) { Write-Host "T1 SHIM OK: render_gamma + render_dim" -ForegroundColor Green }
+else              { Write-Host "T1 SHIM FAILED (exit $t1_rc)." -ForegroundColor Red }
+
+Write-Host "Running T2 D special-keys + modifiers shim (build/test_input_keys.exe)..." -ForegroundColor Yellow
+& $T2Exe
+$t2_rc = $LASTEXITCODE
+if ($t2_rc -eq 0) { Write-Host "T2 SHIM OK: encode_special_key + encode_key_event" -ForegroundColor Green }
+else              { Write-Host "T2 SHIM FAILED (exit $t2_rc)." -ForegroundColor Red }
+
+Write-Host "Running T3 A2 origin + bbox-calibration shim (build/test_compute_layout.exe)..." -ForegroundColor Yellow
+& $T3Exe
+$t3_rc = $LASTEXITCODE
+if ($t3_rc -eq 0) { Write-Host "T3 SHIM OK: compute_layout clamp + bbox_calibrate WIDEN" -ForegroundColor Green }
+else              { Write-Host "T3 SHIM FAILED (exit $t3_rc)." -ForegroundColor Red }
+
+Write-Host "Running T4 J-resize TIOCSWINSZ shim (build/test_pty_resize.exe)..." -ForegroundColor Yellow
+& $T4Exe
+$t4_rc = $LASTEXITCODE
+if ($t4_rc -eq 0) { Write-Host "T4 SHIM OK: pty_resize POSIX (Win SKIP banner expected)" -ForegroundColor Green }
+else              { Write-Host "T4 SHIM FAILED (exit $t4_rc)." -ForegroundColor Red }
+
+# T0 harness smoke — Tk-linked binary; needs windows-latest window-station.
+# First-run = empirical confirm of Win Tk availability per testkeeper
+# 09:52:11 b-pattern + supervisor 09:53:13 GO. If exit non-zero on a
+# no-display ground, escalate per testkeeper 09:54:34 fallback gate
+# (drop to Linux+Mac CI + named alexie-Win-smoke gate, NOT silent skip).
+Write-Host "Running T0 state-dump harness smoke (build/test_render_state.exe + smoke_hello.tcl)..." -ForegroundColor Yellow
+$T0Script = Join-Path (Join-Path $RepoDir "tests") "scripts\smoke_hello.tcl"
+$T0Golden = Join-Path (Join-Path $RepoDir "tests") "goldens\smoke_hello.golden.txt"
+& $T0Exe $T0Script $T0Golden
+$t0_rc = $LASTEXITCODE
+if ($t0_rc -eq 0) { Write-Host "T0 HARNESS OK: render_screen round-trip + golden compare" -ForegroundColor Green }
+else              { Write-Host "T0 HARNESS FAILED (exit $t0_rc). If Win window-station unavailable, escalate per testkeeper 09:54:34 fallback gate." -ForegroundColor Red }
 
 # Run the burst test (PTY layer only, direct-exec producer) AND p3_pty.exe
 # -test (whole stack including Tk render) unconditionally, capturing both
@@ -384,6 +514,11 @@ if ($burst_rc -eq 0 -and $selftest_rc -ne 0) {
 # testkeeper 2026-05-12 20:23:30 audit).
 if ($shim1_rc -ne 0)    { exit $shim1_rc }
 if ($shim2_rc -ne 0)    { exit $shim2_rc }
+if ($t1_rc -ne 0)       { exit $t1_rc }
+if ($t2_rc -ne 0)       { exit $t2_rc }
+if ($t3_rc -ne 0)       { exit $t3_rc }
+if ($t4_rc -ne 0)       { exit $t4_rc }
+if ($t0_rc -ne 0)       { exit $t0_rc }
 if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 

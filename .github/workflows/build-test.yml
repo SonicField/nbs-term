@@ -81,6 +81,53 @@ jobs:
           make build/test_extract_utf8
           build/test_extract_utf8
 
+      - name: T1 H gamma + dim shim (test_render_gamma)
+        # Bisect-grade discriminator for H gamma transform (commit 17fe5dc)
+        # per testkeeper coverage 2026-05-13 09:41:25 + alexie 09:46:53
+        # automated-suite directive. Headless libc + libm.
+        if: always()
+        run: |
+          make build/test_render_gamma
+          build/test_render_gamma
+
+      - name: T2 D special-keys + modifiers shim (test_input_keys)
+        # Bisect-grade discriminator for D port (commit a592576) per
+        # testkeeper coverage 2026-05-13 09:41:25. Headless libc only
+        # (input.phc transitive sgr/screen defs).
+        if: always()
+        run: |
+          make build/test_input_keys
+          build/test_input_keys
+
+      - name: T3 A2 origin + bbox-calibration shim (test_compute_layout)
+        # Bisect-grade discriminator for A2 port (commit b37fcd1) per
+        # testkeeper coverage 2026-05-13 09:41:25. Headless libc only;
+        # SPEC COPY of p3_pty.phc:466-477 + 506-510.
+        if: always()
+        run: |
+          make build/test_compute_layout
+          build/test_compute_layout
+
+      - name: T4 J-resize TIOCSWINSZ shim (test_pty_resize)
+        # Bisect-grade discriminator for pty_resize POSIX (pty.phc:255-261)
+        # per testkeeper coverage 2026-05-13 09:41:25. POSIX path; openpty
+        # via -lutil. Win SKIP banner on the cross-platform CI runner.
+        if: always()
+        run: |
+          make build/test_pty_resize
+          build/test_pty_resize
+
+      - name: T0 state-dump harness smoke (test_render_state + smoke_hello.tcl)
+        # Bucket B harness round-trip per d9bba41 (theologian harness +
+        # footgun guard). Discharges the harness binary build/link surface;
+        # golden compare via xvfb-run on Linux. Per-platform goldens at
+        # tests/goldens/<surface>.{linux,mac,win}.golden.txt; harness
+        # owns the platform splice (footgun guard refuses pre-suffixed paths).
+        if: always()
+        run: |
+          make build/test_render_state
+          xvfb-run -a build/test_render_state tests/scripts/smoke_hello.tcl tests/goldens/smoke_hello.golden.txt
+
   mac-build:
     name: macOS
     runs-on: macos-latest
@@ -135,6 +182,53 @@ jobs:
         run: |
           make build/test_extract_utf8
           build/test_extract_utf8
+
+      - name: T1 H gamma + dim shim (test_render_gamma)
+        # Bisect-grade discriminator for H gamma transform (commit 17fe5dc)
+        # per testkeeper coverage 2026-05-13 09:41:25. Headless libc + libm.
+        if: always()
+        run: |
+          make build/test_render_gamma
+          build/test_render_gamma
+
+      - name: T2 D special-keys + modifiers shim (test_input_keys)
+        # Bisect-grade discriminator for D port (commit a592576) per
+        # testkeeper coverage 2026-05-13 09:41:25. Headless libc only.
+        if: always()
+        run: |
+          make build/test_input_keys
+          build/test_input_keys
+
+      - name: T3 A2 origin + bbox-calibration shim (test_compute_layout)
+        # Bisect-grade discriminator for A2 port (commit b37fcd1) per
+        # testkeeper coverage 2026-05-13 09:41:25. SPEC COPY of
+        # p3_pty.phc:466-477 + 506-510. Headless libc only.
+        if: always()
+        run: |
+          make build/test_compute_layout
+          build/test_compute_layout
+
+      - name: T4 J-resize TIOCSWINSZ shim (test_pty_resize)
+        # Bisect-grade discriminator for pty_resize POSIX (pty.phc:255-261)
+        # per testkeeper coverage 2026-05-13 09:41:25. macOS pulls openpty
+        # from libSystem (no -lutil needed; harmless if linker drops).
+        if: always()
+        run: |
+          make build/test_pty_resize
+          build/test_pty_resize
+
+      - name: T0 state-dump harness smoke (test_render_state + smoke_hello.tcl)
+        # Bucket B harness round-trip per d9bba41. macOS Aqua window-server
+        # is built-in (no Xvfb wrapper needed); first Mac CI result on this
+        # step = empirical confirm of macos-latest aqua availability per
+        # testkeeper 09:52:11 b-pattern + supervisor 09:53:13 GO. If this
+        # step exits non-zero on a no-display ground, escalate per
+        # testkeeper 09:54:34 fallback gate (drop to Linux+Mac CI + named
+        # alexie-Win-smoke gate, NOT silent skip).
+        if: always()
+        run: |
+          make build/test_render_state
+          build/test_render_state tests/scripts/smoke_hello.tcl tests/goldens/smoke_hello.golden.txt
 
   win-build:
     name: Windows
