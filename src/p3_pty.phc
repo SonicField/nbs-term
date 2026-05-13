@@ -713,10 +713,23 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
                       int y_pixel, const char *span_text,
                       Color fg, Color bg, CellAttr attrs,
                       int *x_inout) {
-    /* Apply Inverse: swap fg and bg before colour resolution. */
-    if (attrs & CellAttr_Inverse) {
-        Color t = fg; fg = bg; bg = t;
-    }
+    /* Resolve colours BEFORE gamma + dim + inverse swap. Mirrors
+     * legacy extension.phc:970-985 order: color_to_hex (with each
+     * side's correct defcol — g_config.fg for fg, g_config.bg for
+     * bg) → gamma → dim (fg only) → inverse swap of resolved hex.
+     *
+     * Prior pure-phc shape swapped Color tags FIRST then resolved
+     * with fixed defcols (g_config.fg for fg-side, g_config.bg for
+     * bg-side). When both fg + bg arrived as Default + Inverse set,
+     * post-swap fg was Default-tagged → resolved to g_config.fg via
+     * its defcol; same for bg → g_config.bg. Identical resolution
+     * to no-Inverse path; visual no-op. claude-code emits SGR 7 for
+     * its own cursor cell with neither fg nor bg explicitly set
+     * (Default+Default+Inverse) → cursor cell rendered identical to
+     * surrounding text → INVISIBLE (alexie 2026-05-13 14:16:47 +
+     * theologian 13:56:44 root cause). Resolve-then-swap-resolved-
+     * hex makes the inversion always visible regardless of which
+     * side carried Default. */
     char fg_hex[16], bg_hex[16], fg_g[16], bg_g[16];
     color_to_hex(fg, g_config.fg, fg_hex, sizeof fg_hex);
     color_to_hex(bg, g_config.bg, bg_hex, sizeof bg_hex);
@@ -725,6 +738,27 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
      * inside render_cursor). */
     gamma_apply(fg_hex, fg_g, sizeof fg_g);
     gamma_apply(bg_hex, bg_g, sizeof bg_g);
+    /* DIM (SGR 2): halve fg channels post-gamma per legacy
+     * extension.phc:977-980. Fix wires CellAttr_Dim — bit was
+     * parsed in sgr.phc but ignored at render time (alexie 2026-
+     * 05-13 14:16:47 'dimmed text rendered as the same as normal
+     * brightness' + theologian 14:18:00 root cause). */
+    if (attrs & CellAttr_Dim) {
+        char fg_dim[16];
+        render_dim(fg_g, fg_dim, sizeof fg_dim);
+        snprintf(fg_g, sizeof fg_g, "%s", fg_dim);
+    }
+    /* INVERSE (SGR 7): swap RESOLVED fg/bg hex post-gamma + post-dim
+     * per legacy extension.phc:981-985. Doing the swap on resolved
+     * hex (not Color objects) ensures Default+Default gives a
+     * visible inversion: fg_g=g_config.fg, bg_g=g_config.bg pre-
+     * swap → fg_g=g_config.bg, bg_g=g_config.fg post-swap. */
+    if (attrs & CellAttr_Inverse) {
+        char tmp[16];
+        snprintf(tmp,  sizeof tmp,  "%s", fg_g);
+        snprintf(fg_g, sizeof fg_g, "%s", bg_g);
+        snprintf(bg_g, sizeof bg_g, "%s", tmp);
+    }
     const char *fg_render = fg_g;
     const char *bg_render = bg_g;
 
