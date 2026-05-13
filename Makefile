@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -224,6 +224,19 @@ $(BUILDDIR)/test_render_gamma: $(BUILDDIR)/test_render_gamma.c
 	$(CC) $(P1_CFLAGS) $< -lm -o $@
 
 test_render_gamma: $(BUILDDIR)/test_render_gamma
+
+# test_input_keys — D special-keys + modifiers regression anchor
+# (generalist shim per supervisor 2026-05-13 09:47:45). Direct include
+# of src/input.phc (header-only pure-C with phc_flags/phc_enum syntax
+# processed by the cpp|phc|cc pipeline). Headless; transitive sgr/screen
+# defs come along but no Tk/PTY/clipboard.
+$(BUILDDIR)/test_input_keys.c: $(TESTDIR)/test_input_keys.phc $(SRCDIR)/input.phc $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_input_keys: $(BUILDDIR)/test_input_keys.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_input_keys: $(BUILDDIR)/test_input_keys
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,

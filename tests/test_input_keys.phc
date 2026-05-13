@@ -1,0 +1,253 @@
+/*
+ * test_input_keys.phc — D special-keys + modifiers regression anchor
+ *
+ * Per supervisor 2026-05-13 09:47:45 + alexie 09:46:53 automated-suite
+ * directive. Discriminator for the D port (commit a592576): if alexie
+ * reports 'arrow keys / function keys / Ctrl+letter wrong' AND this
+ * passes, bug is in p3_pty.phc Tk-binding wiring (special_map lookup,
+ * %A %s substitution, modifier-bit translation); if this fails,
+ * regression is inside input.phc encode_special_key / encode_key_event
+ * byte-encoding tables.
+ *
+ * Approach — direct include of src/input.phc (header-only pure-C with
+ * phc syntax processed by Makefile pipeline). Tests production code
+ * directly; no SPEC COPY drift risk.
+ *
+ * Headless (libc + sgr/screen type defs only via input.phc transitive
+ * include). No Tk/PTY/clipboard.
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+/* phc_invariant + phc_check come from src/screen.phc (transitively
+ * included via input.phc). Production builds get them from the regenerate
+ * prelude (Makefile:365-380) or extension_verify.c. For this unit test
+ * we don't exercise screen functions, so no-op the runtime checks just
+ * to satisfy the compiler. */
+#define phc_check(expr, msg)     ((void)0)
+#define phc_invariant(expr, msg) ((void)0)
+
+#include "input.phc"
+
+static int eq_bytes(const char *got, int got_n, const char *want, int want_n,
+                    const char *label) {
+    if (got_n == want_n && memcmp(got, want, (size_t)want_n) == 0) return 0;
+    printf("FAIL %s: got %d bytes [", label, got_n);
+    for (int i = 0; i < got_n; i++) printf("%02x ", (unsigned char)got[i]);
+    printf("] want %d bytes [", want_n);
+    for (int i = 0; i < want_n; i++) printf("%02x ", (unsigned char)want[i]);
+    printf("]\n");
+    return 1;
+}
+
+static int eq_str(const char *got, int got_n, const char *want,
+                  const char *label) {
+    return eq_bytes(got, got_n, want, (int)strlen(want), label);
+}
+
+int main(void) {
+    int fail = 0;
+    char buf[64];
+    int n;
+
+    /* === encode_key_event === */
+
+    /* (1) Plain ASCII char -> single byte */
+    n = encode_key_event('a', 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "a", "key plain 'a'");
+
+    n = encode_key_event('Z', 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "Z", "key plain 'Z'");
+
+    n = encode_key_event(' ', 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, " ", "key plain space");
+
+    /* (2) Unicode codepoint -> UTF-8 multi-byte */
+    n = encode_key_event(0x00E9, 0, 0, buf, sizeof buf);  /* 'é' */
+    fail += eq_bytes(buf, n, "\xC3\xA9", 2, "key unicode 'é'");
+
+    n = encode_key_event(0x4E2D, 0, 0, buf, sizeof buf);  /* '中' */
+    fail += eq_bytes(buf, n, "\xE4\xB8\xAD", 3, "key unicode '中'");
+
+    /* (3) Ctrl+letter -> 0x01..0x1A (caret-letter mapping) */
+    n = encode_key_event('c', Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x03", 1, "Ctrl+c -> 0x03");
+
+    n = encode_key_event('a', Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x01", 1, "Ctrl+a -> 0x01");
+
+    n = encode_key_event('z', Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x1A", 1, "Ctrl+z -> 0x1A");
+
+    /* (4) Ctrl+letter uppercase -> same caret-letter mapping */
+    n = encode_key_event('C', Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x03", 1, "Ctrl+C -> 0x03");
+
+    /* (5) Alt+letter -> ESC prefix + char */
+    n = encode_key_event('a', Modifier_Alt, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x1B" "a", 2, "Alt+a -> ESC a");
+
+    /* (6) Alt+Unicode -> ESC prefix + utf8 */
+    n = encode_key_event(0x00E9, Modifier_Alt, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x1B\xC3\xA9", 3, "Alt+é -> ESC + utf8");
+
+    /* (7) Bare control bytes (CR / Tab / BS / ESC) -> direct passthrough */
+    n = encode_key_event(0x0D, 0, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x0D", 1, "key CR (0x0D)");
+
+    n = encode_key_event(0x09, 0, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x09", 1, "key Tab (0x09)");
+
+    n = encode_key_event(0x08, 0, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x08", 1, "key BS (0x08)");
+
+    n = encode_key_event(0x1B, 0, 0, buf, sizeof buf);
+    fail += eq_bytes(buf, n, "\x1B", 1, "key ESC (0x1B)");
+
+    /* (8) Unhandled control byte -> 0 (no output) */
+    n = encode_key_event(0x05, 0, 0, buf, sizeof buf);
+    if (n != 0) { printf("FAIL key 0x05 unhandled: got n=%d\n", n); fail++; }
+
+    /* (9) Buffer-too-small guards */
+    n = encode_key_event('c', Modifier_Ctrl, 0, buf, 0);
+    if (n != 0) { printf("FAIL Ctrl+c bufsize=0: got n=%d\n", n); fail++; }
+
+    n = encode_key_event('a', Modifier_Alt, 0, buf, 1);  /* needs 2 (ESC+a) */
+    if (n != 0) { printf("FAIL Alt+a bufsize=1: got n=%d\n", n); fail++; }
+
+    /* === encode_special_key — arrows === */
+
+    /* (10) Plain arrows -> CSI form ESC [ A/B/C/D */
+    n = encode_special_key(SpecialKey_Up, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[A", "Up plain");
+
+    n = encode_special_key(SpecialKey_Down, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[B", "Down plain");
+
+    n = encode_special_key(SpecialKey_Right, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[C", "Right plain");
+
+    n = encode_special_key(SpecialKey_Left, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[D", "Left plain");
+
+    /* (11) Arrows with app_cursor=1 -> SS3 form ESC O A/B/C/D */
+    n = encode_special_key(SpecialKey_Up, 0, 1, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOA", "Up app_cursor");
+
+    n = encode_special_key(SpecialKey_Left, 0, 1, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOD", "Left app_cursor");
+
+    /* (12) Arrows with modifiers -> CSI form ESC [ 1 ; mod A/B/C/D
+     * mod_param = Shift(1) + Alt(2) + Ctrl(4), then +1: so Shift=2, Alt=3,
+     * Ctrl=5, Shift+Ctrl=6, Shift+Alt=4, Alt+Ctrl=7, Shift+Alt+Ctrl=8.
+     * App_cursor is overridden by modifier presence -> always CSI form. */
+    n = encode_special_key(SpecialKey_Up, Modifier_Shift, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;2A", "Up Shift");
+
+    n = encode_special_key(SpecialKey_Up, Modifier_Alt, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;3A", "Up Alt");
+
+    n = encode_special_key(SpecialKey_Up, Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;5A", "Up Ctrl");
+
+    n = encode_special_key(SpecialKey_Up, Modifier_Shift | Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;6A", "Up Shift+Ctrl");
+
+    /* App_cursor + modifier: modifier wins (CSI form) */
+    n = encode_special_key(SpecialKey_Right, Modifier_Ctrl, 1, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;5C", "Right Ctrl + app_cursor (CSI wins)");
+
+    /* === encode_special_key — Home/End === */
+
+    n = encode_special_key(SpecialKey_Home, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[H", "Home plain");
+
+    n = encode_special_key(SpecialKey_End, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[F", "End plain");
+
+    n = encode_special_key(SpecialKey_Home, Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;5H", "Home Ctrl");
+
+    n = encode_special_key(SpecialKey_End, Modifier_Shift, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;2F", "End Shift");
+
+    /* === encode_special_key — Insert/Delete/PageUp/PageDown (tilde form) === */
+
+    n = encode_special_key(SpecialKey_Insert, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[2~", "Insert plain");
+
+    n = encode_special_key(SpecialKey_Delete, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[3~", "Delete plain");
+
+    n = encode_special_key(SpecialKey_PageUp, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[5~", "PageUp plain");
+
+    n = encode_special_key(SpecialKey_PageDown, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[6~", "PageDown plain");
+
+    n = encode_special_key(SpecialKey_Delete, Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[3;5~", "Delete Ctrl");
+
+    /* === encode_special_key — F1-F4 (SS3 form normally) === */
+
+    n = encode_special_key(SpecialKey_F1, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOP", "F1 plain");
+
+    n = encode_special_key(SpecialKey_F2, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOQ", "F2 plain");
+
+    n = encode_special_key(SpecialKey_F3, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOR", "F3 plain");
+
+    n = encode_special_key(SpecialKey_F4, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1BOS", "F4 plain");
+
+    /* F1-F4 with modifier -> CSI form */
+    n = encode_special_key(SpecialKey_F1, Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;5P", "F1 Ctrl");
+
+    n = encode_special_key(SpecialKey_F4, Modifier_Shift, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[1;2S", "F4 Shift");
+
+    /* === encode_special_key — F5-F12 (tilde form, num table) === */
+
+    n = encode_special_key(SpecialKey_F5, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[15~", "F5 plain");
+
+    n = encode_special_key(SpecialKey_F6, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[17~", "F6 plain");
+
+    n = encode_special_key(SpecialKey_F7, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[18~", "F7 plain");
+
+    n = encode_special_key(SpecialKey_F8, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[19~", "F8 plain");
+
+    n = encode_special_key(SpecialKey_F9, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[20~", "F9 plain");
+
+    n = encode_special_key(SpecialKey_F10, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[21~", "F10 plain");
+
+    n = encode_special_key(SpecialKey_F11, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[23~", "F11 plain");
+
+    n = encode_special_key(SpecialKey_F12, 0, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[24~", "F12 plain");
+
+    n = encode_special_key(SpecialKey_F5, Modifier_Ctrl, 0, buf, sizeof buf);
+    fail += eq_str(buf, n, "\x1B[15;5~", "F5 Ctrl");
+
+    /* === Unknown key code -> 0 === */
+    n = encode_special_key(0x9999, 0, 0, buf, sizeof buf);
+    if (n != 0) { printf("FAIL unknown key: got n=%d\n", n); fail++; }
+
+    if (fail == 0) {
+        printf("test_input_keys: PASS (45 cases)\n");
+        return 0;
+    }
+    printf("test_input_keys: FAIL (%d failures)\n", fail);
+    return 1;
+}
