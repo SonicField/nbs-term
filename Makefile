@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -237,6 +237,19 @@ $(BUILDDIR)/test_input_keys: $(BUILDDIR)/test_input_keys.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_input_keys: $(BUILDDIR)/test_input_keys
+
+# test_compute_layout — A2 origin + bbox-calibration regression anchor
+# (generalist shim per supervisor 2026-05-13 09:47:45). SPEC COPY of
+# the post-measurement clamp from p3_pty.phc:466-477 + bbox WIDEN from
+# 506-510. Production functions are tangled with Tcl_Eval; the math IS
+# the load-bearing surface (theologian_branch_tree_bug_c.md slop-cap trap).
+$(BUILDDIR)/test_compute_layout.c: $(TESTDIR)/test_compute_layout.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_compute_layout: $(BUILDDIR)/test_compute_layout.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_compute_layout: $(BUILDDIR)/test_compute_layout
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,
