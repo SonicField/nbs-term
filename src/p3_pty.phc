@@ -831,14 +831,37 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
      * code per memory feedback_tk_native_over_platform. Mirrors legacy
      * nbsterm.py:474-478 (commit 5feed64 Bug C v3 + 4dcfc94 integration)
      * per memory feedback_legacy_port_as_spec. alexie 2026-05-13
-     * 11:27:24 #2 + theologian 11:31:18 root cause + fix shape. */
+     * 11:27:24 #2 + theologian 11:31:18 root cause + fix shape.
+     *
+     * Option A WIN-RESILIENCE (theologian 2026-05-13 12:21:57 + testkeeper
+     * 12:22:22 reframe + supervisor 12:23:10 pivot): take MAX of winfo +
+     * cget canvas dims. winfo width/height returns 1 pre-Map AND can
+     * partially-resolve mid-frame on Win (CI 25798304505 caught
+     * winfo=1028 inside same render_screen call where compute_layout saw
+     * winfo>1200). cget -width/-height was set explicitly at canvas-
+     * create time (main():1660 = cols*cell_w x rows*cell_h) so it is a
+     * known-correct floor pre-Map AND across the multi-cycle Win refresh
+     * window. Ceiling tracks resize-grow via winfo. Result: bg_fill is
+     * decoupled from Win Tk geometry-resolution timing. */
     char bg_hex[16];
     gamma_apply(g_config.bg, bg_hex, sizeof bg_hex);
+    char dims_query[160];
+    snprintf(dims_query, sizeof dims_query,
+        "list [winfo width %s] [winfo height %s] "
+        "[%s cget -width] [%s cget -height]",
+        canvas, canvas, canvas, canvas);
+    int wfw = 0, wfh = 0, cgw = 0, cgh = 0;
+    if (Tcl_Eval(interp, dims_query) == TCL_OK) {
+        sscanf(Tcl_GetStringResult(interp), "%d %d %d %d",
+               &wfw, &wfh, &cgw, &cgh);
+    }
+    int bg_w = (wfw > cgw) ? wfw : cgw;
+    int bg_h = (wfh > cgh) ? wfh : cgh;
     char bg_fill_cmd[256];
     snprintf(bg_fill_cmd, sizeof bg_fill_cmd,
-        "%s create rectangle 0 0 [winfo width %s] [winfo height %s] "
+        "%s create rectangle 0 0 %d %d "
         "-fill %s -outline {} -tags bg_fill",
-        canvas, canvas, canvas, bg_hex);
+        canvas, bg_w, bg_h, bg_hex);
     if (Tcl_Eval(interp, bg_fill_cmd) != TCL_OK) return TCL_ERROR;
 
     /* F — normalise selection once per render so flush_span sees a
