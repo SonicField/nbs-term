@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma
 
 all: $(EXTENSION_SO)
 
@@ -211,6 +211,19 @@ $(BUILDDIR)/test_extract_utf8: $(BUILDDIR)/test_extract_utf8.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_extract_utf8: $(BUILDDIR)/test_extract_utf8
+
+# test_render_gamma — H gamma + dim regression anchor (generalist shim
+# per supervisor 2026-05-13 09:47:45 + alexie 09:46:53 automated-suite
+# directive). Direct-include of src/render_color.phc (pure-C header,
+# extracted per theologian 14:43:30 specifically for cross-TU sharing).
+# Headless; libm only for pow().
+$(BUILDDIR)/test_render_gamma.c: $(TESTDIR)/test_render_gamma.phc $(SRCDIR)/render_color.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_render_gamma: $(BUILDDIR)/test_render_gamma.c
+	$(CC) $(P1_CFLAGS) $< -lm -o $@
+
+test_render_gamma: $(BUILDDIR)/test_render_gamma
 
 test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
 	@exit_code=0; \

@@ -1,0 +1,128 @@
+/*
+ * test_render_gamma.phc — H gamma + dim regression anchor
+ *
+ * Per supervisor 2026-05-13 09:47:45 + alexie 09:46:53 automated-suite
+ * directive. Discriminator for the H gamma transform (commit 17fe5dc):
+ * if alexie reports 'colours wrong on gamma!=1.0' AND this passes, bug
+ * is in gamma_apply call sites or g_config.gamma loader; if this fails,
+ * regression is inside render_gamma's pow/sscanf/snprintf chain.
+ *
+ * Approach — direct include of src/render_color.phc (pure-C header,
+ * extracted per theologian 14:43:30 specifically for cross-TU sharing,
+ * no Python.h / Tcl/Tk dep). Tests production code directly; no SPEC
+ * COPY drift risk.
+ *
+ * Headless (libc only, links libm for pow).
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include "render_color.phc"
+
+static int eq(const char *got, const char *want, const char *label) {
+    if (strcmp(got, want) == 0) return 0;
+    printf("FAIL %s: got '%s' want '%s'\n", label, got, want);
+    return 1;
+}
+
+int main(void) {
+    int fail = 0;
+    char out[16];
+
+    /* (1) gamma == 1.0 → identity passthrough (any input) */
+    render_gamma("#abcdef", 1.0, out, sizeof out);
+    fail += eq(out, "#abcdef", "gamma=1 passthrough");
+
+    render_gamma("#000000", 1.0, out, sizeof out);
+    fail += eq(out, "#000000", "gamma=1 black");
+
+    render_gamma("#ffffff", 1.0, out, sizeof out);
+    fail += eq(out, "#ffffff", "gamma=1 white");
+
+    /* (2) Bad input → identity (no '#', wrong length, non-hex) */
+    render_gamma("abcdef", 2.2, out, sizeof out);
+    fail += eq(out, "abcdef", "no-hash passthrough");
+
+    render_gamma("#abc", 2.2, out, sizeof out);
+    fail += eq(out, "#abc", "short-hex passthrough");
+
+    render_gamma("#abcdefg", 2.2, out, sizeof out);
+    fail += eq(out, "#abcdefg", "8-char passthrough");
+
+    render_gamma("#zzzzzz", 2.2, out, sizeof out);
+    fail += eq(out, "#zzzzzz", "non-hex passthrough");
+
+    /* (3) Endpoints: black/white invariant under any gamma */
+    render_gamma("#000000", 2.2, out, sizeof out);
+    fail += eq(out, "#000000", "gamma=2.2 black -> black");
+
+    render_gamma("#ffffff", 2.2, out, sizeof out);
+    fail += eq(out, "#ffffff", "gamma=2.2 white -> white");
+
+    render_gamma("#000000", 0.5, out, sizeof out);
+    fail += eq(out, "#000000", "gamma=0.5 black -> black");
+
+    render_gamma("#ffffff", 0.5, out, sizeof out);
+    fail += eq(out, "#ffffff", "gamma=0.5 white -> white");
+
+    /* (4) Mid-grey under gamma=2.0: (128/255)^2 * 255 ≈ 64.25 -> truncates
+     * to 64 = 0x40. Verifies pow + clamp + lowercase hex format. */
+    render_gamma("#808080", 2.0, out, sizeof out);
+    fail += eq(out, "#404040", "gamma=2.0 mid-grey darken");
+
+    /* (5) Mid-grey under gamma=0.5: (128/255)^0.5 * 255 ≈ 180.67 -> 180 = 0xb4
+     * (C int truncation, not round). Verifies brightening direction
+     * (gamma<1.0). */
+    render_gamma("#808080", 0.5, out, sizeof out);
+    fail += eq(out, "#b4b4b4", "gamma=0.5 mid-grey brighten");
+
+    /* (6) Per-channel independence: pure red under gamma=2.2 -> red full,
+     * green/blue zero. Verifies the three-channel pow loop. */
+    render_gamma("#ff0000", 2.2, out, sizeof out);
+    fail += eq(out, "#ff0000", "gamma=2.2 pure red endpoint");
+
+    render_gamma("#00ff00", 2.2, out, sizeof out);
+    fail += eq(out, "#00ff00", "gamma=2.2 pure green endpoint");
+
+    render_gamma("#0000ff", 2.2, out, sizeof out);
+    fail += eq(out, "#0000ff", "gamma=2.2 pure blue endpoint");
+
+    /* (7) Mixed channels under gamma=2.0: r=64 (64/255)^2 *255≈16=0x10;
+     * g=128 -> 64=0x40; b=255 -> 255=0xff. */
+    render_gamma("#4080ff", 2.0, out, sizeof out);
+    fail += eq(out, "#1040ff", "gamma=2.0 mixed channels");
+
+    /* (8) Clamp test: gamma<1.0 cannot produce >255 since input ceil is
+     * 255 and 1^anything = 1; just verifies #ffffff stays #ffffff with
+     * very small gamma. */
+    render_gamma("#ffffff", 0.1, out, sizeof out);
+    fail += eq(out, "#ffffff", "gamma=0.1 white clamp");
+
+    /* (9) render_dim: per-channel /2 with bg-shift. Verifies the
+     * separate dim helper (DIM SGR attribute consumer). */
+    render_dim("#ffffff", out, sizeof out);
+    fail += eq(out, "#7f7f7f", "dim white -> half (255/2=127=0x7f)");
+
+    render_dim("#000000", out, sizeof out);
+    fail += eq(out, "#000000", "dim black -> black");
+
+    render_dim("#808080", out, sizeof out);
+    fail += eq(out, "#404040", "dim mid-grey -> quarter");
+
+    render_dim("#ff0000", out, sizeof out);
+    fail += eq(out, "#7f0000", "dim pure red");
+
+    /* (10) render_dim bad input -> identity */
+    render_dim("abcdef", out, sizeof out);
+    fail += eq(out, "abcdef", "dim no-hash passthrough");
+
+    render_dim("#abc", out, sizeof out);
+    fail += eq(out, "#abc", "dim short-hex passthrough");
+
+    if (fail == 0) {
+        printf("test_render_gamma: PASS (22 cases)\n");
+        return 0;
+    }
+    printf("test_render_gamma: FAIL (%d failures)\n", fail);
+    return 1;
+}
