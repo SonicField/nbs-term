@@ -115,6 +115,21 @@ static int g_sel_er = 0, g_sel_ec = 0;
  * Idempotent under repeated Tk_Init via 'font names' check (Tk forbids
  * re-creating an existing named font; this guard keeps p3_pty re-entry
  * safe even though current code creates the interp once). */
+/* Decide whether the four named fonts' bold/italic variants resolved
+ * to the requested face. Returns 1 if all 4 probes show modified
+ * values (-weight bold + -slant italic took); returns 0 if any probe
+ * returned the unmodified value (family lacks the corresponding face
+ * installed). Pure-C / headless; testable via SPEC COPY in
+ * tests/test_register_named_fonts.phc. */
+static int variant_probe_decide(const char *bold_w, const char *italic_s,
+                                 const char *bi_w, const char *bi_s) {
+    if (strcmp(bold_w,   "bold")   != 0) return 0;
+    if (strcmp(italic_s, "italic") != 0) return 0;
+    if (strcmp(bi_w,     "bold")   != 0) return 0;
+    if (strcmp(bi_s,     "italic") != 0) return 0;
+    return 1;
+}
+
 static void register_named_fonts(Tcl_Interp *interp) {
     /* Use g_config.font.{family,size} so the user's saved font (loaded
      * from ~/.nbs/nbs-term.honest by nbs_config_load() before this in
@@ -171,6 +186,58 @@ static void register_named_fonts(Tcl_Interp *interp) {
         fam, g_config.font.size,
         fam, g_config.font.size);
     Tcl_Eval(interp, init);
+
+    /* Variant probe + fallback (theologian 2026-05-14 08:44:11 spec).
+     * Tk's font create -weight bold / -slant italic silently fall back
+     * to regular when the family lacks the corresponding face installed.
+     * Alexie 2026-05-14 08:32:34 (Monaco config produced font_bold
+     * weight=normal + font_italic slant=roman; c4f233e diag) +
+     * 08:41:42 (Cmd+, swap to Menlo restored bold/italic) discharged
+     * the no-code falsifier. Probe the four variant-bearing fonts;
+     * if any modifier dropped, font configure all 4 to the
+     * TkFixedFont-resolved family (platform's monospace alias, full
+     * variant set on every Tk-supported windowing system). All-4
+     * fallback (not per-variant) preserves visual cohesion across
+     * span boundaries — mixing families gives different stem widths /
+     * x-heights inside one rendered line. */
+    char bw[16] = "", is[16] = "", biw[16] = "", bis[16] = "";
+    if (Tcl_Eval(interp, "font actual font_bold -weight") == TCL_OK) {
+        snprintf(bw, sizeof bw, "%s", Tcl_GetStringResult(interp));
+    }
+    if (Tcl_Eval(interp, "font actual font_italic -slant") == TCL_OK) {
+        snprintf(is, sizeof is, "%s", Tcl_GetStringResult(interp));
+    }
+    if (Tcl_Eval(interp, "font actual font_bold_italic -weight") == TCL_OK) {
+        snprintf(biw, sizeof biw, "%s", Tcl_GetStringResult(interp));
+    }
+    if (Tcl_Eval(interp, "font actual font_bold_italic -slant") == TCL_OK) {
+        snprintf(bis, sizeof bis, "%s", Tcl_GetStringResult(interp));
+    }
+    if (!variant_probe_decide(bw, is, biw, bis)) {
+        char fb[128] = "";
+        if (Tcl_Eval(interp, "font actual TkFixedFont -family") == TCL_OK) {
+            const char *r = Tcl_GetStringResult(interp);
+            if (r && *r) snprintf(fb, sizeof fb, "%s", r);
+        }
+        if (*fb && strcmp(fb, fam) != 0) {
+            char reconfig[1024];
+            snprintf(reconfig, sizeof reconfig,
+                "font configure font_normal       -family {%s};"
+                "font configure font_bold         -family {%s};"
+                "font configure font_italic       -family {%s};"
+                "font configure font_bold_italic  -family {%s}",
+                fb, fb, fb, fb);
+            Tcl_Eval(interp, reconfig);
+            fprintf(stderr,
+                "[font] configured family '%s' lacks bold/italic faces "
+                "(font_bold weight=%s, font_italic slant=%s, "
+                "font_bold_italic weight=%s slant=%s); reconfigured all "
+                "four named fonts to TkFixedFont (%s) for visual cohesion. "
+                "Set Preferences font to a family with bold + italic "
+                "faces installed to keep your choice.\n",
+                fam, bw, is, biw, bis, fb);
+        }
+    }
 }
 
 /* Query Tk for the actual font_normal character cell metrics so cursor

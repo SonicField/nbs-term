@@ -1,0 +1,109 @@
+/*
+ * test_register_named_fonts.phc — variant-probe decision regression anchor
+ *
+ * Per theologian 2026-05-14 08:44:11 (B) spec. Discriminator for the
+ * font-fallback path in register_named_fonts (src/p3_pty.phc):
+ *  - if probe returns 'bold'/'italic' for a family that lacks the
+ *    face installed, this passes but production fallback never fires
+ *    -> bold-no-take regression (alexie 2026-05-14 08:32:34 class)
+ *  - if probe returns 'normal'/'roman' on a family with full faces,
+ *    helper still returns 0 -> false-positive fallback overrides the
+ *    user font choice unnecessarily (regression on Linux Xvfb where
+ *    Nimbus Mono PS / DejaVu Sans Mono have full faces; my 08:12:27
+ *    baseline)
+ *
+ * Approach — SPEC COPY of variant_probe_decide from
+ * src/p3_pty.phc:118-126. Production helper is pure-C (string
+ * comparisons only); SPEC COPY is identical body. Drift between this
+ * spec copy and production is itself a bug, catchable at next
+ * register_named_fonts review.
+ *
+ * Headless (libc only); no Tcl/Tk/PTY/screen.phc link. Negative
+ * cases use synthesised probe-result strings to exercise the fallback
+ * decision; the actual Tcl_Eval [font actual] queries that would
+ * produce these strings on a real Tk install are upstream of the
+ * helper and out of unit-test scope (covered empirically by the
+ * c4f233e diag block + alexie's Mac install).
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+/* SPEC COPY — variant_probe_decide from src/p3_pty.phc:118-126.
+ * Returns 1 if all 4 probes show modified values; returns 0 if any
+ * probe returned the unmodified value (family lacks face). */
+static int variant_probe_decide_spec(const char *bold_w, const char *italic_s,
+                                      const char *bi_w, const char *bi_s) {
+    if (strcmp(bold_w,   "bold")   != 0) return 0;
+    if (strcmp(italic_s, "italic") != 0) return 0;
+    if (strcmp(bi_w,     "bold")   != 0) return 0;
+    if (strcmp(bi_s,     "italic") != 0) return 0;
+    return 1;
+}
+
+static int eq_int(int got, int want, const char *label) {
+    if (got == want) return 0;
+    printf("FAIL %s: got %d want %d\n", label, got, want);
+    return 1;
+}
+
+int main(void) {
+    int fail = 0;
+
+    /* === Positive: all 4 faces present (Linux Xvfb baseline 08:12:27;
+     *      Nimbus Mono PS resolves bold + italic + bold-italic). === */
+    fail += eq_int(variant_probe_decide_spec("bold", "italic", "bold", "italic"),
+                   1, "all faces present (Nimbus Mono PS shape)");
+
+    /* === Negative: font_bold weight dropped (B-ii single-failure shape) === */
+    fail += eq_int(variant_probe_decide_spec("normal", "italic", "bold", "italic"),
+                   0, "font_bold weight dropped");
+
+    /* === Negative: font_italic slant dropped === */
+    fail += eq_int(variant_probe_decide_spec("bold", "roman", "bold", "italic"),
+                   0, "font_italic slant dropped");
+
+    /* === Negative: font_bold_italic weight dropped === */
+    fail += eq_int(variant_probe_decide_spec("bold", "italic", "normal", "italic"),
+                   0, "font_bold_italic weight dropped");
+
+    /* === Negative: font_bold_italic slant dropped === */
+    fail += eq_int(variant_probe_decide_spec("bold", "italic", "bold", "roman"),
+                   0, "font_bold_italic slant dropped");
+
+    /* === Negative: alexie 2026-05-14 08:32:34 Monaco shape (all 4 dropped).
+     *      Verbatim probe values from her c4f233e diag emit:
+     *        font_bold:   Monaco normal
+     *        font_italic: Monaco roman
+     *        font_bi:     Monaco normal roman                          === */
+    fail += eq_int(variant_probe_decide_spec("normal", "roman", "normal", "roman"),
+                   0, "alexie 08:32:34 Monaco-shape: all 4 modifiers dropped");
+
+    /* === Empty strings (Tcl_Eval failure path: probe never wrote buf,
+     *      stays "" from initialiser). Helper treats "" as != "bold"
+     *      and falls back -> 0. Conservative: better to fall back to
+     *      TkFixedFont on probe failure than leave the user with a
+     *      possibly-broken family. === */
+    fail += eq_int(variant_probe_decide_spec("", "italic", "bold", "italic"),
+                   0, "empty bold weight (Tcl_Eval failed)");
+
+    fail += eq_int(variant_probe_decide_spec("bold", "", "bold", "italic"),
+                   0, "empty italic slant (Tcl_Eval failed)");
+
+    /* === Edge: trailing whitespace in probe value (Tcl wouldn't return
+     *      this, but strcmp is strict; documents the contract). === */
+    fail += eq_int(variant_probe_decide_spec("bold ", "italic", "bold", "italic"),
+                   0, "trailing space in weight (strcmp strict)");
+
+    /* === Edge: case sensitivity (Tcl returns lowercase per spec; strcmp
+     *      is case-sensitive). 'Bold' would not match 'bold'. === */
+    fail += eq_int(variant_probe_decide_spec("Bold", "italic", "bold", "italic"),
+                   0, "case-mismatch (strcmp case-sensitive)");
+
+    if (fail == 0) {
+        printf("test_register_named_fonts: PASS (10 cases)\n");
+        return 0;
+    }
+    printf("test_register_named_fonts: FAIL (%d failures)\n", fail);
+    return 1;
+}

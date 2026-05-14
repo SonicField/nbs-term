@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -277,6 +277,20 @@ $(BUILDDIR)/test_blink_step: $(BUILDDIR)/test_blink_step.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_blink_step: $(BUILDDIR)/test_blink_step
+
+# test_register_named_fonts — variant-probe + fallback regression anchor
+# (theologian (B) spec 2026-05-14 08:44:11). SPEC COPY of variant_probe_decide
+# from p3_pty.phc:118-126. Headless; libc only. Negative cases use
+# synthesised probe-result strings to exercise fallback decision; the actual
+# Tcl_Eval [font actual] queries are upstream of the helper and out of unit
+# scope (covered by c4f233e diag block + alexie's Mac install).
+$(BUILDDIR)/test_register_named_fonts.c: $(TESTDIR)/test_register_named_fonts.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_register_named_fonts: $(BUILDDIR)/test_register_named_fonts.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_register_named_fonts: $(BUILDDIR)/test_register_named_fonts
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,
