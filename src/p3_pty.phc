@@ -1860,6 +1860,28 @@ int main(int argc, char *argv[]) {
     register_named_fonts(g_interp);
     compute_cell_metrics(g_interp);
 
+    /* DIAG (theologian 2026-05-14 07:52:50): alexie 08:09:27 confirms
+     * bold + italic + bold-italic all render identical on Mac after
+     * 5b9080d font-alias-resolve. Three branches (B-i/ii/iii):
+     *   B-i  — [font actual TkFixedFont -family] returns 'TkFixedFont'
+     *          on Mac Cocoa (alias never resolves) → font create gets
+     *          unresolved alias → bold drops as before.
+     *   B-ii — Resolution returns 'Menlo' but font create -weight bold
+     *          silently drops the modifier (Mac Tk family-vs-weight).
+     *   B-iii — font_bold has correct -weight bold but canvas text-item
+     *          -font font_bold doesn't honor it on Cocoa.
+     * Stderr these three lines once at startup; alexie launches from
+     * Terminal and pastes the output back. The puts'd values
+     * discriminate which branch holds.
+     * Diag-only commit; remove once branch is identified + structural
+     * fix lands. */
+    Tcl_Eval(g_interp,
+        "puts stderr \"family-actual: [font actual TkFixedFont -family]\";"
+        "puts stderr \"font_normal: [font actual font_normal -family] [font actual font_normal -weight]\";"
+        "puts stderr \"font_bold:   [font actual font_bold -family] [font actual font_bold -weight]\";"
+        "puts stderr \"font_italic: [font actual font_italic -family] [font actual font_italic -slant]\";"
+        "puts stderr \"font_bi:     [font actual font_bold_italic -family] [font actual font_bold_italic -weight] [font actual font_bold_italic -slant]\"");
+
     g_term = terminal_new(g_config.rows, g_config.cols);
     if (!g_term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
     g_parser = vt_parser_new(g_term);
