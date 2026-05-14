@@ -2465,8 +2465,14 @@ int main(int argc, char *argv[]) {
             "bind . <Command-w>         {nbs_close_tab; break};"
             "bind . <Control-Shift-T>   {nbs_new_tab; break};"
             "bind . <Control-Shift-W>   {nbs_close_tab; break};"
-            "bind . <Control-Tab>       {nbs_next_tab; break};"
-            "bind . <Control-Shift-Tab> {nbs_prev_tab; break};"
+            "bind . <Control-Tab>          {nbs_next_tab; break};"
+            "bind . <Control-Shift-Tab>    {nbs_prev_tab; break};"
+            /* X11 reports Shift+Tab as ISO_Left_Tab keysym, not Tab+
+             * Shift; without this bind Ctrl+Shift+Tab is silently
+             * inert on Linux even though Mac/Win route via the
+             * <Control-Shift-Tab> spelling. Caught by test_tab_
+             * dispatch.phc on Linux Xvfb empirical. */
+            "bind . <Control-ISO_Left_Tab> {nbs_prev_tab; break};"
             "bind . <Command-1>         {nbs_select_tab 0; break};"
             "bind . <Command-2>         {nbs_select_tab 1; break};"
             "bind . <Command-3>         {nbs_select_tab 2; break};"

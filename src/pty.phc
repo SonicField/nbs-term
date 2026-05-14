@@ -204,6 +204,23 @@ static void pty_install_sigpipe_ignore(void) {
     installed = 1;
 }
 
+#ifdef NBS_TEST_MODE
+static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
+    /* Test-mode stub — no forkpty, no real child process spawn.
+     * Returns a minimal PTYHandle with master_fd=-1; pty_write
+     * capture branch (above) ignores the handle anyway, and
+     * pty_install_tcl_handler short-circuits on master_fd<0 so no
+     * Tcl_CreateFileHandler against an invalid fd. Lets test
+     * binaries (test_tab_dispatch.phc) call add_tab repeatedly
+     * without spawning real shells per tab. */
+    (void)argv; (void)rows; (void)cols;
+    PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
+    if (!h) return NULL;
+    h->master_fd = -1;
+    h->child = -1;
+    return h;
+}
+#else
 static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
     pty_install_sigpipe_ignore();
     PTYHandle *h = (PTYHandle *)calloc(1, sizeof *h);
@@ -239,6 +256,7 @@ static PTYHandle *pty_open(char *const argv[], int rows, int cols) {
     h->child = pid;
     return h;
 }
+#endif
 
 static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
     if (!h || h->closed) return -1;
@@ -310,6 +328,11 @@ static int pty_install_tcl_handler(PTYHandle *h, Tcl_Interp *interp,
     h->interp = interp;
     h->cb = cb;
     h->cd = cd;
+#ifdef NBS_TEST_MODE
+    /* Test-mode stub PTYHandle has master_fd=-1; skip
+     * Tcl_CreateFileHandler since there's no real fd to watch. */
+    if (h->master_fd < 0) return TCL_OK;
+#endif
     posix_install_handler(h);
     return TCL_OK;
 }

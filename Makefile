@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_tab_dispatch test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -374,6 +374,22 @@ $(BUILDDIR)/test_alt_mask: $(BUILDDIR)/test_alt_mask.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
 
 test_alt_mask: $(BUILDDIR)/test_alt_mask
+
+# test_tab_dispatch — Tabs.b cross-tab bind dispatch regression anchor
+# (testkeeper 2026-05-14 11:11:33 follow-on candidate + supervisor
+# 12:58:57 deferred-backlog GO). Same NBS_TEST_MODE include + Tk-link
+# chain as test_alt_mask. Fires Cmd+T/W/digit + Ctrl+Tab binds via
+# 'event generate' against the production Nbs*Tab handler chain;
+# asserts g_tab_count + g_active_tab_idx deltas. Requires the
+# NBS_TEST_MODE pty_open stub (master_fd=-1) so tab spawn doesn't
+# fork real shells per case.
+$(BUILDDIR)/test_tab_dispatch.c: $(TESTDIR)/test_tab_dispatch.phc $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(SRCDIR)/config.phc $(SRCDIR)/render_color.phc $(SRCDIR)/input.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_tab_dispatch: $(BUILDDIR)/test_tab_dispatch.c $(TK_VENDOR_LIB)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
+
+test_tab_dispatch: $(BUILDDIR)/test_tab_dispatch
 
 # update-goldens — re-run all per-surface scripts in --update mode to
 # regenerate the platform-specific golden files. Invoke after an
