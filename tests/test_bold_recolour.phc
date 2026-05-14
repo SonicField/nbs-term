@@ -1,0 +1,129 @@
+/*
+ * test_bold_recolour.phc — bold-brightens-fg remap regression anchor
+ *
+ * Per theologian 2026-05-14 09:05:51 (1) spec. Discriminator for the
+ * SGR 1 Bold + Indexed(0..7) -> Indexed(8..15) remap in flush_span
+ * (src/p3_pty.phc):
+ *  - if remap fires when CellAttr_Bold absent -> non-bold colored text
+ *    renders bright (regression on existing color rendering)
+ *  - if remap doesn't fire when CellAttr_Bold + Indexed(N<8) +
+ *    bold_brightens_fg=1 -> bold red still renders dim red (alexie
+ *    08:56:32 Mac Terminal mismatch persists)
+ *  - if remap fires for Indexed(N>=8) -> idx overflow / wrap
+ *  - if remap fires for non-Indexed colors (Default, Rgb24) -> tag
+ *    confusion / undefined behaviour on tag union access
+ *  - if remap ignores the config flag -> user can't turn it off
+ *    (alexie 09:03:57 Q2 'configurable' broken)
+ *
+ * Approach — SPEC COPY of bold_remap_decide from src/p3_pty.phc
+ * flush_span. The production check is inline (~4 lines), spec copy
+ * abstracts it to a pure-C function for headless testing. Production
+ * doesn't have a separately-named helper; the SPEC COPY here mirrors
+ * the inline guard exactly. Drift catchable next flush_span review.
+ *
+ * Headless (libc only); no Tcl/Tk/PTY/screen.phc link. Color tag /
+ * field access uses the production union shape from sgr.phc, but the
+ * test only constructs Color values directly + reads the resulting
+ * idx — no SGR parser, no renderer.
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+
+/* Minimal Color shape mirroring src/sgr.phc Color union. Test
+ * constructs values inline; production constructs via Color_mk_Indexed
+ * / Color_mk_Default / Color_mk_Rgb24. */
+typedef enum { COLOR_DEFAULT, COLOR_INDEXED, COLOR_RGB24 } ColorTag;
+typedef struct {
+    ColorTag tag;
+    union {
+        struct { uint8_t index; } Indexed;
+        struct { uint8_t r, g, b; } Rgb24;
+    };
+} TestColor;
+
+/* CellAttr bits — mirror src/sgr.phc CellAttr definitions. Only Bold
+ * is read by the bold-recolour decision. */
+#define CELL_ATTR_BOLD     (1 << 0)
+#define CELL_ATTR_DIM      (1 << 1)
+#define CELL_ATTR_ITALIC   (1 << 2)
+#define CELL_ATTR_INVERSE  (1 << 4)
+
+/* SPEC COPY — bold-recolour remap decision from flush_span at
+ * src/p3_pty.phc (the inline guard before color_to_hex). Returns the
+ * remapped index (caller writes back to fg.Indexed.index) when the
+ * remap should fire, or -1 when the original fg should be left
+ * unchanged. */
+static int bold_remap_decide_spec(uint8_t attrs, int bold_brightens_fg,
+                                   ColorTag fg_tag, uint8_t fg_idx) {
+    if ((attrs & CELL_ATTR_BOLD)
+        && bold_brightens_fg
+        && fg_tag == COLOR_INDEXED
+        && fg_idx < 8) {
+        return fg_idx + 8;
+    }
+    return -1;
+}
+
+static int eq_int(int got, int want, const char *label) {
+    if (got == want) return 0;
+    printf("FAIL %s: got %d want %d\n", label, got, want);
+    return 1;
+}
+
+int main(void) {
+    int fail = 0;
+
+    /* === Positive: Bold + Indexed(N<8) + flag=1 -> remap to N+8 === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 0),
+                   8,  "Bold + Indexed(0) + flag=1 -> Indexed(8)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 1),
+                   9,  "Bold + Indexed(1) red -> Indexed(9) bright red (alexie 08:56:32)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 7),
+                   15, "Bold + Indexed(7) -> Indexed(15) — boundary above");
+
+    /* === Negative: Bold + Indexed(N<8) + flag=0 -> no remap (config off) === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 0, COLOR_INDEXED, 1),
+                   -1, "Bold + Indexed(1) + flag=0 -> no remap (alexie 09:03:57 Q2 off)");
+
+    /* === Negative: Bold + Indexed(N>=8) + flag=1 -> no remap (already bright) === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 8),
+                   -1, "Bold + Indexed(8) -> no remap (already bright)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 15),
+                   -1, "Bold + Indexed(15) -> no remap (already bright)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_INDEXED, 100),
+                   -1, "Bold + Indexed(100) 256-color -> no remap (out of 0..7 range)");
+
+    /* === Negative: Bold + Default + flag=1 -> no remap (tag != Indexed) === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_DEFAULT, 0),
+                   -1, "Bold + Default fg -> no remap (tag mismatch)");
+
+    /* === Negative: Bold + Rgb24 + flag=1 -> no remap (tag != Indexed) === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD, 1, COLOR_RGB24, 0),
+                   -1, "Bold + Rgb24 fg -> no remap (tag mismatch)");
+
+    /* === Negative: non-Bold + Indexed(N<8) + flag=1 -> no remap === */
+    fail += eq_int(bold_remap_decide_spec(0, 1, COLOR_INDEXED, 1),
+                   -1, "non-Bold + Indexed(1) -> no remap (Bold attr absent)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_DIM, 1, COLOR_INDEXED, 1),
+                   -1, "Dim only + Indexed(1) -> no remap (Bold bit specifically)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_ITALIC | CELL_ATTR_INVERSE, 1,
+                                           COLOR_INDEXED, 3),
+                   -1, "Italic+Inverse only + Indexed(3) -> no remap (Bold bit specifically)");
+
+    /* === Mixed attrs + Bold + Indexed(N<8) + flag=1 -> remap === */
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD | CELL_ATTR_ITALIC, 1,
+                                           COLOR_INDEXED, 4),
+                   12, "Bold+Italic + Indexed(4) -> Indexed(12) (Bold bit honored)");
+    fail += eq_int(bold_remap_decide_spec(CELL_ATTR_BOLD | CELL_ATTR_DIM, 1,
+                                           COLOR_INDEXED, 2),
+                   10, "Bold+Dim + Indexed(2) -> Indexed(10) (Dim doesn't suppress)");
+
+    if (fail == 0) {
+        printf("test_bold_recolour: PASS (13 cases)\n");
+        return 0;
+    }
+    printf("test_bold_recolour: FAIL (%d failures)\n", fail);
+    return 1;
+}

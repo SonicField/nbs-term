@@ -78,6 +78,7 @@ typedef struct {
     int    rows;
     int    cols;
     int    refresh_hz;
+    int    bold_brightens_fg;  /* 0 or 1 — bold text remaps Indexed(0..7) to Indexed(8..15) */
 } NbsTerminalConfig;
 
 static NbsTerminalConfig nbs_config_default(void) {
@@ -99,6 +100,10 @@ static NbsTerminalConfig nbs_config_default(void) {
     cfg.rows           = 24;
     cfg.cols           = 80;
     cfg.refresh_hz     = 60;
+    /* Mac Terminal + xterm default: bold text on one of the 8 standard
+     * ANSI colors renders as the bright variant. Per alexie 2026-05-14
+     * 09:03:57 Q2 (configurable; default ON = industry standard). */
+    cfg.bold_brightens_fg = 1;
     return cfg;
 }
 
@@ -188,6 +193,9 @@ static void nbs__apply(NbsTerminalConfig *cfg, const char *key, const char *val)
     } else if (strcmp(key, "refresh_hz") == 0) {
         long v = strtol(val, NULL, 10);
         if (v > 0 && v <= 240) cfg->refresh_hz = (int)v;
+    } else if (strcmp(key, "bold_brightens_fg") == 0) {
+        cfg->bold_brightens_fg = (val[0] == 'T' || val[0] == 't' ||
+                                  val[0] == '1' || val[0] == 'Y' || val[0] == 'y');
     }
     /* Unknown keys silently ignored — forward-compatible. */
 }
@@ -310,6 +318,7 @@ static const char NBS_DEFAULT_CONFIG[] =
     "    rows   : Integer;\n"
     "    cols       : Integer;\n"
     "    refresh_hz : Integer;\n"
+    "    bold_brightens_fg : Boolean;\n"
     "  end;\n"
     "\n"
     "var config : TerminalConfig = (\n"
@@ -321,6 +330,7 @@ static const char NBS_DEFAULT_CONFIG[] =
     "  rows       : 24;\n"
     "  cols       : 80;\n"
     "  refresh_hz : 60;\n"
+    "  bold_brightens_fg : True;\n"
     ");\n";
 
 /* mkdir the parent directory of `path` (best-effort; ignores
@@ -401,6 +411,7 @@ static int nbs_config_save(const NbsTerminalConfig *cfg) {
         "    rows   : Integer;\n"
         "    cols       : Integer;\n"
         "    refresh_hz : Integer;\n"
+        "    bold_brightens_fg : Boolean;\n"
         "  end;\n"
         "\n"
         "var config : TerminalConfig = (\n"
@@ -412,12 +423,14 @@ static int nbs_config_save(const NbsTerminalConfig *cfg) {
         "  rows       : %d;\n"
         "  cols       : %d;\n"
         "  refresh_hz : %d;\n"
+        "  bold_brightens_fg : %s;\n"
         ");\n",
         cfg->font.family, cfg->font.size,
         cfg->cursor.style, cfg->cursor.blink ? "True" : "False", cfg->cursor.color,
         cfg->gamma,
         cfg->fg, cfg->bg,
-        cfg->rows, cfg->cols, cfg->refresh_hz);
+        cfg->rows, cfg->cols, cfg->refresh_hz,
+        cfg->bold_brightens_fg ? "True" : "False");
     int err = ferror(f);
     fclose(f);
     return err ? 0 : 1;

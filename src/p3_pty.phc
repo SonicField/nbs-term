@@ -967,6 +967,19 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
      * theologian 13:56:44 root cause). Resolve-then-swap-resolved-
      * hex makes the inversion always visible regardless of which
      * side carried Default. */
+    /* SGR 1 Bold + indexed fg in 0..7 + g_config.bold_brightens_fg:
+     * remap fg locally to bright variant (idx + 8) so bold text on
+     * one of the 8 standard ANSI colors renders as the bright
+     * counterpart. Mac Terminal + xterm convention; alexie 2026-05-14
+     * 08:56:32 (Terminal.app recolours bold) + 09:03:57 Q2
+     * (configurable, default ON). Per theologian 09:05:51 (1) spec.
+     * Local rewrite only — does not mutate the screen cell. Above-
+     * legacy-floor improvement per alexie 08:54:40 (legacy nbsterm.py
+     * had no bold-recolour); commit body names the departure. */
+    if ((attrs & CellAttr_Bold) && g_config.bold_brightens_fg
+        && fg.tag == Color_Indexed && fg.Indexed.index < 8) {
+        fg = Color_mk_Indexed((uint8_t)(fg.Indexed.index + 8));
+    }
     char fg_hex[16], bg_hex[16], fg_g[16], bg_g[16];
     color_to_hex(fg, g_config.fg, fg_hex, sizeof fg_hex);
     color_to_hex(bg, g_config.bg, bg_hex, sizeof bg_hex);
@@ -1707,19 +1720,21 @@ static void nbs_apply_config(Tcl_Interp *interp) {
 
 /* Tcl command: nbs_save_prefs <font_family> <font_size> <cursor_style>
  *   <cursor_blink> <cursor_color> <gamma> <fg> <bg> <rows> <cols>
- *   <refresh_hz>. Reads 11 fields from the dialog Tcl vars, validates,
- *   writes to g_config, persists via nbs_config_save, applies live
- *   via nbs_apply_config, destroys the dialog. */
+ *   <refresh_hz> <bold_brightens_fg>. Reads 12 fields from the dialog
+ *   Tcl vars, validates, writes to g_config, persists via
+ *   nbs_config_save, applies live via nbs_apply_config, destroys the
+ *   dialog. */
 static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
                         Tcl_Obj *const objv[]) {
     (void)cd;
-    if (objc != 12) {
+    if (objc != 13) {
         Tcl_WrongNumArgs(interp, 1, objv,
             "font_family font_size cursor_style cursor_blink cursor_color "
-            "gamma fg bg rows cols refresh_hz");
+            "gamma fg bg rows cols refresh_hz bold_brightens_fg");
         return TCL_ERROR;
     }
     int    font_size = 14, cursor_blink = 1, rows = 24, cols = 80, refresh_hz = 60;
+    int    bold_brightens_fg = 1;
     double gamma = 1.0;
     if (Tcl_GetIntFromObj(interp, objv[2], &font_size)    != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[4], &cursor_blink) != TCL_OK) return TCL_ERROR;
@@ -1727,6 +1742,7 @@ static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
     if (Tcl_GetIntFromObj(interp, objv[9],  &rows)        != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[10], &cols)        != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[11], &refresh_hz)  != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[12], &bold_brightens_fg) != TCL_OK) return TCL_ERROR;
 
     snprintf(g_config.font.family, sizeof g_config.font.family, "%s",
              Tcl_GetString(objv[1]));
@@ -1742,6 +1758,7 @@ static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
     if (rows > 0       && rows <= 9999)      g_config.rows       = rows;
     if (cols > 0       && cols <= 9999)      g_config.cols       = cols;
     if (refresh_hz > 0 && refresh_hz <= 240) g_config.refresh_hz = refresh_hz;
+    g_config.bold_brightens_fg = bold_brightens_fg ? 1 : 0;
 
     if (!nbs_config_save(&g_config)) {
         fprintf(stderr, "nbs-term: could not save config (continuing in-memory)\n");
@@ -1775,6 +1792,7 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "set ::prefs_rows          %d;"
         "set ::prefs_cols          %d;"
         "set ::prefs_refresh_hz    %d;"
+        "set ::prefs_bold_brightens_fg %d;"
 
         /* A3a font picker: monospace-filtered ttk::combobox per alexie
          * 2026-05-13 11:17:33 ('humans cannot remember font names').
@@ -1845,12 +1863,18 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "  -variable ::prefs_refresh_hz -length 200;"
         "  grid .prefs.eh -row $row -column 1 -sticky w; incr row;"
 
+        "label .prefs.lbb -text {Bright bold colors:}; "
+        "  grid .prefs.lbb -row $row -column 0 -sticky e;"
+        "checkbutton .prefs.ebb -variable ::prefs_bold_brightens_fg;"
+        "  grid .prefs.ebb -row $row -column 1 -sticky w; incr row;"
+
         "frame .prefs.btn;"
         "  button .prefs.btn.s -text Save    -command "
         "    {nbs_save_prefs $::prefs_font_family $::prefs_font_size "
         "     $::prefs_cursor_style $::prefs_cursor_blink $::prefs_cursor_color "
         "     $::prefs_gamma $::prefs_fg $::prefs_bg "
-        "     $::prefs_rows $::prefs_cols $::prefs_refresh_hz};"
+        "     $::prefs_rows $::prefs_cols $::prefs_refresh_hz "
+        "     $::prefs_bold_brightens_fg};"
         "  button .prefs.btn.c -text Cancel  -command {destroy .prefs};"
         "  pack .prefs.btn.s .prefs.btn.c -side left -padx 4;"
         "  grid .prefs.btn -row $row -column 0 -columnspan 2 -pady 8",
@@ -1859,7 +1883,8 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         g_config.cursor.style, g_config.cursor.blink, g_config.cursor.color,
         g_config.gamma,
         g_config.fg, g_config.bg,
-        g_config.rows, g_config.cols, g_config.refresh_hz);
+        g_config.rows, g_config.cols, g_config.refresh_hz,
+        g_config.bold_brightens_fg);
     if (Tcl_Eval(interp, dlg) != TCL_OK) {
         fprintf(stderr, "nbs-term: failed to open Preferences: %s\n",
                 Tcl_GetStringResult(interp));

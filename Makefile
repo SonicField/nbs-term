@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -291,6 +291,19 @@ $(BUILDDIR)/test_register_named_fonts: $(BUILDDIR)/test_register_named_fonts.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_register_named_fonts: $(BUILDDIR)/test_register_named_fonts
+
+# test_bold_recolour — SGR 1 Bold + Indexed(0..7) -> Indexed(8..15) remap
+# regression anchor (theologian (1) spec 2026-05-14 09:05:51). SPEC COPY of
+# the inline guard in flush_span (p3_pty.phc) before color_to_hex. Headless;
+# libc only. Test constructs Color values directly + reads the resulting idx;
+# no SGR parser, no renderer.
+$(BUILDDIR)/test_bold_recolour.c: $(TESTDIR)/test_bold_recolour.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_bold_recolour: $(BUILDDIR)/test_bold_recolour.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_bold_recolour: $(BUILDDIR)/test_bold_recolour
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,
