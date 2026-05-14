@@ -433,6 +433,21 @@ static int compare_to_golden(const char *actual_path, const char *golden_path) {
 }
 
 int main(int argc, char *argv[]) {
+    /* Pin font resolution to the bundled DejaVu Sans Mono fixture
+     * BEFORE any Tcl/Tk init (theologian option-A spec 2026-05-14
+     * 09:47:07 + supervisor 09:46:12 GO). FONTCONFIG_PATH override
+     * scopes Tk's font lookup to tests/fixtures/fonts/fonts.conf;
+     * without this, the harness picks whatever monospace family is
+     * installed on the host PATH and cell metrics drift across
+     * developer machines + CI (testkeeper P1 09:20:51 root cause:
+     * CI baseline CELL 17x24 vs local 12x20 — different families
+     * resolved by host fontconfig). Override only if not already
+     * set so external invokers (CI workflow / dev with explicit
+     * FONTCONFIG_PATH) can pin to a different fixture. Path is
+     * relative to cwd; Makefile invokes tests with cwd = repo root. */
+    if (!getenv("FONTCONFIG_PATH")) {
+        setenv("FONTCONFIG_PATH", "tests/fixtures/fonts", 1);
+    }
     Tcl_FindExecutable(argv[0]);
 
     if (argc < 3) {

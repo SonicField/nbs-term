@@ -1,0 +1,22 @@
+DejaVu Sans Mono — bundled test fixture for nbs-term render-state harness
+==========================================================================
+
+Files: DejaVuSansMono.ttf, DejaVuSansMono-Bold.ttf, DejaVuSansMono-Oblique.ttf,
+       DejaVuSansMono-BoldOblique.ttf
+
+Family: DejaVu Sans Mono
+Source: https://dejavu-fonts.github.io/
+
+License: Bitstream Vera Fonts Copyright + DejaVu changes Public Domain /
+         Bitstream Vera License — see Bitstream Vera Copyright notice
+         and DejaVu Fonts Copyright at the upstream project.
+
+Bundled here under the original Bitstream Vera permission to redistribute
+the font files with or without modifications, provided the copyright
+notices accompany them. These files are unmodified copies.
+
+This fixture exists ONLY to make tests/test_render_state golden output
+deterministic across developer machines + CI by pinning the font family
++ rasterizer-input metrics. Production p3_pty does NOT bundle or load
+these files; production resolves font_normal via Tk's TkFixedFont alias
+against the host's installed monospace family.

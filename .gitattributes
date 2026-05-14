@@ -1,0 +1,2 @@
+# Test fixture binaries — keep raw, no LF normalisation.
+tests/fixtures/fonts/*.ttf binary
