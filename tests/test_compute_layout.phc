@@ -33,15 +33,18 @@
 #define NBS_PADDING 4
 
 /* SPEC COPY — compute_layout post-measurement clamp from
- * src/p3_pty.phc:464-481. Returns new_x + new_y for given inputs.
+ * src/p3_pty.phc. Returns new_x + new_y for given inputs.
  * Production also writes g_origin_x/g_origin_y + returns 'changed';
  * test only validates the math.
  *
- * Option (iii) conditional cap per supervisor 2026-05-13 15:36:28
- * + theologian 14:50:39: pure (canvas_w - max_w) / 2 centering,
- * but apply ~1 char (g_cell_w) cap when text is SPARSE
- * (max_w < canvas_w / 2). alexie 15:30:08 confirmed symmetric
- * centering works but wants ~1 char border on sparse text. */
+ * UNCONDITIONAL 2*g_cell_w cap per legacy nbsterm.py:236
+ *     origin_x = min((canvas_w - text_w) // 2, 2 * char_width)
+ * Prior conditional cap (only when max_w < canvas_w/2) per supervisor
+ * 2026-05-13 15:36:28 + theologian 14:50:39 option (iii) was meant
+ * to keep dense rows full-centered, but alexie 2026-05-14 07:44:39
+ * reports borders still several characters wide on Mac with that
+ * conditional. Port legacy unconditional shape per
+ * [[feedback_legacy_port_as_spec]]. */
 static void compute_layout_spec(int canvas_w, int canvas_h, int max_w,
                                 int g_cell_w, int g_cell_h, int rows,
                                 int *out_x, int *out_y) {
@@ -51,10 +54,8 @@ static void compute_layout_spec(int canvas_w, int canvas_h, int max_w,
         new_y = NBS_PADDING;
     } else {
         new_x = (canvas_w - max_w) / 2;
-        if (max_w < canvas_w / 2) {
-            int cap = g_cell_w;
-            if (new_x > cap) new_x = cap;
-        }
+        int cap = 2 * g_cell_w;
+        if (new_x > cap) new_x = cap;
         if (new_x < 0) new_x = 0;
         int text_h = rows * g_cell_h;
         new_y = (canvas_h - text_h) / 2;
@@ -97,79 +98,75 @@ int main(void) {
     compute_layout_spec(800, 600, 0, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: max_w=0 (no text)");
 
-    /* === Sparse text (max_w < canvas_w/2) → cap to g_cell_w === */
+    /* === Narrow text (large half-margin) → cap to 2*g_cell_w === */
 
     /* Text 100px wide in 800px canvas: half = (800-100)/2 = 350.
-     * max_w(100) < canvas_w/2(400) → sparse, cap = g_cell_w = 9.
-     * min(350, 9) = 9. */
+     * cap = 2*g_cell_w = 18. min(350, 18) = 18. */
     compute_layout_spec(800, 600, 100, 9, 18, 24, &x, &y);
     /* text_h = 24*18 = 432; new_y = (600-432)/2 = 84 */
-    fail += eq_xy(x, y, 9, 84, "sparse text -> g_cell_w cap");
+    fail += eq_xy(x, y, 18, 84, "narrow text -> 2*g_cell_w cap");
 
-    /* === Dense text (max_w >= canvas_w/2) → full center, no cap === */
+    /* === Wide text (small half-margin <= cap) → full center === */
 
     /* Text 780px wide in 800px canvas: half = (800-780)/2 = 10.
-     * max_w(780) >= canvas_w/2(400) → dense, no cap. */
+     * cap = 18; 10 < 18 → no cap applied, x = 10. */
     compute_layout_spec(800, 600, 780, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 10, 84, "dense text -> small left margin (no cap)");
+    fail += eq_xy(x, y, 10, 84, "wide text -> half below cap, full center");
 
-    /* Edge: text exactly fills canvas: half = 0; dense. */
+    /* Edge: text exactly fills canvas: half = 0. */
     compute_layout_spec(800, 600, 800, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, 0, 84, "text fills canvas: x=0");
 
     /* === Overflow clamp (text wider than canvas) === */
 
-    /* Text 900px wide in 800px canvas: half = -50 → clamp 0;
-     * max_w(900) >= canvas_w/2(400) → dense, no cap (irrelevant). */
+    /* Text 900px wide in 800px canvas: half = -50 → clamp 0. */
     compute_layout_spec(800, 600, 900, 9, 18, 24, &x, &y);
     fail += eq_xy(x, y, 0, 84, "text overflows canvas: x clamped to 0");
 
     /* === Vertical clamp (text taller than canvas) === */
 
     /* 100 rows * 18 = 1800 text_h; canvas_h=600 → -600 → clamp 0.
-     * max_w(100) sparse → x cap = 9. */
+     * cap = 18; half = 350; min = 18. */
     compute_layout_spec(800, 600, 100, 9, 18, 100, &x, &y);
-    fail += eq_xy(x, y, 9, 0, "text taller than canvas: y clamped, x sparse-cap");
+    fail += eq_xy(x, y, 18, 0, "text taller than canvas: y clamped, x at cap");
 
-    /* === Cap = g_cell_w (so cell width affects sparse cap) === */
+    /* === Cap scales with g_cell_w (per-platform cell metric) === */
 
-    /* Tiny cell + narrow text: cap=1. min(350, 1) = 1. */
+    /* Tiny cell: cap=2. min(350, 2) = 2. */
     compute_layout_spec(800, 600, 100, 1, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 1, 84, "tiny cell, sparse -> tiny cap");
+    fail += eq_xy(x, y, 2, 84, "tiny cell -> tiny cap (2*1)");
 
-    /* Large cell + narrow text: cap=100. min(350, 100) = 100. */
+    /* Large cell: cap=200. min(350, 200) = 200. */
     compute_layout_spec(800, 600, 100, 100, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 100, 84, "large cell, sparse -> large cap");
+    fail += eq_xy(x, y, 200, 84, "large cell -> large cap (2*100)");
 
-    /* === Wide canvas, exactly half-width text (boundary) === */
+    /* === Wide canvas, exactly half-width text === */
 
-    /* canvas_w=1600, max_w=800: max_w == canvas_w/2 (NOT strictly less)
-     * → dense (no cap). half = 400. */
+    /* canvas_w=1600, max_w=800: half = 400; cap = 18; min = 18. */
     compute_layout_spec(1600, 600, 800, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 400, 84, "wide canvas, exactly half text -> dense (boundary, no cap)");
+    fail += eq_xy(x, y, 18, 84, "wide canvas, half-width text -> 2*g_cell_w cap");
 
-    /* === Wide canvas, just-below-half (sparse boundary +1) === */
+    /* === Wide canvas, just-below-half === */
 
-    /* canvas_w=1600, max_w=799 < canvas_w/2(800) → sparse, cap=9.
-     * half = (1600-799)/2 = 400; min(400, 9) = 9. */
+    /* canvas_w=1600, max_w=799: half = (1600-799)/2 = 400; cap = 18. */
     compute_layout_spec(1600, 600, 799, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 9, 84, "wide canvas, just-sparse -> g_cell_w cap kicks in");
+    fail += eq_xy(x, y, 18, 84, "wide canvas, just-below-half -> 2*g_cell_w cap");
 
-    /* === Tiny canvas + sparse text === */
+    /* === Tiny canvas + narrow text === */
 
-    /* canvas_w=80, max_w=20 < 40 → sparse. cap=9. half=30. min(30,9)=9. */
+    /* canvas_w=80, max_w=20: half=30; cap=18; min=18. */
     compute_layout_spec(80, 600, 20, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 9, 84, "tiny canvas + sparse -> cap");
+    fail += eq_xy(x, y, 18, 84, "tiny canvas + narrow -> cap");
 
-    /* === y-centering with various row counts (sparse text) === */
+    /* === y-centering with various row counts === */
 
-    /* 0 rows: text_h = 0; new_y = canvas_h/2 = 300; sparse cap x=9 */
+    /* 0 rows: text_h = 0; new_y = canvas_h/2 = 300; x at cap=18 */
     compute_layout_spec(800, 600, 100, 9, 18, 0, &x, &y);
-    fail += eq_xy(x, y, 9, 300, "zero rows -> y center of canvas");
+    fail += eq_xy(x, y, 18, 300, "zero rows -> y center of canvas");
 
-    /* 1 row: text_h = 18; new_y = (600-18)/2 = 291; sparse cap x=9 */
+    /* 1 row: text_h = 18; new_y = (600-18)/2 = 291; x at cap=18 */
     compute_layout_spec(800, 600, 100, 9, 18, 1, &x, &y);
-    fail += eq_xy(x, y, 9, 291, "one row -> y near center");
+    fail += eq_xy(x, y, 18, 291, "one row -> y near center");
 
     /* === bbox_calibrate WIDEN (asymmetric) === */
 

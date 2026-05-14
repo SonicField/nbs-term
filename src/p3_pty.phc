@@ -640,20 +640,21 @@ static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
         new_x = NBS_PADDING;
         new_y = NBS_PADDING;
     } else {
-        /* Centering — pure (canvas_w - max_w) / 2 with conditional
-         * cap on sparse content. alexie 2026-05-13 15:30:08 confirmed
-         * symmetric centering works ('borders are now symetric -
-         * nice job') after 29f95b8 cap removal but reported margins
-         * 'a little too wide'; wants 'approx one character width'.
-         * Per supervisor 15:36:28 + theologian 14:50:39 option (iii):
-         * apply ~1 char cap when text is sparse (max_w < canvas_w/2);
-         * full center on dense text (text fills more than half the
-         * canvas — no extra padding to clamp). */
+        /* Centering with UNCONDITIONAL 2*g_cell_w cap on horizontal
+         * margin per legacy nbsterm.py:236
+         *     origin_x = min((canvas_w - text_w) // 2, 2 * char_width)
+         * Prior conditional cap (only when max_w < canvas_w/2) per
+         * supervisor 2026-05-13 15:36:28 + theologian 14:50:39
+         * option (iii) was supposed to keep dense rows full-centered,
+         * but alexie 2026-05-14 07:44:39 reports 'borders at the
+         * sides of the screen are still several characters wide' on
+         * Mac with that conditional. Port the legacy unconditional
+         * shape directly per [[feedback_legacy_port_as_spec]] +
+         * alexie's reference 'wide border issue ... you fixed it
+         * there so I am sure you can fix it here too'. */
         new_x = (canvas_w - max_w) / 2;
-        if (max_w < canvas_w / 2) {
-            int cap = g_cell_w;
-            if (new_x > cap) new_x = cap;
-        }
+        int cap = 2 * g_cell_w;
+        if (new_x > cap) new_x = cap;
         if (new_x < 0) new_x = 0;
         int text_h = scr->rows * g_cell_h;
         new_y = (canvas_h - text_h) / 2;
