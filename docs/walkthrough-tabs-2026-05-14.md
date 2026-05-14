@@ -94,16 +94,25 @@ everything.
 2. Press F11 again — the window returns to normal size.
 3. On Mac, open p3_pty and press Cmd+T to create a second tab.
 4. Press Cmd+W on the second tab. **This is the load-bearing test for
-   the menu install fix.** Only the second tab should close; the first
-   should stay open and the program should keep running. If the entire
-   program exits at this step, the menu install isn't taking — that's
-   the legacy trap (the OS picks up Cmd+W as "close window" and kills
-   everything).
+   the menu install fix.** Three possible outcomes:
+   - **Pass:** only the second tab closes; the first stays open and
+     the program keeps running.
+   - **Fail (legacy trap):** the entire program exits — the OS picked
+     up Cmd+W as "close window" and killed everything.
+   - **Fail (no effect):** the program keeps running but neither tab
+     closes — Cmd+W reached neither the menu nor the Tk bind. This is
+     a different failure mode (accelerator-vs-bind ordering) and
+     worth flagging separately.
 5. With one tab left, press Cmd+W again on that last surviving tab.
    The window should close cleanly (process exits because there are no
    tabs left, not because the OS hijacked Cmd+W).
 6. Look at the menu bar at the top of the screen: "File" menu visible,
    with "Close Tab ⌘W" inside.
+7. With at least two tabs open, click File > Close Tab in the menu bar
+   (don't use the keyboard shortcut). The active tab should close. If
+   step 4 passed but this step doesn't close a tab, the keyboard
+   shortcut works but the menu's command isn't wired — also worth
+   flagging separately.
 
 **Pass signal.** F11 toggles fullscreen on every platform. On Mac: File
 menu visible with Close Tab item; Cmd+W closes just the active tab (not
