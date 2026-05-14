@@ -2266,6 +2266,21 @@ static int NbsPrevTab(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* (Tabs.c) F11 fullscreen toggle. Flips wm attributes -fullscreen
+ * across platforms. Tk's wm attributes uniformly handles the
+ * platform-specific native fullscreen path ([tk windowingsystem]
+ * aqua-case maps to NSWindow toggleFullScreen:; x11 maps to EWMH
+ * _NET_WM_STATE_FULLSCREEN; win32 maps to native fullscreen) so the
+ * Tcl is platform-uniform. Per legacy nbsterm.py:1430-1433 +
+ * theologian Tabs.c spec. */
+static int NbsToggleFullscreen(ClientData cd, Tcl_Interp *interp, int objc,
+                                Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    Tcl_Eval(interp,
+        "wm attributes . -fullscreen [expr {![wm attributes . -fullscreen]}]");
+    return TCL_OK;
+}
+
 /* NBS_TEST_MODE: when defined, suppress this file's main() so a test
  * binary (tests/test_render_state.phc) can #include p3_pty.phc and
  * provide its own main() while reusing all the file-scope statics
@@ -2331,6 +2346,9 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_select_tab", NbsSelectTab, NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_next_tab",   NbsNextTab,   NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_prev_tab",   NbsPrevTab,   NULL, NULL);
+    /* (Tabs.c) F11 fullscreen toggle. */
+    Tcl_CreateObjCommand(g_interp, "nbs_toggle_fullscreen",
+                         NbsToggleFullscreen, NULL, NULL);
 
     /* C — kick off the blink timer if config enables it. blink_proc
      * reschedules itself; on_pty_data resets via blink_reset(). */
@@ -2467,6 +2485,26 @@ int main(int argc, char *argv[]) {
             "bind . <Control-Key-7>     {nbs_select_tab 6; break};"
             "bind . <Control-Key-8>     {nbs_select_tab 7; break};"
             "bind . <Control-Key-9>     {nbs_select_tab 8; break};"
+            /* (Tabs.c) F11 fullscreen toggle (cross-platform via wm
+             * attributes -fullscreen). Plus Mac-side menu install
+             * gated on [tk windowingsystem] eq aqua: legacy nbsterm.py:
+             * 1175-1186 names the trap — on aqua the OS auto-menu
+             * binds Cmd+W to NSWindow performClose: which fires
+             * WM_DELETE_WINDOW (set child_done 1) instead of our
+             * nbs_close_tab. Installing an explicit File>Close Tab
+             * menu suppresses the OS auto-menu's Cmd+W handler;
+             * the accelerator='Command+W' kwarg is DISPLAY-ONLY so
+             * we ALSO need the explicit bind . <Command-w> from
+             * Tabs.b — both required per legacy 1183-1186. */
+            "bind . <F11> {nbs_toggle_fullscreen; break};"
+            "if {[tk windowingsystem] eq {aqua}} {"
+            "  menu .menubar;"
+            "  menu .menubar.file -tearoff 0;"
+            "  .menubar add cascade -label File -menu .menubar.file;"
+            "  .menubar.file add command -label {Close Tab} "
+            "    -accelerator {Command+W} -command nbs_close_tab;"
+            "  . configure -menu .menubar;"
+            "};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
