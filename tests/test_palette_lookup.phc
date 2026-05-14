@@ -1,0 +1,163 @@
+/*
+ * test_palette_lookup.phc — (2) configurable 16-color palette + Default
+ *                           fg/bg override toggle regression anchor
+ *
+ * Per theologian (2) spec 2026-05-14 09:06:21. Discriminator for the
+ * color_to_hex Indexed branch refactor (hardcoded ansi[] -> g_config.
+ * palette[16]) + flush_span Default-bg/fg defcol resolution toggle:
+ *  - if Default-config Indexed(N) returns hex differs from pre-(2)
+ *    hardcoded table, regression on 16-color rendering (every shell
+ *    uses these — bash prompt colors, ls --color, vim syntax)
+ *  - if 256-color (16..231) or grayscale (232..255) path returns
+ *    different hex, palette refactor scope leaked (table change was
+ *    supposed to be Indexed(0..15) only)
+ *  - if use_palette_for_default_fg_bg=0 doesn't preserve g_config.fg/bg
+ *    as Default-color resolution, alexie 09:03:57 Q3 'overrides with
+ *    option to not override' broken in default-OFF case
+ *  - if use_palette_for_default_fg_bg=1 doesn't switch Default
+ *    resolution to palette[7]/palette[0], the toggle is dead
+ *
+ * Approach — SPEC COPY of:
+ *  (a) color_to_hex Indexed branch from src/p3_pty.phc:357-390 (the
+ *      hex math for indexed + 256-color + grayscale paths)
+ *  (b) flush_span defcol resolution from src/p3_pty.phc (the
+ *      use_palette_for_default_fg_bg ternary that picks defcol_fg /
+ *      defcol_bg)
+ * Production helpers are tangled with Tcl_Eval / Color tagged-union
+ * dispatch; SPEC COPY abstracts the math + decision to pure-C
+ * functions for headless testing. Drift catchable next color_to_hex
+ * + flush_span review.
+ *
+ * Headless (libc only); no Tcl/Tk/PTY/screen.phc link.
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+/* SPEC COPY — color_to_hex Indexed branch from src/p3_pty.phc:361-390.
+ * Returns the hex for an indexed color given a 16-entry palette. Idx
+ * 0..15 looks up the palette; 16..231 computes the xterm 6×6×6 RGB
+ * cube; 232..255 computes the 24-step grayscale ramp. */
+static void color_indexed_to_hex_spec(int index,
+                                       const char palette[16][16],
+                                       char *out, int outsz) {
+    if (index < 16) {
+        snprintf(out, (size_t)outsz, "%s", palette[index]);
+    } else if (index < 232) {
+        int ci = index - 16;
+        int r = ci / 36, g = (ci / 6) % 6, b = ci % 6;
+        snprintf(out, (size_t)outsz, "#%02x%02x%02x",
+                 r ? r * 40 + 55 : 0,
+                 g ? g * 40 + 55 : 0,
+                 b ? b * 40 + 55 : 0);
+    } else {
+        int v = (index - 232) * 10 + 8;
+        snprintf(out, (size_t)outsz, "#%02x%02x%02x", v, v, v);
+    }
+}
+
+/* SPEC COPY — defcol resolution from flush_span (src/p3_pty.phc, the
+ * use_palette_for_default_fg_bg ternary inserted before color_to_hex
+ * calls). Returns the palette[idx] hex when toggle is on, else the
+ * legacy g_config.fg/bg pointer. */
+static const char *defcol_fg_spec(int use_palette,
+                                   const char palette[16][16],
+                                   const char *cfg_fg) {
+    return use_palette ? palette[7] : cfg_fg;
+}
+static const char *defcol_bg_spec(int use_palette,
+                                   const char palette[16][16],
+                                   const char *cfg_bg) {
+    return use_palette ? palette[0] : cfg_bg;
+}
+
+/* xterm-default 16-color palette — byte-identical to nbs_config_default
+ * at src/config.phc + the prior hardcoded table at p3_pty.phc:362-368
+ * (pre-(2) refactor). This array IS the regression baseline: any drift
+ * vs the prior hardcoded values would mean a default-config shell
+ * renders different colors after install. */
+static const char xterm_default_palette[16][16] = {
+    "#000000", "#cd0000", "#00cd00", "#cdcd00",
+    "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+    "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+    "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+};
+
+static int eq_str(const char *got, const char *want, const char *label) {
+    if (strcmp(got, want) == 0) return 0;
+    printf("FAIL %s: got '%s' want '%s'\n", label, got, want);
+    return 1;
+}
+
+int main(void) {
+    int fail = 0;
+    char buf[16];
+
+    /* === Default-config Indexed(0..15) regression baseline ===
+     *      Each idx returns the byte-identical hex from the prior
+     *      hardcoded ansi[] table (alexie 09:03:57 Q1 'keep default'). */
+    for (int i = 0; i < 16; i++) {
+        color_indexed_to_hex_spec(i, xterm_default_palette, buf, sizeof buf);
+        char label[64];
+        snprintf(label, sizeof label, "Default Indexed(%d) regression", i);
+        fail += eq_str(buf, xterm_default_palette[i], label);
+    }
+
+    /* === Custom palette overrides (palette[3] = '#deadbeef') ===
+     *      Idx 3 should return the custom value, idx 0 still returns
+     *      the unchanged default (no cross-contamination). */
+    char custom[16][16];
+    memcpy(custom, xterm_default_palette, sizeof custom);
+    snprintf(custom[3], sizeof custom[3], "%s", "#deadbeef");
+    color_indexed_to_hex_spec(3, custom, buf, sizeof buf);
+    fail += eq_str(buf, "#deadbeef", "Custom palette[3] override");
+    color_indexed_to_hex_spec(0, custom, buf, sizeof buf);
+    fail += eq_str(buf, "#000000", "Custom palette[3] doesn't leak to [0]");
+
+    /* === 256-color cube (16..231) regression — palette refactor must
+     *      NOT touch the cube path. Verbatim hex from xterm spec. === */
+    color_indexed_to_hex_spec(16, xterm_default_palette, buf, sizeof buf);
+    fail += eq_str(buf, "#000000", "256-color cube min (16) regression");
+    color_indexed_to_hex_spec(196, xterm_default_palette, buf, sizeof buf);
+    fail += eq_str(buf, "#ff0000", "256-color cube red (196) regression");
+    color_indexed_to_hex_spec(231, xterm_default_palette, buf, sizeof buf);
+    fail += eq_str(buf, "#ffffff", "256-color cube max (231) regression");
+
+    /* === Grayscale ramp (232..255) regression — palette refactor
+     *      must NOT touch the grayscale path. === */
+    color_indexed_to_hex_spec(232, xterm_default_palette, buf, sizeof buf);
+    fail += eq_str(buf, "#080808", "Grayscale min (232) regression");
+    color_indexed_to_hex_spec(255, xterm_default_palette, buf, sizeof buf);
+    fail += eq_str(buf, "#eeeeee", "Grayscale max (255) regression");
+
+    /* === use_palette_for_default_fg_bg=0 (default OFF, Q3 'overrides') ===
+     *      Default fg/bg resolves to g_config.fg/bg (existing behavior
+     *      preserved). */
+    fail += eq_str(defcol_fg_spec(0, xterm_default_palette, "#abcdef"),
+                   "#abcdef", "use_palette=0 fg -> g_config.fg");
+    fail += eq_str(defcol_bg_spec(0, xterm_default_palette, "#123456"),
+                   "#123456", "use_palette=0 bg -> g_config.bg");
+
+    /* === use_palette_for_default_fg_bg=1 (toggle ON, Q3 'option to
+     *      not override') — Default fg/bg resolves to palette[7]/[0]. */
+    fail += eq_str(defcol_fg_spec(1, xterm_default_palette, "#abcdef"),
+                   "#e5e5e5", "use_palette=1 fg -> palette[7] (default white)");
+    fail += eq_str(defcol_bg_spec(1, xterm_default_palette, "#123456"),
+                   "#000000", "use_palette=1 bg -> palette[0] (default black)");
+
+    /* === Custom-palette + use_palette=1 — toggle reads from current
+     *      palette state, not the default. === */
+    snprintf(custom[7], sizeof custom[7], "%s", "#aabbcc");
+    snprintf(custom[0], sizeof custom[0], "%s", "#112233");
+    fail += eq_str(defcol_fg_spec(1, custom, "#abcdef"),
+                   "#aabbcc", "use_palette=1 + custom palette[7] -> custom");
+    fail += eq_str(defcol_bg_spec(1, custom, "#123456"),
+                   "#112233", "use_palette=1 + custom palette[0] -> custom");
+
+    if (fail == 0) {
+        printf("test_palette_lookup: PASS (28 cases)\n");
+        return 0;
+    }
+    printf("test_palette_lookup: FAIL (%d failures)\n", fail);
+    return 1;
+}

@@ -79,6 +79,8 @@ typedef struct {
     int    cols;
     int    refresh_hz;
     int    bold_brightens_fg;  /* 0 or 1 — bold text remaps Indexed(0..7) to Indexed(8..15) */
+    char   palette[16][16];    /* "#rrggbb" per ANSI index 0..15; defaults match xterm */
+    int    use_palette_for_default_fg_bg;  /* 0 or 1 — when 1, Default fg uses palette[7] + Default bg uses palette[0] */
 } NbsTerminalConfig;
 
 static NbsTerminalConfig nbs_config_default(void) {
@@ -104,6 +106,23 @@ static NbsTerminalConfig nbs_config_default(void) {
      * ANSI colors renders as the bright variant. Per alexie 2026-05-14
      * 09:03:57 Q2 (configurable; default ON = industry standard). */
     cfg.bold_brightens_fg = 1;
+    /* xterm-default 16-color ANSI palette per alexie 2026-05-14 09:03:57
+     * Q1 'keep default'. Byte-identical to the previously-hardcoded
+     * table at p3_pty.phc color_to_hex Indexed branch (pre-(2)). */
+    static const char *xterm_default[16] = {
+        "#000000", "#cd0000", "#00cd00", "#cdcd00",
+        "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+        "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+        "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+    };
+    for (int i = 0; i < 16; i++) {
+        snprintf(cfg.palette[i], sizeof cfg.palette[i], "%s", xterm_default[i]);
+    }
+    /* Per alexie 09:03:57 Q3 'overrides with option to not override':
+     * default OFF preserves existing fg/bg as overrides on the Default
+     * color resolution; user can flip to ON to fold fg/bg into
+     * palette[7]/palette[0]. */
+    cfg.use_palette_for_default_fg_bg = 0;
     return cfg;
 }
 
@@ -196,6 +215,15 @@ static void nbs__apply(NbsTerminalConfig *cfg, const char *key, const char *val)
     } else if (strcmp(key, "bold_brightens_fg") == 0) {
         cfg->bold_brightens_fg = (val[0] == 'T' || val[0] == 't' ||
                                   val[0] == '1' || val[0] == 'Y' || val[0] == 'y');
+    } else if (strcmp(key, "use_palette_for_default_fg_bg") == 0) {
+        cfg->use_palette_for_default_fg_bg = (val[0] == 'T' || val[0] == 't' ||
+                                              val[0] == '1' || val[0] == 'Y' || val[0] == 'y');
+    } else if (strncmp(key, "palette.", 8) == 0) {
+        /* palette.0 .. palette.15 — accept dotted-numeric subkeys. */
+        long idx = strtol(key + 8, NULL, 10);
+        if (idx >= 0 && idx < 16) {
+            snprintf(cfg->palette[idx], sizeof cfg->palette[idx], "%s", val);
+        }
     }
     /* Unknown keys silently ignored — forward-compatible. */
 }
@@ -319,6 +347,8 @@ static const char NBS_DEFAULT_CONFIG[] =
     "    cols       : Integer;\n"
     "    refresh_hz : Integer;\n"
     "    bold_brightens_fg : Boolean;\n"
+    "    palette : array[0..15] of String;\n"
+    "    use_palette_for_default_fg_bg : Boolean;\n"
     "  end;\n"
     "\n"
     "var config : TerminalConfig = (\n"
@@ -331,6 +361,15 @@ static const char NBS_DEFAULT_CONFIG[] =
     "  cols       : 80;\n"
     "  refresh_hz : 60;\n"
     "  bold_brightens_fg : True;\n"
+    "  palette.0  : '#000000'; palette.1  : '#cd0000';\n"
+    "  palette.2  : '#00cd00'; palette.3  : '#cdcd00';\n"
+    "  palette.4  : '#0000ee'; palette.5  : '#cd00cd';\n"
+    "  palette.6  : '#00cdcd'; palette.7  : '#e5e5e5';\n"
+    "  palette.8  : '#7f7f7f'; palette.9  : '#ff0000';\n"
+    "  palette.10 : '#00ff00'; palette.11 : '#ffff00';\n"
+    "  palette.12 : '#5c5cff'; palette.13 : '#ff00ff';\n"
+    "  palette.14 : '#00ffff'; palette.15 : '#ffffff';\n"
+    "  use_palette_for_default_fg_bg : False;\n"
     ");\n";
 
 /* mkdir the parent directory of `path` (best-effort; ignores
@@ -412,6 +451,8 @@ static int nbs_config_save(const NbsTerminalConfig *cfg) {
         "    cols       : Integer;\n"
         "    refresh_hz : Integer;\n"
         "    bold_brightens_fg : Boolean;\n"
+        "    palette : array[0..15] of String;\n"
+        "    use_palette_for_default_fg_bg : Boolean;\n"
         "  end;\n"
         "\n"
         "var config : TerminalConfig = (\n"
@@ -424,13 +465,31 @@ static int nbs_config_save(const NbsTerminalConfig *cfg) {
         "  cols       : %d;\n"
         "  refresh_hz : %d;\n"
         "  bold_brightens_fg : %s;\n"
+        "  palette.0  : '%s'; palette.1  : '%s';\n"
+        "  palette.2  : '%s'; palette.3  : '%s';\n"
+        "  palette.4  : '%s'; palette.5  : '%s';\n"
+        "  palette.6  : '%s'; palette.7  : '%s';\n"
+        "  palette.8  : '%s'; palette.9  : '%s';\n"
+        "  palette.10 : '%s'; palette.11 : '%s';\n"
+        "  palette.12 : '%s'; palette.13 : '%s';\n"
+        "  palette.14 : '%s'; palette.15 : '%s';\n"
+        "  use_palette_for_default_fg_bg : %s;\n"
         ");\n",
         cfg->font.family, cfg->font.size,
         cfg->cursor.style, cfg->cursor.blink ? "True" : "False", cfg->cursor.color,
         cfg->gamma,
         cfg->fg, cfg->bg,
         cfg->rows, cfg->cols, cfg->refresh_hz,
-        cfg->bold_brightens_fg ? "True" : "False");
+        cfg->bold_brightens_fg ? "True" : "False",
+        cfg->palette[0],  cfg->palette[1],
+        cfg->palette[2],  cfg->palette[3],
+        cfg->palette[4],  cfg->palette[5],
+        cfg->palette[6],  cfg->palette[7],
+        cfg->palette[8],  cfg->palette[9],
+        cfg->palette[10], cfg->palette[11],
+        cfg->palette[12], cfg->palette[13],
+        cfg->palette[14], cfg->palette[15],
+        cfg->use_palette_for_default_fg_bg ? "True" : "False");
     int err = ferror(f);
     fclose(f);
     return err ? 0 : 1;

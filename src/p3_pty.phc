@@ -359,14 +359,16 @@ static void color_to_hex(Color c, const char *defcol, char *out, int outsz) {
             snprintf(out, (size_t)outsz, "%s", defcol);
         } break;
         case Indexed(index): {
-            static const char *ansi[] = {
-                "#000000", "#cd0000", "#00cd00", "#cdcd00",
-                "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
-                "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
-                "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
-            };
+            /* (2) palette commit: 16-color ANSI table moved out of
+             * hardcoded ansi[] into g_config.palette[16] for user
+             * configurability via Cmd+, prefs (theologian 09:06:21
+             * spec + alexie 09:03:57 Q1 'keep default'). Default
+             * values match the prior xterm-style hardcoded table
+             * exactly — zero behavior change for the default config
+             * (regression baseline). 256-color (16..231) and
+             * grayscale (232..255) paths unchanged. */
             if (index < 16) {
-                snprintf(out, (size_t)outsz, "%s", ansi[index]);
+                snprintf(out, (size_t)outsz, "%s", g_config.palette[index]);
             } else if (index < 232) {
                 int ci = index - 16;
                 int r = ci / 36, g = (ci / 6) % 6, b = ci % 6;
@@ -980,9 +982,19 @@ static int flush_span(Tcl_Interp *interp, const char *canvas,
         && fg.tag == Color_Indexed && fg.Indexed.index < 8) {
         fg = Color_mk_Indexed((uint8_t)(fg.Indexed.index + 8));
     }
+    /* (2) palette commit: when use_palette_for_default_fg_bg is set,
+     * Default fg resolves to palette[7] + Default bg to palette[0]
+     * instead of g_config.fg / g_config.bg. Per alexie 2026-05-14
+     * 09:03:57 Q3 'overrides with option to not override' — default
+     * OFF preserves existing fg/bg overrides; user opts in to the
+     * palette-only resolution. */
+    const char *defcol_fg = g_config.use_palette_for_default_fg_bg
+                                ? g_config.palette[7] : g_config.fg;
+    const char *defcol_bg = g_config.use_palette_for_default_fg_bg
+                                ? g_config.palette[0] : g_config.bg;
     char fg_hex[16], bg_hex[16], fg_g[16], bg_g[16];
-    color_to_hex(fg, g_config.fg, fg_hex, sizeof fg_hex);
-    color_to_hex(bg, g_config.bg, bg_hex, sizeof bg_hex);
+    color_to_hex(fg, defcol_fg, fg_hex, sizeof fg_hex);
+    color_to_hex(bg, defcol_bg, bg_hex, sizeof bg_hex);
     /* H gamma per supervisor 14:43:37 — apply uniformly to fg + bg
      * (companion canvas-widget -bg gamma at main(); cursor-side gamma
      * inside render_cursor). */
@@ -1686,9 +1698,14 @@ static void nbs_apply_config(Tcl_Interp *interp) {
     compute_cell_metrics(interp);
 
     /* Repaint canvas widget bg with gamma transform — mirrors the
-     * 17fe5dc uniform-gamma path at canvas creation. */
+     * 17fe5dc uniform-gamma path at canvas creation. (2) palette
+     * commit: when use_palette_for_default_fg_bg is set, canvas bg
+     * derives from palette[0] not g_config.bg, so the widget bg
+     * matches the per-cell Default bg resolution. */
+    const char *canvas_bg_src = g_config.use_palette_for_default_fg_bg
+                                    ? g_config.palette[0] : g_config.bg;
     char canvas_bg_g[16];
-    const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g, sizeof canvas_bg_g);
+    const char *canvas_bg = gamma_apply(canvas_bg_src, canvas_bg_g, sizeof canvas_bg_g);
     char bgcmd[64];
     snprintf(bgcmd, sizeof bgcmd, ".c configure -bg %s", canvas_bg);
     Tcl_Eval(interp, bgcmd);
@@ -1720,21 +1737,24 @@ static void nbs_apply_config(Tcl_Interp *interp) {
 
 /* Tcl command: nbs_save_prefs <font_family> <font_size> <cursor_style>
  *   <cursor_blink> <cursor_color> <gamma> <fg> <bg> <rows> <cols>
- *   <refresh_hz> <bold_brightens_fg>. Reads 12 fields from the dialog
- *   Tcl vars, validates, writes to g_config, persists via
- *   nbs_config_save, applies live via nbs_apply_config, destroys the
- *   dialog. */
+ *   <refresh_hz> <bold_brightens_fg> <use_palette_for_default_fg_bg>
+ *   <palette_list>. Reads 14 fields from the dialog Tcl vars, validates,
+ *   writes to g_config, persists via nbs_config_save, applies live via
+ *   nbs_apply_config, destroys the dialog. palette_list is a Tcl list of
+ *   16 hex strings (palette[0..15]) — passed as a single arg to keep
+ *   the positional arg count manageable. */
 static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
                         Tcl_Obj *const objv[]) {
     (void)cd;
-    if (objc != 13) {
+    if (objc != 15) {
         Tcl_WrongNumArgs(interp, 1, objv,
             "font_family font_size cursor_style cursor_blink cursor_color "
-            "gamma fg bg rows cols refresh_hz bold_brightens_fg");
+            "gamma fg bg rows cols refresh_hz bold_brightens_fg "
+            "use_palette_for_default_fg_bg palette_list");
         return TCL_ERROR;
     }
     int    font_size = 14, cursor_blink = 1, rows = 24, cols = 80, refresh_hz = 60;
-    int    bold_brightens_fg = 1;
+    int    bold_brightens_fg = 1, use_palette_for_default_fg_bg = 0;
     double gamma = 1.0;
     if (Tcl_GetIntFromObj(interp, objv[2], &font_size)    != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[4], &cursor_blink) != TCL_OK) return TCL_ERROR;
@@ -1743,6 +1763,14 @@ static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
     if (Tcl_GetIntFromObj(interp, objv[10], &cols)        != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[11], &refresh_hz)  != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[12], &bold_brightens_fg) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[13], &use_palette_for_default_fg_bg) != TCL_OK) return TCL_ERROR;
+    /* Parse palette_list (objv[14]) as Tcl list; require exactly 16
+     * elements. Silently truncate if fewer; ignore extras. */
+    int pal_objc = 0;
+    Tcl_Obj **pal_objv = NULL;
+    if (Tcl_ListObjGetElements(interp, objv[14], &pal_objc, &pal_objv) != TCL_OK) {
+        return TCL_ERROR;
+    }
 
     snprintf(g_config.font.family, sizeof g_config.font.family, "%s",
              Tcl_GetString(objv[1]));
@@ -1759,6 +1787,13 @@ static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
     if (cols > 0       && cols <= 9999)      g_config.cols       = cols;
     if (refresh_hz > 0 && refresh_hz <= 240) g_config.refresh_hz = refresh_hz;
     g_config.bold_brightens_fg = bold_brightens_fg ? 1 : 0;
+    g_config.use_palette_for_default_fg_bg = use_palette_for_default_fg_bg ? 1 : 0;
+    /* Apply palette entries from the Tcl list — write at most 16. */
+    int pal_n = pal_objc < 16 ? pal_objc : 16;
+    for (int i = 0; i < pal_n; i++) {
+        snprintf(g_config.palette[i], sizeof g_config.palette[i],
+                 "%s", Tcl_GetString(pal_objv[i]));
+    }
 
     if (!nbs_config_save(&g_config)) {
         fprintf(stderr, "nbs-term: could not save config (continuing in-memory)\n");
@@ -1775,7 +1810,7 @@ static int NbsSavePrefs(ClientData cd, Tcl_Interp *interp, int objc,
 static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
                         Tcl_Obj *const objv[]) {
     (void)cd; (void)objc; (void)objv;
-    char dlg[8192];
+    char dlg[16384];  /* (2) palette commit grew the dialog Tcl ~50 LOC + 16 hex strings */
     snprintf(dlg, sizeof dlg,
         "if {[winfo exists .prefs]} {raise .prefs; return};"
         "toplevel .prefs;"
@@ -1793,6 +1828,15 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "set ::prefs_cols          %d;"
         "set ::prefs_refresh_hz    %d;"
         "set ::prefs_bold_brightens_fg %d;"
+        "set ::prefs_use_palette_for_default_fg_bg %d;"
+        "set ::prefs_palette_0  {%s}; set ::prefs_palette_1  {%s};"
+        "set ::prefs_palette_2  {%s}; set ::prefs_palette_3  {%s};"
+        "set ::prefs_palette_4  {%s}; set ::prefs_palette_5  {%s};"
+        "set ::prefs_palette_6  {%s}; set ::prefs_palette_7  {%s};"
+        "set ::prefs_palette_8  {%s}; set ::prefs_palette_9  {%s};"
+        "set ::prefs_palette_10 {%s}; set ::prefs_palette_11 {%s};"
+        "set ::prefs_palette_12 {%s}; set ::prefs_palette_13 {%s};"
+        "set ::prefs_palette_14 {%s}; set ::prefs_palette_15 {%s};"
 
         /* A3a font picker: monospace-filtered ttk::combobox per alexie
          * 2026-05-13 11:17:33 ('humans cannot remember font names').
@@ -1868,13 +1912,61 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "checkbutton .prefs.ebb -variable ::prefs_bold_brightens_fg;"
         "  grid .prefs.ebb -row $row -column 1 -sticky w; incr row;"
 
+        /* (2) palette commit — 16-swatch picker (theologian 09:06:21
+         * spec). Two rows of 8 buttons each (normal idx 0..7 / bright
+         * idx 8..15). Each button shows its current hex as -bg; click
+         * invokes tk_chooseColor + writes back. Uses a sub-frame so
+         * the swatches lay out left-to-right within a single grid row
+         * of the prefs dialog. */
+        "label .prefs.lpal -text {ANSI palette:}; "
+        "  grid .prefs.lpal -row $row -column 0 -sticky ne;"
+        "frame .prefs.fpal;"
+        "  frame .prefs.fpal.r0;"
+        "  frame .prefs.fpal.r1;"
+        "  for {set __i 0} {$__i < 8} {incr __i} {"
+        "    set __v ::prefs_palette_$__i;"
+        "    button .prefs.fpal.r0.b$__i -width 3 -bg [set $__v] "
+        "      -command [list apply {{vn} {"
+        "        set c [tk_chooseColor -initialcolor [set $vn] -parent .prefs];"
+        "        if {$c ne {}} { set $vn $c; .prefs.fpal.r0.b[string range $vn end end] configure -bg $c }"
+        "      }} $__v];"
+        "    pack .prefs.fpal.r0.b$__i -side left -padx 1;"
+        "  };"
+        "  for {set __i 8} {$__i < 16} {incr __i} {"
+        "    set __v ::prefs_palette_$__i;"
+        "    set __ii [expr {$__i - 8}];"
+        "    button .prefs.fpal.r1.b$__ii -width 3 -bg [set $__v] "
+        "      -command [list apply {{vn idx} {"
+        "        set c [tk_chooseColor -initialcolor [set $vn] -parent .prefs];"
+        "        if {$c ne {}} { set $vn $c; .prefs.fpal.r1.b$idx configure -bg $c }"
+        "      }} $__v $__ii];"
+        "    pack .prefs.fpal.r1.b$__ii -side left -padx 1;"
+        "  };"
+        "  unset -nocomplain __i __ii __v;"
+        "  pack .prefs.fpal.r0 .prefs.fpal.r1 -side top -anchor w;"
+        "  grid .prefs.fpal -row $row -column 1 -sticky w; incr row;"
+
+        "label .prefs.lup -text {Default fg/bg from palette:}; "
+        "  grid .prefs.lup -row $row -column 0 -sticky e;"
+        "checkbutton .prefs.eup -variable ::prefs_use_palette_for_default_fg_bg;"
+        "  grid .prefs.eup -row $row -column 1 -sticky w; incr row;"
+
         "frame .prefs.btn;"
         "  button .prefs.btn.s -text Save    -command "
         "    {nbs_save_prefs $::prefs_font_family $::prefs_font_size "
         "     $::prefs_cursor_style $::prefs_cursor_blink $::prefs_cursor_color "
         "     $::prefs_gamma $::prefs_fg $::prefs_bg "
         "     $::prefs_rows $::prefs_cols $::prefs_refresh_hz "
-        "     $::prefs_bold_brightens_fg};"
+        "     $::prefs_bold_brightens_fg "
+        "     $::prefs_use_palette_for_default_fg_bg "
+        "     [list $::prefs_palette_0  $::prefs_palette_1  "
+        "           $::prefs_palette_2  $::prefs_palette_3  "
+        "           $::prefs_palette_4  $::prefs_palette_5  "
+        "           $::prefs_palette_6  $::prefs_palette_7  "
+        "           $::prefs_palette_8  $::prefs_palette_9  "
+        "           $::prefs_palette_10 $::prefs_palette_11 "
+        "           $::prefs_palette_12 $::prefs_palette_13 "
+        "           $::prefs_palette_14 $::prefs_palette_15]};"
         "  button .prefs.btn.c -text Cancel  -command {destroy .prefs};"
         "  pack .prefs.btn.s .prefs.btn.c -side left -padx 4;"
         "  grid .prefs.btn -row $row -column 0 -columnspan 2 -pady 8",
@@ -1884,7 +1976,16 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         g_config.gamma,
         g_config.fg, g_config.bg,
         g_config.rows, g_config.cols, g_config.refresh_hz,
-        g_config.bold_brightens_fg);
+        g_config.bold_brightens_fg,
+        g_config.use_palette_for_default_fg_bg,
+        g_config.palette[0],  g_config.palette[1],
+        g_config.palette[2],  g_config.palette[3],
+        g_config.palette[4],  g_config.palette[5],
+        g_config.palette[6],  g_config.palette[7],
+        g_config.palette[8],  g_config.palette[9],
+        g_config.palette[10], g_config.palette[11],
+        g_config.palette[12], g_config.palette[13],
+        g_config.palette[14], g_config.palette[15]);
     if (Tcl_Eval(interp, dlg) != TCL_OK) {
         fprintf(stderr, "nbs-term: failed to open Preferences: %s\n",
                 Tcl_GetStringResult(interp));
@@ -2011,9 +2112,14 @@ int main(int argc, char *argv[]) {
      * paint downstream (flush_span runs gamma on every cell rect).
      * 59ed176 Bug C v3: when canvas widget -bg is RAW and per-cell bg
      * is GAMMAED, Mac (gamma=1.2) shows cells visibly darker than
-     * the canvas slop. Uniform application here closes that path. */
+     * the canvas slop. Uniform application here closes that path.
+     * (2) palette commit: when use_palette_for_default_fg_bg is set,
+     * canvas bg derives from palette[0] not g_config.bg, so widget
+     * bg matches the per-cell Default bg resolution. */
+    const char *canvas_bg_src = g_config.use_palette_for_default_fg_bg
+                                    ? g_config.palette[0] : g_config.bg;
     char canvas_bg_g[16];
-    const char *canvas_bg = gamma_apply(g_config.bg, canvas_bg_g,
+    const char *canvas_bg = gamma_apply(canvas_bg_src, canvas_bg_g,
                                          sizeof canvas_bg_g);
     /* -borderwidth 0 mirrors legacy nbsterm.py:160 (was missing in
      * pure-phc port). On Mac aqua the default canvas borderwidth
