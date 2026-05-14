@@ -80,7 +80,34 @@ that convention.
 
 ## Section 3 — Fullscreen + Mac menu bar
 
-*Pending — added after the fullscreen toggle and menu install ship.*
+**What changed.** F11 toggles the window between normal size and
+fullscreen on every platform. On Mac, a File menu now appears in the
+menu bar with a "Close Tab" item showing ⌘W. The menu install is what
+makes Cmd+W close just the current tab on Mac instead of killing the
+whole program — a longstanding trap from the legacy version: without
+the explicit menu, the OS picks up Cmd+W as "close window" which exits
+everything.
+
+**Test.**
+
+1. Press F11 — the window should fill the screen.
+2. Press F11 again — the window returns to normal size.
+3. On Mac, open p3_pty and press Cmd+T to create a second tab.
+4. Press Cmd+W on the second tab — only that tab should close (the
+   first stays open).
+5. Press Cmd+W again on the last remaining tab — that closes the
+   window cleanly (process exits, no zombie shell).
+6. Look at the menu bar at the top of the screen: "File" menu visible,
+   with "Close Tab ⌘W" inside.
+
+**Pass signal.** F11 toggles fullscreen on every platform. On Mac: File
+menu visible with Close Tab item; Cmd+W closes just the active tab (not
+the whole program); closing the last tab exits cleanly.
+
+**Flag if.** F11 does nothing OR the window doesn't visibly resize. On
+Mac: no File menu in the menu bar. Cmd+W kills the entire process
+despite the menu install — this would mean the menu+bind pairing isn't
+taking, which is the trap the legacy version had to fix specifically.
 
 ---
 
@@ -88,5 +115,5 @@ that convention.
 
 Please flag pass/fail per section. If something fails, the specific
 behaviour you saw plus what you expected helps narrow the next fix.
-Sections are independent; a failure in Section 2 does not invalidate
-your Section 1 result.
+Sections are independent; a failure in any one section does not
+invalidate the others.
