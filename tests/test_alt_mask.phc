@@ -1,0 +1,182 @@
+/*
+ * tests/test_alt_mask.phc — 83a1c8c Alt-mask bind-path regression anchor
+ *
+ * Per theologian (II) spec 2026-05-14 09:15:25 + 09:18:09 addendum +
+ * supervisor 09:18:46 GO. Discriminator for the platform-shared
+ * <Alt-Key> bind dispatch in PtyKeyEvent (src/p3_pty.phc:1382 + main()
+ * bind block at p3_pty.phc:2049-2050):
+ *
+ *  - if <Alt-Key-b> bind fires but captured bytes != "\eb", the
+ *    Alt-block in PtyKeyEvent (p3_pty.phc:1476-1480) is broken; was
+ *    the surface 83a1c8c targeted (drop-g_is_mac, switch to Tk
+ *    <Alt-Key> bind for platform-uniform Alt dispatch)
+ *  - if capture buffer empty, bind layer didn't dispatch OR capture-
+ *    mock didn't intercept; bisect via 83a1c8c
+ *  - if non-Alt <Key-a> bind fires but captured bytes != "a", the
+ *    plain-key dispatch path is broken (sanity baseline)
+ *
+ * Approach — DEPARTURE FROM CANONICAL TEST FRAMING per librarian
+ * 09:17:23 (b): existing tests/scripts (.tcl files) SKIP bind firing
+ * as 'Tk infrastructure, not our logic'. Bind-path coverage is the
+ * ONLY meaningful coverage for 83a1c8c, since the change was
+ * specifically the <Alt-Key> bind-syntax dispatch (drop-g_is_mac
+ * means Tk's bind layer handles platform-specific Alt mapping; we
+ * cover the Linux side here, Mac side deferred to alexie smoke).
+ * Departure documented here per librarian's framing ask.
+ *
+ * MAC-FALSIFIER (deferred per [[feedback_falsifier_rule_diagnostic_
+ * commits]]): Linux Xvfb covers the Tk <Alt-Key> bind dispatch on
+ * X11 Alt; Mac Tk Option-modifier mapping at the bind layer is the
+ * deferred falsifier; alexie smoke discharge via Option+B in shell
+ * -> word-back (per supervisor 08:42:54 walkthrough). If Mac smoke
+ * fails AND this Linux test PASSES, regression is in Tk's Mac-side
+ * Alt-Key bind syntax (out of code-side scope, would be a Tk
+ * upstream issue or a missing Mac-specific bind variant).
+ *
+ * Approach: #define NBS_TEST_MODE then #include "p3_pty.phc". Pulls
+ * PtyKeyEvent + the pty_write capture variant from pty.phc into the
+ * test TU. Suppress p3_pty's main() via NBS_TEST_MODE; provide our
+ * own driver. NO PTY child fork, NO event-loop vwait — the binds
+ * fire synchronously via Tcl_Eval('event generate ...').
+ *
+ * Build: make build/test_alt_mask
+ * Run:   build/test_alt_mask     (Linux requires DISPLAY; xvfb-run -a build/test_alt_mask)
+ *
+ * Exit codes: 0 = PASS / all cases match; 1 = FAIL / at least one
+ * case mismatch; 2 = setup failure (Tcl/Tk init, bind registration).
+ */
+#if !defined(_WIN32)
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#endif
+
+/* Suppress p3_pty.phc's main() so we provide our own; pulls in pty.phc's
+ * NBS_TEST_MODE pty_write capture variant + g_test_pty_capture_buf/_len
+ * globals. */
+#define NBS_TEST_MODE
+#include "p3_pty.phc"
+
+#include <stdio.h>
+#include <string.h>
+
+/* Reset capture buffer between cases. */
+static void clear_capture(void) {
+    g_test_pty_capture_len = 0;
+}
+
+/* Hex-format capture buffer for FAIL diagnostics. */
+static void format_bytes(const char *buf, size_t len, char *out, size_t outsz) {
+    size_t o = 0;
+    for (size_t i = 0; i < len && o + 5 < outsz; i++) {
+        int n = snprintf(out + o, outsz - o, "\\x%02x",
+                         (unsigned char)buf[i]);
+        if (n < 0) break;
+        o += (size_t)n;
+    }
+    out[o < outsz ? o : outsz - 1] = '\0';
+}
+
+/* Fire a Tk bind via 'event generate' + assert captured bytes. Returns
+ * 0 on match, 1 on mismatch (with FAIL line printed). */
+static int fire_and_check(Tcl_Interp *interp, const char *event_str,
+                           const char *expect_bytes, size_t expect_len,
+                           const char *label) {
+    clear_capture();
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "event generate .c %s", event_str);
+    if (Tcl_Eval(interp, cmd) != TCL_OK) {
+        printf("FAIL %s: event generate %s -> Tcl error: %s\n",
+               label, event_str, Tcl_GetStringResult(interp));
+        return 1;
+    }
+    /* Drain pending Tk events so the bind fires synchronously. */
+    while (Tcl_DoOneEvent(TCL_DONT_WAIT)) {}
+    if (g_test_pty_capture_len == expect_len &&
+        memcmp(g_test_pty_capture_buf, expect_bytes, expect_len) == 0) {
+        return 0;
+    }
+    char got[256], want[256];
+    format_bytes(g_test_pty_capture_buf, g_test_pty_capture_len,
+                 got, sizeof got);
+    format_bytes(expect_bytes, expect_len, want, sizeof want);
+    printf("FAIL %s: %s -> got %zu bytes [%s] want %zu bytes [%s]\n",
+           label, event_str,
+           g_test_pty_capture_len, got, expect_len, want);
+    return 1;
+}
+
+int main(int argc, char *argv[]) {
+    (void)argc;
+    Tcl_FindExecutable(argv[0]);
+    g_interp = Tcl_CreateInterp();
+    if (!g_interp) {
+        fprintf(stderr, "test_alt_mask: Tcl_CreateInterp failed\n");
+        return 2;
+    }
+    /* Same init pattern as tests/test_render_state.phc:454-459 — Tcl_Init
+     * + 'package require Tk' (avoids needing tk.h directly; Tk is
+     * statically linked via the vendored deps/tcl-build chain). */
+    if (Tcl_Init(g_interp) != TCL_OK ||
+        Tcl_Eval(g_interp, "package require Tk") != TCL_OK) {
+        fprintf(stderr, "test_alt_mask: init failed: %s\n",
+                Tcl_GetStringResult(g_interp));
+        return 2;
+    }
+    Tcl_Interp *interp = g_interp;
+
+    /* Register only the Tcl command the binds will fire. PtyKeyEvent
+     * + pty_write are in the include; g_pty stays NULL (pty_write
+     * captures regardless via the NBS_TEST_MODE branch). */
+    Tcl_CreateObjCommand(interp, "pty_key_event", PtyKeyEvent, NULL, NULL);
+
+    /* Create canvas + register the two binds under test (subset of
+     * p3_pty.phc:2049-2050). The full bind block at 2049-2093 is out
+     * of scope; only <Key> + <Alt-Key> are needed for this surface. */
+    if (Tcl_Eval(interp,
+            "canvas .c -width 200 -height 100;"
+            "pack .c;"
+            "wm geometry . 200x100;"
+            "update;"
+            "focus -force .c;"
+            "bind .c <Key>     {pty_key_event %K %s %A 0};"
+            "bind .c <Alt-Key> {pty_key_event %K %s %A 1; break}") != TCL_OK) {
+        fprintf(stderr, "test_alt_mask: setup failed: %s\n",
+                Tcl_GetStringResult(interp));
+        return 2;
+    }
+
+    int fail = 0;
+
+    /* === Case 1: <Alt-Key-b> -> ESC + 'b' (readline word-back) === */
+    fail += fire_and_check(interp, "<Alt-Key-b>", "\x1b" "b", 2,
+                            "Alt-Key-b -> ESC b (word-back)");
+
+    /* === Case 2: <Alt-Key-f> -> ESC + 'f' (readline word-forward) === */
+    fail += fire_and_check(interp, "<Alt-Key-f>", "\x1b" "f", 2,
+                            "Alt-Key-f -> ESC f (word-forward)");
+
+    /* === Case 3: <Alt-Key-d> -> ESC + 'd' (readline word-delete) === */
+    fail += fire_and_check(interp, "<Alt-Key-d>", "\x1b" "d", 2,
+                            "Alt-Key-d -> ESC d (word-delete)");
+
+    /* === Case 4: <Key-a> (no Alt) -> 'a' (sanity baseline; non-Alt
+     *      path unchanged by 83a1c8c) === */
+    fail += fire_and_check(interp, "<Key-a>", "a", 1,
+                            "Key-a (no Alt) -> 'a' (sanity baseline)");
+
+    /* === Case 5: <Key-z> (no Alt) -> 'z' (sanity baseline, second
+     *      keysym to catch any z-specific dispatch quirk) === */
+    fail += fire_and_check(interp, "<Key-z>", "z", 1,
+                            "Key-z (no Alt) -> 'z' (sanity baseline)");
+
+    if (fail == 0) {
+        printf("test_alt_mask: PASS (5 cases)\n");
+        return 0;
+    }
+    printf("test_alt_mask: FAIL (%d failures)\n", fail);
+    return 1;
+}

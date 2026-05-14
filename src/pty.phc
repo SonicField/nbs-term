@@ -176,6 +176,18 @@ static DWORD WINAPI win32_io_thread(LPVOID arg) {
 
 /* ---- Public API ---- */
 
+#ifdef NBS_TEST_MODE
+/* Test-mode pty_write capture buffer — defined ONCE outside the
+ * POSIX/Win32 platform branches so both pty_write capture variants
+ * reference the same storage. Production binary has zero overhead;
+ * NBS_TEST_MODE TUs (test_render_state, test_alt_mask) get the
+ * buffer + len globals plus the capture-mode pty_write defined under
+ * the corresponding platform branch below. Theologian (II) test_
+ * alt_mask spec 2026-05-14 09:15:25 + 09:18:09. */
+char  g_test_pty_capture_buf[8192];
+size_t g_test_pty_capture_len = 0;
+#endif
+
 #if !defined(_WIN32)
 /* Install SIGPIPE handler once per process. Default disposition is to
  * terminate the renderer if the child exits during pty_write — which
@@ -237,6 +249,17 @@ static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
     return n;
 }
 
+#ifdef NBS_TEST_MODE
+static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
+    (void)h;
+    if (g_test_pty_capture_len + len > sizeof g_test_pty_capture_buf) {
+        len = sizeof g_test_pty_capture_buf - g_test_pty_capture_len;
+    }
+    memcpy(g_test_pty_capture_buf + g_test_pty_capture_len, buf, len);
+    g_test_pty_capture_len += len;
+    return (pty_ssize_t)len;
+}
+#else
 static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
     if (!h || h->closed || h->master_fd < 0) return -1;
     const uint8_t *p = (const uint8_t *)buf;
@@ -251,6 +274,7 @@ static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
     }
     return (pty_ssize_t)off;
 }
+#endif
 
 static void pty_resize(PTYHandle *h, int rows, int cols) {
     if (!h || h->master_fd < 0) return;
@@ -448,12 +472,24 @@ static pty_ssize_t pty_read(PTYHandle *h, uint8_t *buf, size_t len) {
     return (pty_ssize_t)avail;
 }
 
+#ifdef NBS_TEST_MODE
+static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
+    (void)h;
+    if (g_test_pty_capture_len + len > sizeof g_test_pty_capture_buf) {
+        len = sizeof g_test_pty_capture_buf - g_test_pty_capture_len;
+    }
+    memcpy(g_test_pty_capture_buf + g_test_pty_capture_len, buf, len);
+    g_test_pty_capture_len += len;
+    return (pty_ssize_t)len;
+}
+#else
 static pty_ssize_t pty_write(PTYHandle *h, const void *buf, size_t len) {
     if (!h || !h->in_write) return -1;
     DWORD written = 0;
     if (!WriteFile(h->in_write, buf, (DWORD)len, &written, NULL)) return -1;
     return (pty_ssize_t)written;
 }
+#endif
 
 static void pty_resize(PTYHandle *h, int rows, int cols) {
     if (!h || !h->pty) return;

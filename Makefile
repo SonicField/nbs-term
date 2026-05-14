@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -329,6 +329,23 @@ $(BUILDDIR)/test_render_state: $(BUILDDIR)/test_render_state.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
 
 test_render_state: $(BUILDDIR)/test_render_state
+
+# test_alt_mask — 83a1c8c <Alt-Key> bind-path dispatch regression anchor
+# (theologian (II) spec 2026-05-14 09:15:25 + 09:18:09 + supervisor
+# 09:18:46 GO). Same NBS_TEST_MODE include + Tk-link chain as
+# test_render_state, but main() drives binds + assertions directly
+# (no per-surface .tcl script). Departure from canonical 'skip bind
+# firing' framing per librarian 09:17:23 (b) — bind-path coverage is
+# the only meaningful coverage for 83a1c8c's Tk <Alt-Key> dispatch.
+# Mac-side Option-modifier mapping is the deferred falsifier per
+# [[feedback_falsifier_rule_diagnostic_commits]].
+$(BUILDDIR)/test_alt_mask.c: $(TESTDIR)/test_alt_mask.phc $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(SRCDIR)/config.phc $(SRCDIR)/render_color.phc $(SRCDIR)/input.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_alt_mask: $(BUILDDIR)/test_alt_mask.c $(TK_VENDOR_LIB)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
+
+test_alt_mask: $(BUILDDIR)/test_alt_mask
 
 # update-goldens — re-run all per-surface scripts in --update mode to
 # regenerate the platform-specific golden files. Invoke after an
