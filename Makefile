@@ -54,7 +54,7 @@ INPUT_TYPES := $(BUILDDIR)/input.phc-types
 # Output
 EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_render_state update-goldens
+.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_render_state update-goldens
 
 all: $(EXTENSION_SO)
 
@@ -319,6 +319,19 @@ $(BUILDDIR)/test_palette_lookup: $(BUILDDIR)/test_palette_lookup.c
 	$(CC) $(P1_CFLAGS) $< -o $@
 
 test_palette_lookup: $(BUILDDIR)/test_palette_lookup
+
+# test_tabs_logic — Tabs.b cross-tab decision logic regression anchor
+# (theologian Tabs spec 2026-05-14 09:48:13 + supervisor 11:07:57 pythia
+# #101 (1) ack: '-test exercises slot-0 boot path only; Tabs.b adds
+# 2-tab self-test'). SPEC COPY of close_tab next-active picker + NbsNextTab/
+# NbsPrevTab cycle logic from p3_pty.phc. Headless; libc only.
+$(BUILDDIR)/test_tabs_logic.c: $(TESTDIR)/test_tabs_logic.phc | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_tabs_logic: $(BUILDDIR)/test_tabs_logic.c
+	$(CC) $(P1_CFLAGS) $< -o $@
+
+test_tabs_logic: $(BUILDDIR)/test_tabs_logic
 
 # test_render_state — Tk-introspection state-dump shim harness for Bucket B
 # (theologian harness design 2026-05-13 09:52:42 + supervisor 09:53:13 GO,

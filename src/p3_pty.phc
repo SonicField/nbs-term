@@ -2157,19 +2157,25 @@ static void close_tab(Tcl_Interp *interp, int idx) {
     if (t->term)   { terminal_free(t->term);             t->term = NULL; }
     t->active = 0;
     /* If no active slots remain, signal the event loop to exit. */
-    int alive = 0, next = -1;
+    int alive = 0;
     for (int i = 0; i < g_tab_count; i++) {
-        if (g_tabs[i].active) {
-            alive++;
-            if (next < 0 || (idx == g_active_tab_idx && i > idx)) next = i;
-        }
+        if (g_tabs[i].active) alive++;
     }
     if (alive == 0) {
         Tcl_Eval(interp, "set child_done 1");
         return;
     }
     if (idx == g_active_tab_idx) {
-        select_tab(interp, next);
+        /* Pick the IMMEDIATE next active slot after closing idx,
+         * wrapping around if needed. Matches Mac Terminal / iTerm UX
+         * (close tab N -> activate tab N+1 if exists else wrap to
+         * first active). */
+        int next = -1;
+        for (int step = 1; step < g_tab_count; step++) {
+            int candidate = (idx + step) % g_tab_count;
+            if (g_tabs[candidate].active) { next = candidate; break; }
+        }
+        if (next >= 0) select_tab(interp, next);
     }
     refresh_tab_strip(interp);
 }
