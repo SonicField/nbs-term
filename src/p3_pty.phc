@@ -90,6 +90,28 @@ static int                g_dirty = 0;        /* render scheduled flag */
 static int                g_child_alive = 1;
 static NbsTerminalConfig  g_config;           /* loaded by nbs_config_load in main() */
 
+/* (Tabs.a) Per-tab state scaffolding (theologian 09:48:13 + 10:35:36
+ * spec activation, per alexie 10:33:56 directive). Replaces the prior
+ * single-instance globals (g_term/g_parser/g_pty above) with an array
+ * of TabSession slots; the global pointers are now LIVE ALIASES into
+ * g_tabs[g_active_tab_idx], updated by select_tab() so existing
+ * call sites (~67 references to g_term/g_parser/g_pty across the
+ * file) continue to work transparently against the active tab.
+ * Tabs.b adds the bind/UI layer; Tabs.c adds F11 + Mac menu install.
+ * Single-tab smoke must remain green at this commit (existing
+ * automation suite exercises only g_tabs[0] until Tabs.b lands). */
+#define NBS_MAX_TABS 16
+typedef struct {
+    Terminal  *term;
+    VTParser  *parser;
+    PTYHandle *pty;
+    char       label[64];
+    int        active;     /* 1 = slot in use, 0 = free */
+} TabSession;
+static TabSession g_tabs[NBS_MAX_TABS];
+static int        g_tab_count      = 0;
+static int        g_active_tab_idx = 0;
+
 /* C cursor blink (per legacy nbsterm.py:441-443 + 514-525): toggles
  * g_blink_visible on a 530ms cadence when g_config.cursor.blink set;
  * any pty output resets the timer + forces visible (cursor stays
@@ -2028,6 +2050,88 @@ static char **build_child_argv(int argc, char *argv[]) {
     return out;
 }
 
+/* (Tabs.a) Tab manager helpers (theologian 09:48:13 + 10:35:36 spec
+ * activation). add_tab/select_tab/close_tab/refresh_tab_strip operate
+ * on g_tabs[] declared at the top of this file. select_tab updates
+ * the live-alias globals (g_term/g_parser/g_pty) so the existing ~67
+ * call sites continue to work transparently against the active tab.
+ * Tab strip widget + binds are Tabs.b territory; refresh_tab_strip
+ * is a no-op stub here so call sites already exist by the time
+ * Tabs.b adds the UI. */
+static void on_pty_data(void *cd);  /* defined below */
+
+static void refresh_tab_strip(Tcl_Interp *interp) {
+    /* No-op in Tabs.a — tab strip widget lives in Tabs.b. Stub here
+     * so add_tab / close_tab call sites are stable across the split. */
+    (void)interp;
+}
+
+static void select_tab(Tcl_Interp *interp, int idx) {
+    if (idx < 0 || idx >= g_tab_count || !g_tabs[idx].active) return;
+    g_active_tab_idx = idx;
+    g_term   = g_tabs[idx].term;
+    g_parser = g_tabs[idx].parser;
+    g_pty    = g_tabs[idx].pty;
+    /* PTY data handler must follow the active tab — read events for
+     * the previously-active tab are no longer dispatched (its PTY fd
+     * still exists but the Tcl_FileHandler routes everything via
+     * on_pty_data which feeds g_parser, now pointing at the new
+     * active tab). Tabs.b will revisit per-tab fd routing once the
+     * UI exists; for Tabs.a we have only one tab, so this is a no-op
+     * in practice. */
+    if (g_pty) {
+        pty_install_tcl_handler(g_pty, interp, on_pty_data, NULL);
+    }
+}
+
+static int add_tab(Tcl_Interp *interp, char **child_argv) {
+    if (g_tab_count >= NBS_MAX_TABS) return -1;
+    int idx = g_tab_count;
+    TabSession *t = &g_tabs[idx];
+    memset(t, 0, sizeof *t);
+    t->term = terminal_new(g_config.rows, g_config.cols);
+    if (!t->term) return -1;
+    t->parser = vt_parser_new(t->term);
+    if (!t->parser) { terminal_free(t->term); t->term = NULL; return -1; }
+    t->pty = pty_open(child_argv, g_config.rows, g_config.cols);
+    if (!t->pty) {
+        vt_parser_free(t->parser); t->parser = NULL;
+        terminal_free(t->term);    t->term = NULL;
+        return -1;
+    }
+    snprintf(t->label, sizeof t->label, "tab %d", idx + 1);
+    t->active = 1;
+    g_tab_count++;
+    select_tab(interp, idx);
+    refresh_tab_strip(interp);
+    return idx;
+}
+
+static void close_tab(Tcl_Interp *interp, int idx) {
+    if (idx < 0 || idx >= g_tab_count || !g_tabs[idx].active) return;
+    TabSession *t = &g_tabs[idx];
+    if (t->pty)    { pty_kill(t->pty); pty_free(t->pty); t->pty = NULL; }
+    if (t->parser) { vt_parser_free(t->parser);          t->parser = NULL; }
+    if (t->term)   { terminal_free(t->term);             t->term = NULL; }
+    t->active = 0;
+    /* If no active slots remain, signal the event loop to exit. */
+    int alive = 0, next = -1;
+    for (int i = 0; i < g_tab_count; i++) {
+        if (g_tabs[i].active) {
+            alive++;
+            if (next < 0 || (idx == g_active_tab_idx && i > idx)) next = i;
+        }
+    }
+    if (alive == 0) {
+        Tcl_Eval(interp, "set child_done 1");
+        return;
+    }
+    if (idx == g_active_tab_idx) {
+        select_tab(interp, next);
+    }
+    refresh_tab_strip(interp);
+}
+
 /* NBS_TEST_MODE: when defined, suppress this file's main() so a test
  * binary (tests/test_render_state.phc) can #include p3_pty.phc and
  * provide its own main() while reusing all the file-scope statics
@@ -2057,15 +2161,19 @@ int main(int argc, char *argv[]) {
     register_named_fonts(g_interp);
     compute_cell_metrics(g_interp);
 
-    g_term = terminal_new(g_config.rows, g_config.cols);
-    if (!g_term) { fprintf(stderr, "terminal_new failed\n"); return 1; }
-    g_parser = vt_parser_new(g_term);
-    if (!g_parser) { fprintf(stderr, "vt_parser_new failed\n"); return 1; }
-
     char **child_argv = build_child_argv(argc, argv);
     if (!child_argv) return 1;
-    g_pty = pty_open(child_argv, g_config.rows, g_config.cols);
-    if (!g_pty) return 1;
+
+    /* (Tabs.a) Initial tab: add_tab() allocates Terminal+VTParser+PTY,
+     * sets g_term/g_parser/g_pty via select_tab(), and installs the
+     * PTY data handler. Tabs.b adds the Cmd+T bind that calls
+     * add_tab() again with the same child_argv to spawn additional
+     * tabs. Single-tab smoke at this commit must remain green —
+     * add_tab(0) is functionally identical to the prior inline init. */
+    if (add_tab(g_interp, child_argv) < 0) {
+        fprintf(stderr, "add_tab failed\n");
+        return 1;
+    }
 
     Tcl_CreateObjCommand(g_interp, "pty_write",      PtyWrite,    NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "pty_resize",     PtyResize,   NULL, NULL);
@@ -2078,8 +2186,6 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,     NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,      NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_scroll_lines", NbsScrollLines, NULL, NULL);
-
-    pty_install_tcl_handler(g_pty, g_interp, on_pty_data, NULL);
 
     /* C — kick off the blink timer if config enables it. blink_proc
      * reschedules itself; on_pty_data resets via blink_reset(). */
