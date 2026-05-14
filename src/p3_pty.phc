@@ -111,6 +111,11 @@ typedef struct {
 static TabSession g_tabs[NBS_MAX_TABS];
 static int        g_tab_count      = 0;
 static int        g_active_tab_idx = 0;
+/* (Tabs.b) Saved child argv from main() — needed by NbsNewTab so
+ * Cmd+T spawns a new tab with the same shell command. main() saves
+ * the build_child_argv() result here once at startup; NbsNewTab
+ * re-uses it for each new tab's pty_open. */
+static char     **g_child_argv     = NULL;
 
 /* C cursor blink (per legacy nbsterm.py:441-443 + 514-525): toggles
  * g_blink_visible on a 530ms cadence when g_config.cursor.blink set;
@@ -2061,9 +2066,46 @@ static char **build_child_argv(int argc, char *argv[]) {
 static void on_pty_data(void *cd);  /* defined below */
 
 static void refresh_tab_strip(Tcl_Interp *interp) {
-    /* No-op in Tabs.a — tab strip widget lives in Tabs.b. Stub here
-     * so add_tab / close_tab call sites are stable across the split. */
-    (void)interp;
+    /* (Tabs.b) Rebuild the tab strip widget from g_tabs[]. Strategy:
+     * destroy + recreate on every refresh — Tabs.b prioritises
+     * correctness over flicker (Tabs.c can revisit if needed).
+     * Auto-hide on single tab per legacy nbsterm.py:1147 a45403a +
+     * alexie 2026-04-28: a one-tab session shouldn't waste vertical
+     * space on a strip with one entry. Pack at TOP via 'pack .strip
+     * -side top -fill x -before .c' so the strip sits above the
+     * canvas without disturbing the existing canvas pack order. */
+    int active_count = 0;
+    for (int i = 0; i < g_tab_count; i++) if (g_tabs[i].active) active_count++;
+    /* Always destroy existing strip first (no-op if not yet created). */
+    Tcl_Eval(interp, "if {[winfo exists .strip]} { destroy .strip }");
+    if (active_count <= 1) return;  /* auto-hide on single tab */
+    /* Build new strip. Each tab gets a label widget showing its name +
+     * a close 'x' clickable label. Active tab gets a -relief sunken to
+     * visually distinguish from inactive tabs. */
+    Tcl_Eval(interp, "frame .strip -bd 1 -relief raised");
+    char cmd[1024];
+    for (int i = 0; i < g_tab_count; i++) {
+        if (!g_tabs[i].active) continue;
+        const char *relief = (i == g_active_tab_idx) ? "sunken" : "raised";
+        const char *fg     = (i == g_active_tab_idx) ? "#ffffff" : "#a0a0a0";
+        snprintf(cmd, sizeof cmd,
+            "frame .strip.t%d -bd 1 -relief %s;"
+            "label .strip.t%d.l -text {%s} -fg %s -padx 6 -pady 1;"
+            "label .strip.t%d.x -text {x} -fg %s -padx 4 -pady 1 -cursor hand2;"
+            "bind .strip.t%d.l <Button-1> {nbs_select_tab %d};"
+            "bind .strip.t%d.x <Button-1> {nbs_close_tab %d};"
+            "pack .strip.t%d.l .strip.t%d.x -side left;"
+            "pack .strip.t%d -side left -padx 1 -pady 1",
+            i, relief,
+            i, g_tabs[i].label, fg,
+            i, fg,
+            i, i,
+            i, i,
+            i, i,
+            i);
+        Tcl_Eval(interp, cmd);
+    }
+    Tcl_Eval(interp, "pack .strip -side top -fill x -before .c");
 }
 
 static void select_tab(Tcl_Interp *interp, int idx) {
@@ -2132,6 +2174,92 @@ static void close_tab(Tcl_Interp *interp, int idx) {
     refresh_tab_strip(interp);
 }
 
+/* (Tabs.b) Tcl command wrappers for the bind layer. Each maps a
+ * keyboard / tab-strip event to the corresponding tab helper from
+ * Tabs.a. After a tab switch (new/select/close/next/prev) we
+ * schedule_render() so the active tab's screen contents repaint
+ * onto the canvas — single-canvas swap-data approach (departure
+ * from legacy nbsterm.py per-tab canvas pack/pack_forget; both
+ * shapes are functionally equivalent + single-canvas avoids the
+ * widget-lifecycle complexity of per-tab .c0/.c1/... canvases). */
+static void schedule_render(void);  /* forward decl — defined below */
+
+static int NbsNewTab(ClientData cd, Tcl_Interp *interp, int objc,
+                     Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    if (!g_child_argv) return TCL_ERROR;
+    int idx = add_tab(interp, g_child_argv);
+    if (idx < 0) {
+        fprintf(stderr, "nbs_new_tab: tab limit reached or alloc failed\n");
+        return TCL_OK;
+    }
+    schedule_render();
+    return TCL_OK;
+}
+
+static int NbsCloseTab(ClientData cd, Tcl_Interp *interp, int objc,
+                       Tcl_Obj *const objv[]) {
+    (void)cd;
+    int idx = g_active_tab_idx;
+    if (objc == 2 && Tcl_GetIntFromObj(interp, objv[1], &idx) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    close_tab(interp, idx);
+    schedule_render();
+    return TCL_OK;
+}
+
+static int NbsSelectTab(ClientData cd, Tcl_Interp *interp, int objc,
+                        Tcl_Obj *const objv[]) {
+    (void)cd;
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "idx");
+        return TCL_ERROR;
+    }
+    int idx = 0;
+    if (Tcl_GetIntFromObj(interp, objv[1], &idx) != TCL_OK) return TCL_ERROR;
+    if (idx >= 0 && idx < g_tab_count && g_tabs[idx].active) {
+        select_tab(interp, idx);
+        refresh_tab_strip(interp);
+        schedule_render();
+    }
+    return TCL_OK;
+}
+
+static int NbsNextTab(ClientData cd, Tcl_Interp *interp, int objc,
+                      Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    if (g_tab_count <= 1) return TCL_OK;
+    int next = g_active_tab_idx;
+    for (int step = 0; step < g_tab_count; step++) {
+        next = (next + 1) % g_tab_count;
+        if (g_tabs[next].active) break;
+    }
+    if (next != g_active_tab_idx) {
+        select_tab(interp, next);
+        refresh_tab_strip(interp);
+        schedule_render();
+    }
+    return TCL_OK;
+}
+
+static int NbsPrevTab(ClientData cd, Tcl_Interp *interp, int objc,
+                      Tcl_Obj *const objv[]) {
+    (void)cd; (void)objc; (void)objv;
+    if (g_tab_count <= 1) return TCL_OK;
+    int prev = g_active_tab_idx;
+    for (int step = 0; step < g_tab_count; step++) {
+        prev = (prev - 1 + g_tab_count) % g_tab_count;
+        if (g_tabs[prev].active) break;
+    }
+    if (prev != g_active_tab_idx) {
+        select_tab(interp, prev);
+        refresh_tab_strip(interp);
+        schedule_render();
+    }
+    return TCL_OK;
+}
+
 /* NBS_TEST_MODE: when defined, suppress this file's main() so a test
  * binary (tests/test_render_state.phc) can #include p3_pty.phc and
  * provide its own main() while reusing all the file-scope statics
@@ -2163,6 +2291,11 @@ int main(int argc, char *argv[]) {
 
     char **child_argv = build_child_argv(argc, argv);
     if (!child_argv) return 1;
+    /* (Tabs.b) Save child_argv globally so NbsNewTab can re-spawn
+     * additional tabs with the same shell command. Lifetime ends at
+     * process exit (free(child_argv) at cleanup); g_child_argv
+     * mirrors the pointer for the duration. */
+    g_child_argv = child_argv;
 
     /* (Tabs.a) Initial tab: add_tab() allocates Terminal+VTParser+PTY,
      * sets g_term/g_parser/g_pty via select_tab(), and installs the
@@ -2186,6 +2319,12 @@ int main(int argc, char *argv[]) {
     Tcl_CreateObjCommand(g_interp, "nbs_sel_up",     NbsSelUp,     NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_copy",       NbsCopy,      NULL, NULL);
     Tcl_CreateObjCommand(g_interp, "nbs_scroll_lines", NbsScrollLines, NULL, NULL);
+    /* (Tabs.b) Tab-management Tcl commands. */
+    Tcl_CreateObjCommand(g_interp, "nbs_new_tab",    NbsNewTab,    NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_close_tab",  NbsCloseTab,  NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_select_tab", NbsSelectTab, NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_next_tab",   NbsNextTab,   NULL, NULL);
+    Tcl_CreateObjCommand(g_interp, "nbs_prev_tab",   NbsPrevTab,   NULL, NULL);
 
     /* C — kick off the blink timer if config enables it. blink_proc
      * reschedules itself; on_pty_data resets via blink_reset(). */
@@ -2285,6 +2424,43 @@ int main(int argc, char *argv[]) {
             "bind .c <Control-comma>    {nbs_open_prefs; break};"
             "bind .c <Command-c>        {nbs_copy; break};"
             "bind .c <Control-Shift-C>  {nbs_copy; break};"
+            /* (Tabs.b) Tab-management binds — Cmd+T / Cmd+W / Cmd+digit
+             * (Mac) + Ctrl+Shift+T / Ctrl+Shift+W (Linux/Win) +
+             * Ctrl+Tab / Ctrl+Shift+Tab (cross-platform next/prev).
+             * Cmd+digit (Cmd+1..Cmd+9) direct-switch is the
+             * above-legacy-floor improvement per alexie 2026-05-14
+             * 10:33:56 'something like that but better :)' (theologian
+             * 10:35:36 spec). Trailing 'break' on every bind so Tk
+             * doesn't also route the keystroke through .c <Key>
+             * leaking modifier-prefixed bytes to the PTY (Bug B1
+             * class — load-bearing per [[feedback_legacy_port_as_spec]]
+             * legacy 5525918). Bound at root '.' so binds fire from
+             * any focused widget (canvas or tab strip). Tabs.c will
+             * extend with F11 fullscreen + Mac menu install. */
+            "bind . <Command-t>         {nbs_new_tab; break};"
+            "bind . <Command-w>         {nbs_close_tab; break};"
+            "bind . <Control-Shift-T>   {nbs_new_tab; break};"
+            "bind . <Control-Shift-W>   {nbs_close_tab; break};"
+            "bind . <Control-Tab>       {nbs_next_tab; break};"
+            "bind . <Control-Shift-Tab> {nbs_prev_tab; break};"
+            "bind . <Command-1>         {nbs_select_tab 0; break};"
+            "bind . <Command-2>         {nbs_select_tab 1; break};"
+            "bind . <Command-3>         {nbs_select_tab 2; break};"
+            "bind . <Command-4>         {nbs_select_tab 3; break};"
+            "bind . <Command-5>         {nbs_select_tab 4; break};"
+            "bind . <Command-6>         {nbs_select_tab 5; break};"
+            "bind . <Command-7>         {nbs_select_tab 6; break};"
+            "bind . <Command-8>         {nbs_select_tab 7; break};"
+            "bind . <Command-9>         {nbs_select_tab 8; break};"
+            "bind . <Control-Key-1>     {nbs_select_tab 0; break};"
+            "bind . <Control-Key-2>     {nbs_select_tab 1; break};"
+            "bind . <Control-Key-3>     {nbs_select_tab 2; break};"
+            "bind . <Control-Key-4>     {nbs_select_tab 3; break};"
+            "bind . <Control-Key-5>     {nbs_select_tab 4; break};"
+            "bind . <Control-Key-6>     {nbs_select_tab 5; break};"
+            "bind . <Control-Key-7>     {nbs_select_tab 6; break};"
+            "bind . <Control-Key-8>     {nbs_select_tab 7; break};"
+            "bind . <Control-Key-9>     {nbs_select_tab 8; break};"
             "wm protocol . WM_DELETE_WINDOW {set child_done 1}"
         ) != TCL_OK) {
         fprintf(stderr, "ui: %s\n", Tcl_GetStringResult(g_interp));
