@@ -125,6 +125,42 @@ taking, which is the trap the legacy version had to fix specifically.
 
 ---
 
+## Section 4 — Shell-exit in one tab no longer kills the app
+
+**What changed.** Typing `exit` (or Ctrl+D) in a tab's shell used to kill
+the whole program even when other tabs were still open — the PTY EOF
+signal short-circuited straight to the app's main-loop exit, bypassing
+the multi-tab close logic. Now PTY EOF goes through the same close-tab
+path as Cmd+W and the × glyph: the tab that received the EOF closes,
+focus moves to the next active tab, and the app only exits when the
+last tab is gone.
+
+**Test.**
+
+1. Open p3_pty. Press Cmd+T so two tabs exist (tab strip visible at
+   top, tab 2 is the active one).
+2. In the active tab (tab 2), type `exit` and press Enter.
+   - **Pass:** tab 2 closes, tab 1 becomes active, tab strip auto-hides
+     (only one tab left), the program is still running.
+   - **Fail:** the entire program exits — the EOF still kills the app
+     instead of routing through close-tab.
+3. With one tab left, type `exit` again in that tab. The program should
+   exit cleanly (no zombie shell, no spinning).
+4. Discriminator from Section 3: this section is the `exit`/EOF path,
+   not the Cmd+W path. If Cmd+W kills the app but `exit` only closes
+   the tab, that's the Mac menu-install trap (Section 3); if both kill
+   the app, both paths regressed; if `exit` kills the app but Cmd+W
+   only closes the tab, this section's fix didn't take.
+
+**Pass signal.** `exit` in a multi-tab session closes just that tab and
+the next tab activates; `exit` on the last tab closes the program.
+
+**Flag if.** `exit` on any non-last tab kills the whole program.
+Closing the EOF'd tab leaves a zombie tab strip entry. Focus doesn't
+move to the next tab after the EOF'd tab closes.
+
+---
+
 ## Reporting results
 
 Please flag pass/fail per section. If something fails, the specific

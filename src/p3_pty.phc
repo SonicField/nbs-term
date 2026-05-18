@@ -1274,11 +1274,18 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
 
 /* ---- PTY plumbing (delegated to pty.phc) ---- */
 
+/* close_tab forward decl: on_pty_data routes PTY EOF through the
+ * tab-close path so the alive-count check (not unconditional
+ * child_done) decides whether the app exits. Defined at Tabs.a
+ * site below. */
+static void close_tab(Tcl_Interp *interp, int idx);
+
 /* pty.phc data callback. Drains as much as pty_read returns in one go,
- * pushes bytes through vt_parser, schedules a render. EOF tears down
- * the handler and signals the main loop to exit. The pty.phc layer
- * abstracts over POSIX (Tcl_CreateFileHandler on master fd) and Win32
- * (I/O thread + Tcl_AsyncMark) — same callback shape on both. */
+ * pushes bytes through vt_parser, schedules a render. EOF closes the
+ * active tab; close_tab signals child_done only when the last active
+ * tab goes away. The pty.phc layer abstracts over POSIX
+ * (Tcl_CreateFileHandler on master fd) and Win32 (I/O thread +
+ * Tcl_AsyncMark) — same callback shape on both. */
 static void on_pty_data(void *cd) {
     (void)cd;
     uint8_t buf[8192];
@@ -1295,10 +1302,18 @@ static void on_pty_data(void *cd) {
         return;
     }
     if (n < 0) return;  /* EAGAIN / no data this wakeup */
-    /* n == 0 = EOF: child died or PTY closed. */
+    /* n == 0 = EOF: child shell exited. Pre-Tabs.b this set
+     * child_done=1 unconditionally (single-tab Tabs.a leftover);
+     * in Tabs.b/c that surfaces as "typing exit in one tab quits
+     * the whole app" (alexie 2026-05-18 15:15:04 #3). Route
+     * through close_tab so the alive-count check fires: if other
+     * tabs remain active, this tab closes and the next active tab
+     * becomes the focus; only when alive==0 does close_tab signal
+     * child_done. g_child_alive=0 preserved as the -test loop
+     * sentinel (single-tab self-test path). */
     g_child_alive = 0;
-    Tcl_SetVar2Ex(g_interp, "child_done", NULL, Tcl_NewIntObj(1),
-                  TCL_GLOBAL_ONLY);
+    close_tab(g_interp, g_active_tab_idx);
+    schedule_render();
 }
 
 /* Idle render: collapses bursts of read() callbacks into one paint per
