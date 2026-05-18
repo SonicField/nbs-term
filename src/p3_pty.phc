@@ -464,6 +464,30 @@ static const Cell *view_row_cells(const Terminal *term, int r) {
     return &scr->cells[r * scr->cols];
 }
 
+/* Wrap-flag query sibling of view_row_cells — returns 1 if visible-
+ * window row r ends in a soft wrap (its content continues on row r+1
+ * with no real line break). Same scrollback/active composite path as
+ * view_row_cells. Used by NbsCopy to suppress the inter-row \n on
+ * soft-wrapped boundaries (alexie 2026-05-18 15:15:04 #4). */
+static int view_row_wrapped(const Terminal *term, int r) {
+    if (!term || !term->active) return 0;
+    const ScreenBuffer *scr = term->active;
+    if (term->scroll_offset > 0 && !term->using_alt) {
+        const Scrollback *sb = term->scrollback;
+        int sb_idx = sb->count - term->scroll_offset + r;
+        if (sb_idx >= 0 && sb_idx < sb->count) {
+            return scrollback_get_wrapped(sb, sb_idx);
+        }
+        if (sb_idx >= sb->count) {
+            int sr = sb_idx - sb->count;
+            if (sr >= 0 && sr < scr->rows) return scr->wrapped[sr];
+        }
+        return 0;
+    }
+    if (r < 0 || r >= scr->rows) return 0;
+    return scr->wrapped[r];
+}
+
 /* G — bounds-clamp + dirty-mark wrappers for scroll_offset; mirrors
  * extension.phc:1207-1237 Terminal_set_scroll_offset +
  * Terminal_scroll_lines verbatim minus the Python plumbing.
@@ -1636,10 +1660,16 @@ static int NbsCopy(ClientData cd, Tcl_Interp *interp, int objc,
                 }
             }
         }
-        /* Newline between rows (legacy nbsterm extracts row breaks
-         * even when the selection extends past the row's last cell). */
+        /* Newline between rows only if the row was NOT soft-wrapped.
+         * A soft-wrapped row's content continues on the next row with
+         * no real line break in the user's input — emitting \n there
+         * would corrupt copy of long-typed lines (alexie 2026-05-18
+         * 15:15:04 #4). For hard line breaks (row ended by cursor
+         * motion or LF/CR), wrap flag is 0 and we still emit \n. */
         if (r < er && len + 1 < (int)sizeof buf) {
-            buf[len++] = '\n';
+            if (!view_row_wrapped(g_term, r)) {
+                buf[len++] = '\n';
+            }
         }
     }
 

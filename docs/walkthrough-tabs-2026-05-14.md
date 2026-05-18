@@ -245,6 +245,56 @@ background handler is doing too much work on the active path).
 
 ---
 
+## Section 7 — Copy over a soft-wrapped line stays on one line
+
+**What changed.** When a line you typed is longer than the terminal
+width, it visually wraps onto the next row. Copying across that
+wrap used to insert a literal `\n` between the two rows — so pasting
+the result into another program saw two lines instead of one long
+one. Now each row carries a wrap flag set by the terminal whenever
+autowrap moves the cursor down, and the copy path skips the
+newline when that flag is on. Real line breaks (you pressed Enter or
+the program emitted `\n`) still get a real `\n` in the copied text.
+
+**Test.**
+
+1. Open p3_pty. Note the column count (e.g. type `tput cols`, get
+   `cols0`).
+2. Type a single line longer than `cols0` — pick something easy to
+   recognise, e.g. `echo "AAAA...A"` with enough A's to overflow the
+   row (rough rule: `cols0 + 20` A's). Press Enter so the command
+   runs; `echo` will print the long line and wrap visually on the
+   terminal.
+3. Select the entire wrapped echo output (drag from the first `A` to
+   the last `A`) and Cmd+C (Mac) / Ctrl+Shift+C (Linux/Win).
+4. Paste into another text editor or the URL bar of a browser.
+   - **Pass:** the pasted text is one continuous line of A's. No
+     line break in the middle.
+   - **Fail:** the paste shows two (or more) lines split at the row
+     boundary where the terminal wrapped.
+5. Hard-break case: run `printf 'one\ntwo\n'`. Select across both
+   `one` and `two` and copy.
+   - **Pass:** the paste is `one` newline `two` — the real `\n`
+     from the printf is preserved.
+   - **Fail:** the paste loses the newline between `one` and `two`.
+     (This would mean the wrap flag is being set on hard breaks too.)
+6. Mixed case: type `seq 1 50 | tr '\n' ' '; echo done` so you get a
+   long whitespace-separated line that wraps several times, followed
+   by `done`. Select from `1` through `done` and copy.
+   - **Pass:** the paste is one continuous `1 2 3 ... 50 done` line
+     with no embedded `\n`.
+
+**Pass signal.** Soft-wrapped rows copy as one line; hard line breaks
+still copy as `\n`.
+
+**Flag if.** Either direction breaks — soft wraps inserting `\n`, or
+hard `\n` being suppressed. Also flag if the behaviour is
+intermittent (works once, fails the next time) — would suggest the
+wrap flag is being cleared or not propagated correctly through
+scroll-up into scrollback.
+
+---
+
 ## Reporting results
 
 Please flag pass/fail per section. If something fails, the specific

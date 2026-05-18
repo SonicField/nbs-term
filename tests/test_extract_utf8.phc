@@ -105,6 +105,37 @@ static void grid_from_ascii(CellMock *grid, int rows, int cols,
     }
 }
 
+/* SPEC COPY (post-fix) — extract walk that respects per-row wrap flag.
+ * Inter-row \n emitted only when wrapped[r] == 0 (real line break);
+ * wrapped[r] == 1 suppresses \n because the row's content continues
+ * on r+1 (alexie 2026-05-18 15:15:04 #4). When wrapped is NULL, falls
+ * back to pre-fix unconditional \n behaviour. */
+static int extract_selected_wrap_spec(const CellMock *grid, int rows, int cols,
+                                       const int *wrapped,
+                                       int sr, int sc, int er, int ec,
+                                       char *buf, int bufsz) {
+    int len = 0;
+    for (int r = sr; r <= er && r < rows; r++) {
+        int c0 = -1, c1 = -1;
+        row_sel_range_spec(r, sr, sc, er, ec, cols, &c0, &c1);
+        if (c0 >= 0) {
+            for (int c = c0; c < c1 && c < cols; c++) {
+                const CellMock *cell = &grid[r * cols + c];
+                if (cell->wide_cont) continue;
+                uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
+                if (len + 4 < bufsz) {
+                    len += utf8_emit_spec(cp, buf + len, bufsz - len);
+                }
+            }
+        }
+        if (r < er && len + 1 < bufsz) {
+            int suppress = (wrapped != NULL) && (wrapped[r] != 0);
+            if (!suppress) buf[len++] = '\n';
+        }
+    }
+    return len;
+}
+
 int main(void) {
     int fail = 0;
     char buf[64];
@@ -196,9 +227,62 @@ int main(void) {
     /* sr=1 sc=5 er=0 ec=0 — sr > er so loop never runs */
     if (len != 0) { printf("FAIL extract empty: len=%d (expect 0)\n", len); fail++; }
 
-    int total = 13;  /* 6 utf8 + 7 row_sel + extract paths counted separately above */
+    /* (8) Wrap-flag suppression — alexie #4 anchor.
+     * Two-row grid; selection covers both rows. wrapped[0]=1 means
+     * row 0 soft-wrapped into row 1, so copy should NOT emit \n. */
+    {
+        int wrap_soft[2] = {1, 0};
+        len = extract_selected_wrap_spec(g1, 2, 5, wrap_soft,
+                                          0, 0, 1, 5, out, sizeof out);
+        out[len] = '\0';
+        if (len != 10 || strcmp(out, "ABCDEFGHIJ") != 0) {
+            printf("FAIL extract wrap suppression: len=%d '%s' (want 10 'ABCDEFGHIJ')\n",
+                   len, out); fail++;
+        }
+    }
+
+    /* (9) Wrap-flag hard break — copy across two hard-broken rows emits \n. */
+    {
+        int wrap_hard[2] = {0, 0};
+        len = extract_selected_wrap_spec(g1, 2, 5, wrap_hard,
+                                          0, 0, 1, 5, out, sizeof out);
+        out[len] = '\0';
+        if (len != 11 || strcmp(out, "ABCDE\nFGHIJ") != 0) {
+            printf("FAIL extract wrap hard: len=%d '%s' (want 11 'ABCDE\\nFGHIJ')\n",
+                   len, out); fail++;
+        }
+    }
+
+    /* (10) NULL wrap array — fallback to pre-fix unconditional \n. */
+    {
+        len = extract_selected_wrap_spec(g1, 2, 5, NULL,
+                                          0, 0, 1, 5, out, sizeof out);
+        out[len] = '\0';
+        if (len != 11 || strcmp(out, "ABCDE\nFGHIJ") != 0) {
+            printf("FAIL extract wrap NULL fallback: len=%d '%s'\n", len, out); fail++;
+        }
+    }
+
+    /* (11) Mixed wrap — 3-row grid, wrapped = [1,0,0]
+     * Row 0 soft-wraps into row 1; row 1 hard-breaks before row 2.
+     * Expect ABCDEFGHIJ + \n + KLMNO (one \n, not two). */
+    {
+        CellMock g3[3 * 5];
+        const char *lines3[] = {"ABCDE", "FGHIJ", "KLMNO"};
+        grid_from_ascii(g3, 3, 5, lines3);
+        int wrap_mixed[3] = {1, 0, 0};
+        len = extract_selected_wrap_spec(g3, 3, 5, wrap_mixed,
+                                          0, 0, 2, 5, out, sizeof out);
+        out[len] = '\0';
+        if (len != 16 || strcmp(out, "ABCDEFGHIJ\nKLMNO") != 0) {
+            printf("FAIL extract wrap mixed: len=%d '%s' (want 16 'ABCDEFGHIJ\\nKLMNO')\n",
+                   len, out); fail++;
+        }
+    }
+
+    int total = 17;  /* 6 utf8 + 7 row_sel + 7 extract paths counted above */
     if (fail == 0) {
-        printf("test_extract_utf8 ok: 13/13 cases PASS (specs at p3_pty.phc:284 + 406 + 1180)\n");
+        printf("test_extract_utf8 ok: 17/17 cases PASS (specs at p3_pty.phc:284 + 406 + 1180 + wrap-flag #4)\n");
         return 0;
     }
     printf("test_extract_utf8 FAILED: %d/%d cases\n", fail, total);

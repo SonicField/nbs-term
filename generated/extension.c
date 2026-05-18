@@ -347,6 +347,7 @@ typedef struct {
 
 typedef struct {
     Cell *lines;         /* flat array: max_lines * cols cells */
+    uint8_t *wrap_flags; /* per-line: 1 = line soft-wraps into next (no \n in copy) */
     int cols;
     int max_lines;
     int count;           /* number of lines stored */
@@ -360,6 +361,8 @@ static Scrollback *scrollback_alloc(int max_lines, int cols) {
     sb->max_lines = max_lines;
     sb->lines = calloc((size_t)(max_lines * cols), sizeof(Cell));
     if (!sb->lines) { free(sb); return NULL; }
+    sb->wrap_flags = calloc((size_t)max_lines, sizeof(uint8_t));
+    if (!sb->wrap_flags) { free(sb->lines); free(sb); return NULL; }
     sb->count = 0;
     sb->head = 0;
     return sb;
@@ -367,11 +370,13 @@ static Scrollback *scrollback_alloc(int max_lines, int cols) {
 
 static void scrollback_free(Scrollback *sb) {
     if (!sb) return;
+    free(sb->wrap_flags);
     free(sb->lines);
     free(sb);
 }
 
-static void scrollback_push_n(Scrollback *sb, const Cell *line, int src_cols) {
+static void scrollback_push_n(Scrollback *sb, const Cell *line, int src_cols,
+                               int wrapped) {
     int write_idx;
     if (sb->count < sb->max_lines) {
         write_idx = sb->count;
@@ -387,12 +392,19 @@ static void scrollback_push_n(Scrollback *sb, const Cell *line, int src_cols) {
     for (int i = copy_cols; i < sb->cols; i++) {
         dest[i] = cell_empty();
     }
+    sb->wrap_flags[write_idx] = (uint8_t)(wrapped ? 1 : 0);
 }
 
 static const Cell *scrollback_get(const Scrollback *sb, int index) {
     if (index < 0 || index >= sb->count) return NULL;
     int actual = (sb->head + index) % sb->max_lines;
     return &sb->lines[actual * sb->cols];
+}
+
+static int scrollback_get_wrapped(const Scrollback *sb, int index) {
+    if (!sb || index < 0 || index >= sb->count) return 0;
+    int actual = (sb->head + index) % sb->max_lines;
+    return sb->wrap_flags[actual];
 }
 
 /* --- Screen buffer --- */
@@ -414,6 +426,12 @@ typedef struct {
 
     /* Dirty tracking: one flag per row, set on modification */
     uint8_t *dirty;
+    /* Soft-wrap tracking: per-row 1 = row was filled to cols-1 and the
+     * next char autowrapped to the row below (logical continuation).
+     * 0 = row ended at cursor motion / explicit CR-LF / empty / etc.
+     * Used by copy-selection to decide whether to emit a real \n
+     * between adjacent rows (alexie 2026-05-18 15:15:04 #4). */
+    uint8_t *wrapped;
 } ScreenBuffer;
 
 static ScreenBuffer *screen_alloc(int rows, int cols) {
@@ -425,6 +443,8 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
     if (!scr->cells) { free(scr); return NULL; }
     scr->dirty = calloc((size_t)rows, sizeof(uint8_t));
     if (!scr->dirty) { free(scr->cells); free(scr); return NULL; }
+    scr->wrapped = calloc((size_t)rows, sizeof(uint8_t));
+    if (!scr->wrapped) { free(scr->dirty); free(scr->cells); free(scr); return NULL; }
     for (int i = 0; i < rows * cols; i++) {
         scr->cells[i] = cell_empty();
     }
@@ -442,6 +462,7 @@ static ScreenBuffer *screen_alloc(int rows, int cols) {
 
 static void screen_free(ScreenBuffer *scr) {
     if (!scr) return;
+    free(scr->wrapped);
     free(scr->dirty);
     free(scr->cells);
     free(scr);
@@ -462,6 +483,11 @@ static void screen_clear_line(ScreenBuffer *scr, int row, int from_col, int to_c
         scr->cells[row * scr->cols + c] = cell_empty();
     }
     scr->dirty[row] = 1;
+    /* Wrap flag is anchored to the row's last cell — if the clear
+     * extends to or past cols-1, the wrap condition is gone. */
+    if (to_col >= scr->cols - 1) {
+        scr->wrapped[row] = 0;
+    }
 }
 
 static void screen_clear_region(ScreenBuffer *scr, int top, int left, int bottom, int right) {
@@ -481,7 +507,8 @@ static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
     /* Push scrolled-out lines to scrollback (only if scrolling from top of screen) */
     if (sb && top == 0) {
         for (int i = 0; i < count; i++) {
-            scrollback_push_n(sb, &scr->cells[i * scr->cols], scr->cols);
+            scrollback_push_n(sb, &scr->cells[i * scr->cols], scr->cols,
+                              scr->wrapped[i]);
         }
     }
 
@@ -491,6 +518,9 @@ static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
         memmove(&scr->cells[top * scr->cols],
                 &scr->cells[(top + count) * scr->cols],
                 (size_t)(lines_to_move * scr->cols) * sizeof(Cell));
+        memmove(&scr->wrapped[top],
+                &scr->wrapped[top + count],
+                (size_t)lines_to_move);
     }
 
     /* Mark all rows in scroll region dirty */
@@ -498,7 +528,7 @@ static void screen_scroll_up(ScreenBuffer *scr, Scrollback *sb, int count) {
         scr->dirty[r] = 1;
     }
 
-    /* Clear vacated lines at bottom */
+    /* Clear vacated lines at bottom (screen_clear_line resets wrap). */
     for (int r = bottom - count + 1; r <= bottom; r++) {
         screen_clear_line(scr, r, 0, scr->cols - 1);
     }
@@ -516,6 +546,9 @@ static void screen_scroll_down(ScreenBuffer *scr, int count) {
         memmove(&scr->cells[(top + count) * scr->cols],
                 &scr->cells[top * scr->cols],
                 (size_t)(lines_to_move * scr->cols) * sizeof(Cell));
+        memmove(&scr->wrapped[top + count],
+                &scr->wrapped[top],
+                (size_t)lines_to_move);
     }
 
     /* Mark all rows in scroll region dirty */
@@ -536,6 +569,11 @@ static void screen_put_char(ScreenBuffer *scr, Scrollback *sb, uint32_t codepoin
 
     /* Handle wrap pending */
     if (cur->wrap_pending) {
+        /* Mark the row we're leaving as soft-wrapped — its content
+         * continues on the next row, so copy-selection across both
+         * rows should NOT insert a real \n between them (alexie
+         * 2026-05-18 15:15:04 #4). */
+        scr->wrapped[cur->row] = 1;
         cur->col = 0;
         cur->row++;
         if (cur->row > scr->scroll_bottom) {
@@ -767,6 +805,8 @@ static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
     if (!new_cells) return;
     uint8_t *new_dirty = calloc((size_t)new_rows, sizeof(uint8_t));
     if (!new_dirty) { free(new_cells); return; }
+    uint8_t *new_wrapped = calloc((size_t)new_rows, sizeof(uint8_t));
+    if (!new_wrapped) { free(new_dirty); free(new_cells); return; }
     for (int i = 0; i < new_rows * new_cols; i++) {
         new_cells[i] = cell_empty();
     }
@@ -778,11 +818,21 @@ static void screen_resize(ScreenBuffer *scr, int new_rows, int new_cols) {
                &scr->cells[r * scr->cols],
                (size_t)copy_cols * sizeof(Cell));
     }
+    /* On column shrink the prior wrap_flag is still valid for rows
+     * whose content didn't change — but on column expand a row that
+     * used to be exactly cols-wide is no longer at the right margin,
+     * so its wrap flag is semantically stale. Conservative: keep wrap
+     * flag iff cols unchanged; clear otherwise. */
+    if (new_cols == scr->cols) {
+        memcpy(new_wrapped, scr->wrapped, (size_t)copy_rows);
+    }
 
     free(scr->cells);
     free(scr->dirty);
+    free(scr->wrapped);
     scr->cells = new_cells;
     scr->dirty = new_dirty;
+    scr->wrapped = new_wrapped;
     scr->rows = new_rows;
     scr->cols = new_cols;
     scr->scroll_top = 0;
@@ -995,7 +1045,7 @@ static inline VTState_Dcs_t VTState_as_Dcs(VTState v) {
     if (v.tag != VTState_Dcs) abort();
     return v.Dcs;
 }
-#line 721
+#line 771
 
 /* --- UTF-8 decoder state --- */
 
@@ -1584,7 +1634,7 @@ static VTState vt_feed_byte(VTParser *parser, uint8_t byte) {
         } break; }
     default: break;
 }
-#line 1314
+#line 1364
 
     return VTState_mk_Ground();
 }
@@ -1649,7 +1699,7 @@ static inline const char *Modifier_to_string(Modifier p, char *buf, unsigned lon
     *pos = '\0';
     return buf;
 }
-#line 1340
+#line 1390
 
 /* --- Input event types --- */
 
@@ -1742,7 +1792,7 @@ static inline InputEvent_Resize_t InputEvent_as_Resize(InputEvent v) {
     if (v.tag != InputEvent_Resize) abort();
     return v.Resize;
 }
-#line 1349
+#line 1399
 
 /* --- UTF-8 encoding --- */
 
@@ -1895,7 +1945,7 @@ static inline int SpecialKey_from_string(const char *s, SpecialKey *out) {
     if (strcmp(s, "F12") == 0) { *out = SpecialKey_F12; return 1; }
     return 0;
 }
-#line 1436
+#line 1486
 
 static int encode_special_key(int key, int modifiers, int app_cursor,
                               char *buf, int bufsize) {
@@ -2029,7 +2079,7 @@ static void color_to_tk(Color c, const char *default_color, char *out, int outsi
         } break; }
     default: break;
 }
-#line 1568
+#line 1618
 }
 
 /* Helper: UTF-8 encode a codepoint into a buffer. Returns bytes written. */
@@ -2368,7 +2418,7 @@ static inline int CursorStyleConfig_from_string(const char *s, CursorStyleConfig
     if (strcmp(s, "CursorBar") == 0) { *out = CursorStyleConfig_CursorBar; return 1; }
     return 0;
 }
-#line 1889
+#line 1939
 
 /* Config structs — mirrors Python dataclasses */
 
