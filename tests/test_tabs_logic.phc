@@ -80,6 +80,23 @@ static int next_tab_cycle_spec(const int *active_flag, int tab_count,
     return -1;
 }
 
+/* SPEC COPY — on_pty_data EOF branch from src/p3_pty.phc.
+ * PTY EOF on the active tab now routes through close_tab(active_idx)
+ * — pre-fix it set child_done=1 unconditionally (single-tab Tabs.a
+ * leftover), which surfaced as "typing exit in one tab quits the
+ * whole app" in Tabs.b/c (alexie 2026-05-18 15:15:04 #3). Returns
+ * the close_tab outcome via close_tab_next_active_spec:
+ *   -2 = signal child_done=1 (no active tabs remain — last-tab path)
+ *   >=0 = next active tab to switch to (multi-tab path, app stays
+ *         alive)
+ * Pre-fix shape would return -2 for every EOF regardless of alive
+ * count; post-fix lets the alive-count decide. */
+static int on_pty_eof_spec(const int *active_flag, int tab_count,
+                            int active_idx) {
+    return close_tab_next_active_spec(active_flag, tab_count,
+                                       active_idx, active_idx);
+}
+
 /* SPEC COPY — NbsPrevTab cycle (mirror of next_tab_cycle_spec). */
 static int prev_tab_cycle_spec(const int *active_flag, int tab_count,
                                 int active_idx) {
@@ -202,8 +219,34 @@ int main(void) {
                        "prev from single-active -> -1");
     }
 
+    /* === on_pty_eof: alexie #3 anchor — EOF on multi-tab session
+     * stays alive + selects next active; EOF on single tab signals
+     * child_done. Pre-fix unconditional child_done=1 path would
+     * return -2 for every case below; post-fix only the last-tab
+     * case returns -2. */
+    {
+        int flags[1] = {1};
+        fail += eq_int(on_pty_eof_spec(flags, 1, 0), -2,
+                       "EOF on tab 0 of 1 active -> -2 (last-tab child_done)");
+    }
+    {
+        int flags[2] = {1, 1};
+        fail += eq_int(on_pty_eof_spec(flags, 2, 1), 0,
+                       "EOF on tab 1 of 2 active -> 0 (switch to tab 0, app alive)");
+    }
+    {
+        int flags[2] = {1, 1};
+        fail += eq_int(on_pty_eof_spec(flags, 2, 0), 1,
+                       "EOF on tab 0 of 2 active -> 1 (switch to tab 1, app alive)");
+    }
+    {
+        int flags[3] = {1, 1, 1};
+        fail += eq_int(on_pty_eof_spec(flags, 3, 1), 2,
+                       "EOF on tab 1 of 3 active -> 2 (next active, app alive)");
+    }
+
     if (fail == 0) {
-        printf("test_tabs_logic: PASS (16 cases)\n");
+        printf("test_tabs_logic: PASS (20 cases)\n");
         return 0;
     }
     printf("test_tabs_logic: FAIL (%d failures)\n", fail);
