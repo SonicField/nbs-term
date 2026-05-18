@@ -161,6 +161,45 @@ move to the next tab after the EOF'd tab closes.
 
 ---
 
+## Section 5 — Initial tab resizes when the tab strip appears
+
+**What changed.** When you press Cmd+T to create a second tab, the tab
+strip appears at the top and the canvas area below it shrinks by the
+strip's height. Previously the original tab's shell didn't notice this
+shrink until the next geometry event, so the first tab painted a stale
+frame at the pre-strip dimensions (and the shell could think it had
+more rows than it did until a resize fired). Now the geometry flush
+happens synchronously when the strip is packed, so the `<Configure>`
+event reaches the canvas (and the shell sees the new rows/cols via
+TIOCSWINSZ) before the first post-create paint.
+
+**Test.**
+
+1. Open p3_pty (single tab). Type `stty size` and note the row/col count
+   it prints — call this `rows0 cols0`.
+2. Press Cmd+T. The tab strip appears at the top.
+3. In the new tab, type `stty size` again. The row count should now be
+   `rows0 - 1` (one less, because the strip ate a row). The col count
+   should still be `cols0`.
+4. Switch back to tab 1 (Cmd+1). Type `stty size`. It should also
+   report `rows0 - 1` (the resize reached the first tab's shell, not
+   just the new one).
+5. Run a tall command in tab 1 (e.g. `seq 1 100`) — the bottom row of
+   output should sit flush with the bottom of the canvas, not be
+   clipped behind where the strip used to be.
+
+**Pass signal.** Both tabs see `rows0 - 1` after the strip appears; no
+clipped output at the canvas bottom in tab 1.
+
+**Flag if.** `stty size` in either tab still reports the pre-strip row
+count after Cmd+T — means the canvas `<Configure>` didn't reach
+`pty_resize`, which would be an architectural problem, not the
+ordering problem this fix targets. If the dims update only after you
+focus or resize the window, the geometry flush isn't happening
+synchronously.
+
+---
+
 ## Reporting results
 
 Please flag pass/fail per section. If something fails, the specific

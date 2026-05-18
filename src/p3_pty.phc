@@ -2121,6 +2121,15 @@ static void refresh_tab_strip(Tcl_Interp *interp) {
         Tcl_Eval(interp, cmd);
     }
     Tcl_Eval(interp, "pack .strip -side top -fill x -before .c");
+    /* Force the geometry manager to flush pending packs synchronously
+     * so .c gets its post-strip <Configure> event before the next
+     * schedule_render (NbsNewTab calls schedule_render right after
+     * refresh_tab_strip returns). Without this, the strip-appearance
+     * resize is deferred to the idle queue and the initial tab paints
+     * one stale frame at the pre-strip canvas dimensions (alexie
+     * 2026-05-18 15:15:04 #2 — initial tab no-resize on strip-appear).
+     * theologian 15:35:36 D + supervisor 15:36:11 GO. */
+    Tcl_Eval(interp, "update idletasks");
 }
 
 static void select_tab(Tcl_Interp *interp, int idx) {
