@@ -200,6 +200,51 @@ synchronously.
 
 ---
 
+## Section 6 — Background tabs detect their own shell exit
+
+**What changed.** Each tab now has its own PTY file handler that
+ingests data and detects shell-exit independently. Before this, only
+the active tab's PTY was actively watched — a shell exiting in a
+background tab was either silently ignored or caused the wrong tab
+to close. Now if you've left a shell running in a background tab and
+that shell exits, the background tab itself closes (tab strip entry
+disappears), the active tab is undisturbed, and the app stays alive.
+
+**Test.**
+
+1. Open p3_pty. Press Cmd+T so two tabs exist.
+2. In tab 2 (the active one), type `sleep 5 && exit` and press Enter.
+3. Press Cmd+1 to switch back to tab 1 immediately. Tab 1 is now
+   active; tab 2's shell is still running its 5-second sleep in the
+   background.
+4. In tab 1, type `echo tab1-still-here`. The prompt accepts input
+   and echoes the string — proves tab 1 is alive and the active
+   handler still works.
+5. Wait until at least 5 seconds have passed since step 2 (tab 2's
+   shell should now have exited).
+   - **Pass:** tab 2's entry vanishes from the tab strip, tab strip
+     auto-hides (only tab 1 left), tab 1 stays active, the program
+     keeps running, and any further keystrokes in tab 1 still work.
+   - **Fail (silent):** tab 2's strip entry stays even though its
+     shell is dead. Switching to tab 2 then shows a dead prompt that
+     only closes after you Cmd+W it — means background EOF was not
+     detected.
+   - **Fail (wrong tab):** tab 1 closes instead of tab 2 — means
+     background EOF dispatched through the active tab's path (the
+     theologian-B failure mode this fix targets).
+   - **Fail (kills app):** the entire program exits when tab 2's
+     shell ends — means the EOF route fell back to unconditional
+     `child_done`.
+
+**Pass signal.** Background tab vanishes on its own when its shell
+exits; tab 1 unaffected; app keeps running.
+
+**Flag if.** Any of the three fail modes above. Also flag if typing
+in tab 1 during step 4 has any lag or stutter (would suggest the
+background handler is doing too much work on the active path).
+
+---
+
 ## Reporting results
 
 Please flag pass/fail per section. If something fails, the specific

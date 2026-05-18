@@ -1281,38 +1281,62 @@ static int render_screen(Tcl_Interp *interp, const char *canvas,
 static void close_tab(Tcl_Interp *interp, int idx);
 
 /* pty.phc data callback. Drains as much as pty_read returns in one go,
- * pushes bytes through vt_parser, schedules a render. EOF closes the
- * active tab; close_tab signals child_done only when the last active
- * tab goes away. The pty.phc layer abstracts over POSIX
- * (Tcl_CreateFileHandler on master fd) and Win32 (I/O thread +
- * Tcl_AsyncMark) — same callback shape on both. */
+ * pushes bytes through the SOURCE tab's vt_parser, schedules a render
+ * if the source is the active tab. EOF closes the source tab;
+ * close_tab signals child_done only when the last active tab goes away.
+ *
+ * cd carries the originating PTYHandle (installed at add_tab time with
+ * cd=t->pty); per-tab dispatch ensures background tab EOFs/data don't
+ * get misattributed to the active tab (pre-fix used g_pty/g_parser
+ * globals which always pointed at the active tab — theologian
+ * 15:35:36 B + supervisor 15:36:11 GO).
+ *
+ * The pty.phc layer abstracts over POSIX (Tcl_CreateFileHandler on
+ * master fd) and Win32 (I/O thread + Tcl_AsyncMark) — same callback
+ * shape on both. */
 static void on_pty_data(void *cd) {
-    (void)cd;
+    PTYHandle *src = (PTYHandle *)cd;
+    if (!src) return;
+    /* Find which tab owns this PTY. Defensive scan (NBS_MAX_TABS=16);
+     * if not found, the tab was already torn down and a stale event
+     * fired — ignore. */
+    int src_idx = -1;
+    for (int i = 0; i < g_tab_count; i++) {
+        if (g_tabs[i].active && g_tabs[i].pty == src) {
+            src_idx = i;
+            break;
+        }
+    }
+    if (src_idx < 0) return;
+    TabSession *t = &g_tabs[src_idx];
+    int is_active = (src_idx == g_active_tab_idx);
     uint8_t buf[8192];
-    pty_ssize_t n = pty_read(g_pty, buf, sizeof buf);
+    pty_ssize_t n = pty_read(src, buf, sizeof buf);
     if (n > 0) {
-        vt_parser_feed(g_parser, buf, (int)n);
-        /* C — keep the cursor solid while output streams; resume blink
-         * 530ms after the last byte (legacy nbsterm.py:441-443). */
-        blink_reset();
-        /* G — auto-snap scroll-back view to live edge on any new
-         * output (matches Apple Terminal / iTerm / xterm UX). */
-        if (g_term) nbs_set_scroll_offset(g_term, 0);
-        schedule_render();
+        vt_parser_feed(t->parser, buf, (int)n);
+        /* G — auto-snap that tab's scroll-back view to live edge on
+         * any new output (matches Apple Terminal / iTerm / xterm UX).
+         * Applies per-tab so a background tab also stays snapped. */
+        if (t->term) nbs_set_scroll_offset(t->term, 0);
+        if (is_active) {
+            /* C — keep the cursor solid while output streams; resume
+             * blink 530ms after the last byte (legacy nbsterm.py:441-
+             * 443). Active-only — background tab output should not
+             * disturb the active tab's blink. */
+            blink_reset();
+            schedule_render();
+        }
         return;
     }
     if (n < 0) return;  /* EAGAIN / no data this wakeup */
-    /* n == 0 = EOF: child shell exited. Pre-Tabs.b this set
-     * child_done=1 unconditionally (single-tab Tabs.a leftover);
-     * in Tabs.b/c that surfaces as "typing exit in one tab quits
-     * the whole app" (alexie 2026-05-18 15:15:04 #3). Route
-     * through close_tab so the alive-count check fires: if other
-     * tabs remain active, this tab closes and the next active tab
+    /* n == 0 = EOF on src tab (background OR active). Route through
+     * close_tab so the alive-count check fires: if other tabs remain
+     * active, this tab closes and (if active) the next active tab
      * becomes the focus; only when alive==0 does close_tab signal
      * child_done. g_child_alive=0 preserved as the -test loop
      * sentinel (single-tab self-test path). */
     g_child_alive = 0;
-    close_tab(g_interp, g_active_tab_idx);
+    close_tab(g_interp, src_idx);
     schedule_render();
 }
 
@@ -2133,21 +2157,20 @@ static void refresh_tab_strip(Tcl_Interp *interp) {
 }
 
 static void select_tab(Tcl_Interp *interp, int idx) {
+    (void)interp;
     if (idx < 0 || idx >= g_tab_count || !g_tabs[idx].active) return;
     g_active_tab_idx = idx;
     g_term   = g_tabs[idx].term;
     g_parser = g_tabs[idx].parser;
     g_pty    = g_tabs[idx].pty;
-    /* PTY data handler must follow the active tab — read events for
-     * the previously-active tab are no longer dispatched (its PTY fd
-     * still exists but the Tcl_FileHandler routes everything via
-     * on_pty_data which feeds g_parser, now pointing at the new
-     * active tab). Tabs.b will revisit per-tab fd routing once the
-     * UI exists; for Tabs.a we have only one tab, so this is a no-op
-     * in practice. */
-    if (g_pty) {
-        pty_install_tcl_handler(g_pty, interp, on_pty_data, NULL);
-    }
+    /* Per-tab PTY file handlers are installed at add_tab time with
+     * cd=t->pty; on_pty_data dispatches per source PTY, not via
+     * globals. select_tab only updates the live-alias globals
+     * (g_term/g_parser/g_pty) so the existing ~67 call sites still
+     * see the active tab's state. No fd-handler install here
+     * (theologian 15:35:36 B + supervisor 15:36:11 GO closes the
+     * select-tab-accumulates-handlers shape that caused EOFs on
+     * background tabs to misdispatch through g_pty). */
 }
 
 static int add_tab(Tcl_Interp *interp, char **child_argv) {
@@ -2168,6 +2191,11 @@ static int add_tab(Tcl_Interp *interp, char **child_argv) {
     snprintf(t->label, sizeof t->label, "tab %d", idx + 1);
     t->active = 1;
     g_tab_count++;
+    /* Per-tab fd handler — install at add_tab time with cd=t->pty so
+     * on_pty_data dispatches per source PTY (not via active-tab
+     * globals). Background tabs ingest their own output + detect EOF
+     * independently. Theologian 15:35:36 B + supervisor 15:36:11. */
+    pty_install_tcl_handler(t->pty, interp, on_pty_data, t->pty);
     select_tab(interp, idx);
     refresh_tab_strip(interp);
     return idx;
