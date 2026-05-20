@@ -128,22 +128,28 @@ int main(int argc, char *argv[]) {
     }
     Tcl_Interp *interp = g_interp;
 
-    /* Register only the Tcl command the binds will fire. PtyKeyEvent
-     * + pty_write are in the include; g_pty stays NULL (pty_write
-     * captures regardless via the NBS_TEST_MODE branch). */
+    /* Register pty_key_event (the bind we're exercising) + pty_resize
+     * (auto-fires via <Configure> on canvas pack; production handler
+     * is NULL-safe when g_term isn't initialised). PtyKeyEvent + pty_
+     * write are in the include; g_pty stays NULL (pty_write captures
+     * regardless via the NBS_TEST_MODE branch). */
     Tcl_CreateObjCommand(interp, "pty_key_event", PtyKeyEvent, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "pty_resize",    PtyResize,   NULL, NULL);
 
-    /* Create canvas + register the two binds under test (subset of
-     * p3_pty.phc:2049-2050). The full bind block at 2049-2093 is out
-     * of scope; only <Key> + <Alt-Key> are needed for this surface. */
+    /* Create canvas + install the production bind block. Tests exercise
+     * the exact production bind spec (install_interactive_bindings)
+     * instead of replicating a subset in setUp — refactor per
+     * testkeeper 2026-05-20 10:36:57Z + theologian 10:38:19Z routing
+     * over [[feedback_synthetic_bind_test_gap]]. If we break the
+     * production bind for <Key> or <Alt-Key>, this test now fails
+     * (previously the test's own setUp binds would have passed). */
     if (Tcl_Eval(interp,
             "canvas .c -width 200 -height 100;"
             "pack .c;"
             "wm geometry . 200x100;"
             "update;"
-            "focus -force .c;"
-            "bind .c <Key>     {pty_key_event %K %s %A 0};"
-            "bind .c <Alt-Key> {pty_key_event %K %s %A 1; break}") != TCL_OK) {
+            "focus -force .c") != TCL_OK ||
+        install_interactive_bindings(interp) != TCL_OK) {
         fprintf(stderr, "test_alt_mask: setup failed: %s\n",
                 Tcl_GetStringResult(interp));
         return 2;

@@ -1405,6 +1405,10 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
         Tcl_WrongNumArgs(interp, 1, objv, "pixel_w pixel_h");
         return TCL_ERROR;
     }
+    /* No-op if terminal not yet initialised: tests install the
+     * production bind block (install_interactive_bindings) before
+     * g_term exists, and Tk fires <Configure> on canvas pack. */
+    if (!g_term || !g_term->active) return TCL_OK;
     int pw = 0, ph = 0;
     if (Tcl_GetIntFromObj(interp, objv[1], &pw) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &ph) != TCL_OK) return TCL_ERROR;
@@ -2321,6 +2325,151 @@ static int NbsToggleFullscreen(ClientData cd, Tcl_Interp *interp, int objc,
     return TCL_OK;
 }
 
+/* Install the cross-platform interactive bindings on .c / . — all
+ * keyboard, mouse, wheel, scroll, paste, copy, prefs, tab, and F11
+ * binds production needs to fire from a focused canvas + root window.
+ * Extracted so tests exercise the production bind spec directly
+ * instead of replicating a subset in setUp (per
+ * [[feedback_synthetic_bind_test_gap]] +
+ * [[feedback_test_bind_setup_replicate_vs_refactor]] >=5-bind /
+ * architectural-stack refactor threshold; testkeeper 2026-05-20
+ * 10:36:57Z + theologian 10:38:19Z routing). Caller installs the Mac
+ * menu + wm_protocol separately (single call site in main()).
+ *
+ * Tests-using-this-function:
+ *  - test_alt_mask: ports cleanly. <Key>/<Alt-Key> are first-class X11
+ *    modifier paths; event-generate fires the production binds and
+ *    PtyKeyEvent dispatches as on Mac.
+ *  - test_tab_dispatch: NOT ported (Xvfb-specific Tk dispatch quirk).
+ *    The .c <Alt-Key> {... break} above consumes Command-modified
+ *    events on X11 because X11 routes the Command modifier through
+ *    the same keysym layer that matches <Alt-Key>. Production on Mac
+ *    aqua dispatches Command via a separate modifier mask so
+ *    <Command-t> fires distinctly from <Alt-Key>. Empirically falsified
+ *    the (b) refactor here; test stays on synthetic binds until a
+ *    real-Mac CI path exists or Xvfb modifier-mapping is overridden.
+ *
+ *    Regression class still uncovered: changes to the production tab-
+ *    bind spec (the <Command-t> / <Command-w> / <Command-1..9> /
+ *    <Control-Shift-T/W/Tab> / <F11> bind shapes below) are not caught
+ *    by test_tab_dispatch's synthetic-bind setUp. A change that breaks
+ *    the production bind here would still pass the test. Mitigations:
+ *    Mac alexie smoke on tab UX surface; future split of install into
+ *    a chord-only subset that test_tab_dispatch can co-call without
+ *    pulling in <Alt-Key> (separate commit, not bundled). */
+static int install_interactive_bindings(Tcl_Interp *interp) {
+    return Tcl_Eval(interp,
+        /* Base <Key> bind passes alt=0; Tk's more-specific <Alt-Key>
+         * match wins for Alt-modified keystrokes (next line) and
+         * passes alt=1 + ; break to consume the chain. Tk abstracts
+         * the platform Alt-modifier mapping (Mac Option / X11+Win
+         * Alt) inside the bind layer, so the C dispatcher no longer
+         * reads a hardcoded mod-bit; removes the [tk windowingsystem]-
+         * driven g_is_mac runtime branch that previously selected
+         * 0x10 vs 0x8 on %s (alexie 2026-05-13 15:50:38 'avoid
+         * machine-specifics'). */
+        "bind .c <Key>     {pty_key_event %K %s %A 0};"
+        "bind .c <Alt-Key> {pty_key_event %K %s %A 1; break};"
+        "bind .c <Configure> {pty_resize %w %h};"
+        "bind .c <ButtonPress-1>   {nbs_sel_down %x %y};"
+        "bind .c <B1-Motion>       {nbs_sel_drag %x %y};"
+        "bind .c <ButtonRelease-1> {nbs_sel_up   %x %y};"
+        /* G — wheel + keyboard scroll bindings. MouseWheel %D
+         * convention: positive = wheel up = scroll into history.
+         * Linux uses Button-4 (up) / Button-5 (down). Trailing
+         * 'break' on every bind is load-bearing per Bug B1
+         * (5525918 D-1776953112 nbsterm.py:298/304) — without
+         * it Ctrl-Shift-Up also fires the <Key> bind and
+         * leaks ESC[A to the PTY. */
+        "bind . <MouseWheel> "
+        "  {nbs_scroll_lines [expr {%D > 0 ? 3 : -3}]; break};"
+        "bind . <Button-4>   {nbs_scroll_lines  3; break};"
+        "bind . <Button-5>   {nbs_scroll_lines -3; break};"
+        /* Keyboard scrolls live on .c so the more-specific
+         * <Control-Shift-Up> match wins over .c's general <Key>
+         * binding (which would otherwise fire encode_special_key
+         * for Up and leak ESC[A to the PTY). Wheel binds stay on
+         * '.' since wheel events have no competing <Key>. */
+        "bind .c <Control-Shift-Up>   {nbs_scroll_lines  1; break};"
+        "bind .c <Control-Shift-Down> {nbs_scroll_lines -1; break};"
+        /* Paste binding: Cmd-V on Aqua, Ctrl-Shift-V on Win/X11 —
+         * mirrors nbsterm.py:1170-1200 legacy. Wrapping clipboard get
+         * in catch makes empty/unset clipboard a no-op rather than
+         * a Tcl error. Trailing 'break' stops Tk from also routing
+         * the keystroke to the <Key> handler (which would type a
+         * literal 'V').
+         *
+         * Dual-bind both Cmd-X (Mac) AND Ctrl-Shift-X / Ctrl-X
+         * (non-Mac) accelerators unconditionally per supervisor
+         * 2026-05-13 15:53:44 + theologian 15:53:38. Removes the
+         * [tk windowingsystem] eq aqua runtime branch on this
+         * surface. <Command-X> is Mac-only in Tk (alias for Cmd
+         * modifier on aqua; not aliased to Ctrl on X11/Win — a
+         * misalias would steal terminal Ctrl-C SIGINT etc); inert
+         * no-op on non-Mac platforms. <Control-Shift-X> +
+         * <Control-comma> are user-meaningful on Win/Linux and
+         * also work on Mac as a power-user fallback. UX preserved;
+         * machine-specifics removed per alexie 15:50:38. */
+        "bind .c <Command-v> "
+        "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+        "bind .c <Control-Shift-V> "
+        "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
+        "bind .c <Command-comma>    {nbs_open_prefs; break};"
+        "bind .c <Control-comma>    {nbs_open_prefs; break};"
+        "bind .c <Command-c>        {nbs_copy; break};"
+        "bind .c <Control-Shift-C>  {nbs_copy; break};"
+        /* (Tabs.b) Tab-management binds — Cmd+T / Cmd+W / Cmd+digit
+         * (Mac) + Ctrl+Shift+T / Ctrl+Shift+W (Linux/Win) +
+         * Ctrl+Tab / Ctrl+Shift+Tab (cross-platform next/prev).
+         * Cmd+digit (Cmd+1..Cmd+9) direct-switch is the
+         * above-legacy-floor improvement per alexie 2026-05-14
+         * 10:33:56 'something like that but better :)' (theologian
+         * 10:35:36 spec). Trailing 'break' on every bind so Tk
+         * doesn't also route the keystroke through .c <Key>
+         * leaking modifier-prefixed bytes to the PTY (Bug B1
+         * class — load-bearing per [[feedback_legacy_port_as_spec]]
+         * legacy 5525918). Bound at root '.' so binds fire from
+         * any focused widget (canvas or tab strip). Tabs.c will
+         * extend with F11 fullscreen + Mac menu install. */
+        "bind . <Command-t>         {nbs_new_tab; break};"
+        "bind . <Command-w>         {nbs_close_tab; break};"
+        "bind . <Control-Shift-T>   {nbs_new_tab; break};"
+        "bind . <Control-Shift-W>   {nbs_close_tab; break};"
+        "bind . <Control-Tab>          {nbs_next_tab; break};"
+        "bind . <Control-Shift-Tab>    {nbs_prev_tab; break};"
+        /* X11 reports Shift+Tab as ISO_Left_Tab keysym, not Tab+
+         * Shift; without this bind Ctrl+Shift+Tab is silently
+         * inert on Linux even though Mac/Win route via the
+         * <Control-Shift-Tab> spelling. Caught by test_tab_
+         * dispatch.phc on Linux Xvfb empirical. */
+        "bind . <Control-ISO_Left_Tab> {nbs_prev_tab; break};"
+        "bind . <Command-1>         {nbs_select_tab 0; break};"
+        "bind . <Command-2>         {nbs_select_tab 1; break};"
+        "bind . <Command-3>         {nbs_select_tab 2; break};"
+        "bind . <Command-4>         {nbs_select_tab 3; break};"
+        "bind . <Command-5>         {nbs_select_tab 4; break};"
+        "bind . <Command-6>         {nbs_select_tab 5; break};"
+        "bind . <Command-7>         {nbs_select_tab 6; break};"
+        "bind . <Command-8>         {nbs_select_tab 7; break};"
+        "bind . <Command-9>         {nbs_select_tab 8; break};"
+        "bind . <Control-Key-1>     {nbs_select_tab 0; break};"
+        "bind . <Control-Key-2>     {nbs_select_tab 1; break};"
+        "bind . <Control-Key-3>     {nbs_select_tab 2; break};"
+        "bind . <Control-Key-4>     {nbs_select_tab 3; break};"
+        "bind . <Control-Key-5>     {nbs_select_tab 4; break};"
+        "bind . <Control-Key-6>     {nbs_select_tab 5; break};"
+        "bind . <Control-Key-7>     {nbs_select_tab 6; break};"
+        "bind . <Control-Key-8>     {nbs_select_tab 7; break};"
+        "bind . <Control-Key-9>     {nbs_select_tab 8; break};"
+        /* (Tabs.c) F11 fullscreen toggle (cross-platform via wm
+         * attributes -fullscreen). Mac-side menu install (gated on
+         * [tk windowingsystem] eq aqua) lives in main() — it depends
+         * on the wm_protocol installed alongside it and is not part
+         * of the test-relevant bind surface. */
+        "bind . <F11> {nbs_toggle_fullscreen; break}"
+    );
+}
+
 /* NBS_TEST_MODE: when defined, suppress this file's main() so a test
  * binary (tests/test_render_state.phc) can #include p3_pty.phc and
  * provide its own main() while reusing all the file-scope statics
@@ -2425,124 +2574,24 @@ int main(int argc, char *argv[]) {
                             "-bg", canvas_bg,
                             "-borderwidth", "0",
                             "-highlightthickness", "0"};
-    /* Paste binding: Cmd-V on Aqua, Ctrl-Shift-V on Win/X11 — mirrors
-     * nbsterm.py:1170-1200 legacy. Wrapping `clipboard get` in catch
-     * makes empty/unset clipboard a no-op rather than a Tcl error.
-     * Trailing 'break' stops Tk from also routing the keystroke to the
-     * <Key> handler (which would type a literal 'V'). */
     if (EVAL_ARGV(g_interp, canvas) != TCL_OK ||
         Tcl_Eval(g_interp,
             "pack .c -fill both -expand 1;"
-            "focus .c;"
-            /* Base <Key> bind passes alt=0; Tk's more-specific
-             * <Alt-Key> match wins for Alt-modified keystrokes (next
-             * line) and passes alt=1 + ; break to consume the chain.
-             * Tk abstracts the platform Alt-modifier mapping (Mac
-             * Option / X11+Win Alt) inside the bind layer, so the C
-             * dispatcher no longer reads a hardcoded mod-bit; removes
-             * the [tk windowingsystem]-driven g_is_mac runtime branch
-             * that previously selected 0x10 vs 0x8 on %s (alexie
-             * 2026-05-13 15:50:38 'avoid machine-specifics'). */
-            "bind .c <Key>     {pty_key_event %K %s %A 0};"
-            "bind .c <Alt-Key> {pty_key_event %K %s %A 1; break};"
-            "bind .c <Configure> {pty_resize %w %h};"
-            "bind .c <ButtonPress-1>   {nbs_sel_down %x %y};"
-            "bind .c <B1-Motion>       {nbs_sel_drag %x %y};"
-            "bind .c <ButtonRelease-1> {nbs_sel_up   %x %y};"
-            /* G — wheel + keyboard scroll bindings. MouseWheel %D
-             * convention: positive = wheel up = scroll into history.
-             * Linux uses Button-4 (up) / Button-5 (down). Trailing
-             * 'break' on every bind is load-bearing per Bug B1
-             * (5525918 D-1776953112 nbsterm.py:298/304) — without
-             * it Ctrl-Shift-Up also fires the <Key> bind and
-             * leaks ESC[A to the PTY. */
-            "bind . <MouseWheel> "
-            "  {nbs_scroll_lines [expr {%D > 0 ? 3 : -3}]; break};"
-            "bind . <Button-4>   {nbs_scroll_lines  3; break};"
-            "bind . <Button-5>   {nbs_scroll_lines -3; break};"
-            /* Keyboard scrolls live on .c so the more-specific
-             * <Control-Shift-Up> match wins over .c's general <Key>
-             * binding (which would otherwise fire encode_special_key
-             * for Up and leak ESC[A to the PTY). Wheel binds stay on
-             * '.' since wheel events have no competing <Key>. */
-            "bind .c <Control-Shift-Up>   {nbs_scroll_lines  1; break};"
-            "bind .c <Control-Shift-Down> {nbs_scroll_lines -1; break};"
-            /* Dual-bind both Cmd-X (Mac) AND Ctrl-Shift-X / Ctrl-X
-             * (non-Mac) accelerators unconditionally per supervisor
-             * 2026-05-13 15:53:44 + theologian 15:53:38. Removes the
-             * `tk windowingsystem eq aqua` runtime branch on this
-             * surface. <Command-X> is Mac-only in Tk (alias for
-             * Cmd modifier on aqua; not aliased to Ctrl on X11/Win
-             * — would-be misalias would steal terminal Ctrl-C SIGINT
-             * etc); inert no-op on non-Mac platforms. <Control-Shift-X>
-             * + <Control-comma> are user-meaningful on Win/Linux and
-             * also work on Mac as a power-user fallback. UX preserved
-             * (Mac Cmd-X / Win-Linux Ctrl-X both work as expected);
-             * machine-specifics removed per alexie 15:50:38 'avoid
-             * machine specifics'. */
-            "bind .c <Command-v> "
-            "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "bind .c <Control-Shift-V> "
-            "  {if {![catch {clipboard get} t]} {pty_paste $t}; break};"
-            "bind .c <Command-comma>    {nbs_open_prefs; break};"
-            "bind .c <Control-comma>    {nbs_open_prefs; break};"
-            "bind .c <Command-c>        {nbs_copy; break};"
-            "bind .c <Control-Shift-C>  {nbs_copy; break};"
-            /* (Tabs.b) Tab-management binds — Cmd+T / Cmd+W / Cmd+digit
-             * (Mac) + Ctrl+Shift+T / Ctrl+Shift+W (Linux/Win) +
-             * Ctrl+Tab / Ctrl+Shift+Tab (cross-platform next/prev).
-             * Cmd+digit (Cmd+1..Cmd+9) direct-switch is the
-             * above-legacy-floor improvement per alexie 2026-05-14
-             * 10:33:56 'something like that but better :)' (theologian
-             * 10:35:36 spec). Trailing 'break' on every bind so Tk
-             * doesn't also route the keystroke through .c <Key>
-             * leaking modifier-prefixed bytes to the PTY (Bug B1
-             * class — load-bearing per [[feedback_legacy_port_as_spec]]
-             * legacy 5525918). Bound at root '.' so binds fire from
-             * any focused widget (canvas or tab strip). Tabs.c will
-             * extend with F11 fullscreen + Mac menu install. */
-            "bind . <Command-t>         {nbs_new_tab; break};"
-            "bind . <Command-w>         {nbs_close_tab; break};"
-            "bind . <Control-Shift-T>   {nbs_new_tab; break};"
-            "bind . <Control-Shift-W>   {nbs_close_tab; break};"
-            "bind . <Control-Tab>          {nbs_next_tab; break};"
-            "bind . <Control-Shift-Tab>    {nbs_prev_tab; break};"
-            /* X11 reports Shift+Tab as ISO_Left_Tab keysym, not Tab+
-             * Shift; without this bind Ctrl+Shift+Tab is silently
-             * inert on Linux even though Mac/Win route via the
-             * <Control-Shift-Tab> spelling. Caught by test_tab_
-             * dispatch.phc on Linux Xvfb empirical. */
-            "bind . <Control-ISO_Left_Tab> {nbs_prev_tab; break};"
-            "bind . <Command-1>         {nbs_select_tab 0; break};"
-            "bind . <Command-2>         {nbs_select_tab 1; break};"
-            "bind . <Command-3>         {nbs_select_tab 2; break};"
-            "bind . <Command-4>         {nbs_select_tab 3; break};"
-            "bind . <Command-5>         {nbs_select_tab 4; break};"
-            "bind . <Command-6>         {nbs_select_tab 5; break};"
-            "bind . <Command-7>         {nbs_select_tab 6; break};"
-            "bind . <Command-8>         {nbs_select_tab 7; break};"
-            "bind . <Command-9>         {nbs_select_tab 8; break};"
-            "bind . <Control-Key-1>     {nbs_select_tab 0; break};"
-            "bind . <Control-Key-2>     {nbs_select_tab 1; break};"
-            "bind . <Control-Key-3>     {nbs_select_tab 2; break};"
-            "bind . <Control-Key-4>     {nbs_select_tab 3; break};"
-            "bind . <Control-Key-5>     {nbs_select_tab 4; break};"
-            "bind . <Control-Key-6>     {nbs_select_tab 5; break};"
-            "bind . <Control-Key-7>     {nbs_select_tab 6; break};"
-            "bind . <Control-Key-8>     {nbs_select_tab 7; break};"
-            "bind . <Control-Key-9>     {nbs_select_tab 8; break};"
-            /* (Tabs.c) F11 fullscreen toggle (cross-platform via wm
-             * attributes -fullscreen). Plus Mac-side menu install
-             * gated on [tk windowingsystem] eq aqua: legacy nbsterm.py:
-             * 1175-1186 names the trap — on aqua the OS auto-menu
-             * binds Cmd+W to NSWindow performClose: which fires
-             * WM_DELETE_WINDOW (set child_done 1) instead of our
-             * nbs_close_tab. Installing an explicit File>Close Tab
-             * menu suppresses the OS auto-menu's Cmd+W handler;
-             * the accelerator='Command+W' kwarg is DISPLAY-ONLY so
-             * we ALSO need the explicit bind . <Command-w> from
-             * Tabs.b — both required per legacy 1183-1186. */
-            "bind . <F11> {nbs_toggle_fullscreen; break};"
+            "focus .c"
+        ) != TCL_OK ||
+        install_interactive_bindings(g_interp) != TCL_OK ||
+        /* Mac-side menu install gated on [tk windowingsystem] eq aqua:
+         * legacy nbsterm.py:1175-1186 names the trap — on aqua the OS
+         * auto-menu binds Cmd+W to NSWindow performClose: which fires
+         * WM_DELETE_WINDOW (set child_done 1) instead of our
+         * nbs_close_tab. Installing an explicit File>Close Tab menu
+         * suppresses the OS auto-menu's Cmd+W handler; the
+         * accelerator='Command+W' kwarg is DISPLAY-ONLY so we ALSO
+         * need the explicit bind . <Command-w> from
+         * install_interactive_bindings — both required per legacy
+         * 1183-1186. Paired with wm_protocol since both depend on the
+         * same WM_DELETE_WINDOW dispatch. */
+        Tcl_Eval(g_interp,
             "if {[tk windowingsystem] eq {aqua}} {"
             "  menu .menubar;"
             "  menu .menubar.file -tearoff 0;"
