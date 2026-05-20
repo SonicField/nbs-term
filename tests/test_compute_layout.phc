@@ -2,24 +2,20 @@
  * test_compute_layout.phc — A2 origin + bbox-calibration regression anchor
  *
  * Per supervisor 2026-05-13 09:47:45 + alexie 09:46:53 automated-suite
- * directive. Discriminator for the A2 port (commit b37fcd1):
- *  - if alexie reports 'text glued to top-left or right-edge' AND this
- *    passes, bug is in compute_layout's font.measure walk OR view_row_cells
- *    composite path, not the centering math
+ * directive. Discriminator for the A2 port:
+ *  - if alexie reports asymmetric slop AND this passes, bug is in
+ *    something downstream of compute_layout (render origin application,
+ *    canvas geometry, resize handler not firing) — not the centering math
  *  - if alexie reports 'cols runaway / line-wrap broken' AND this
  *    passes, bug is in bbox_calibrate's Tk bbox query OR the row0 tag
  *    binding, not the asymmetric WIDEN rule
- *  - if this fails, regression is inside the post-measurement clamp
- *    formula (slop-cap, centering, cold-start fallback, asymmetric
- *    WIDEN) which is the load-bearing safety bound
+ *  - if this fails, regression is inside the centering formula or the
+ *    asymmetric WIDEN rule which are the load-bearing safety bounds
  *
- * Approach — SPEC COPY of the math fragments from p3_pty.phc:464-481
- * (compute_layout post-measurement clamp) + 502-510 (bbox_calibrate
- * widen). Production functions are tangled with Tcl_Eval (winfo width,
- * font measure, .c bbox row0) — extracting just the math is the only
- * way to test pure-C without a Tk init, and the math IS the load-bearing
- * regression surface (theologian_branch_tree_bug_c.md trap = wrong
- * formula here breaks Mac slop on aqua).
+ * Approach — SPEC COPY of the math fragments from p3_pty.phc compute_layout
+ * + bbox_calibrate. Production functions are tangled with Tcl_Eval (winfo
+ * width, .c bbox row0) — extracting just the math is the only way to test
+ * pure-C without a Tk init.
  *
  * Drift between this spec copy and production is itself a bug,
  * catchable at next p3_pty.phc layout review.
@@ -32,40 +28,37 @@
 
 #define NBS_PADDING 4
 
-/* SPEC COPY — compute_layout post-measurement clamp from
- * src/p3_pty.phc. Returns new_x + new_y for given inputs.
- * Production also writes g_origin_x/g_origin_y + returns 'changed';
- * test only validates the math.
+/* SPEC COPY — compute_layout centering math from src/p3_pty.phc.
+ * Returns new_x + new_y for given inputs. Production also writes
+ * g_origin_x/g_origin_y + returns 'changed'; test only validates the math.
  *
- * UNCONDITIONAL 2*g_cell_w cap per legacy nbsterm.py:236
- *     origin_x = min((canvas_w - text_w) // 2, 2 * char_width)
- * Prior conditional cap (only when max_w < canvas_w/2) per supervisor
- * 2026-05-13 15:36:28 + theologian 14:50:39 option (iii) was meant
- * to keep dense rows full-centered, but alexie 2026-05-14 07:44:39
- * reports borders still several characters wide on Mac with that
- * conditional. Port legacy unconditional shape per
- * [[feedback_legacy_port_as_spec]]. */
-static void compute_layout_spec(int canvas_w, int canvas_h, int max_w,
-                                int g_cell_w, int g_cell_h, int rows,
+ * Centering basis is the cell grid (cols * g_cell_w), not the widest
+ * painted row. cols/rows track the canvas on <Configure> (do_pty_resize
+ * + reflow path), so canvas_w ≈ cols * g_cell_w within g_cell_w-1 pixels;
+ * margins land symmetric ≤1 cell per side regardless of content density
+ * (alexie 2026-05-20 09:26:53Z reframe + #5 right-slop fix). Replaces
+ * prior 'centre on max painted-row width, capped at 2 * g_cell_w' which
+ * pinned origin near the left edge on sparse rows. */
+static void compute_layout_spec(int canvas_w, int canvas_h, int cols, int rows,
+                                int g_cell_w, int g_cell_h,
                                 int *out_x, int *out_y) {
     int new_x, new_y;
-    if (max_w == 0 || canvas_w == 0 || canvas_h == 0) {
+    if (cols < 1 || canvas_w == 0 || canvas_h == 0) {
         new_x = NBS_PADDING;
         new_y = NBS_PADDING;
     } else {
-        new_x = (canvas_w - max_w) / 2;
-        int cap = 2 * g_cell_w;
-        if (new_x > cap) new_x = cap;
-        if (new_x < 0) new_x = 0;
+        int grid_w = cols * g_cell_w;
         int text_h = rows * g_cell_h;
+        new_x = (canvas_w - grid_w) / 2;
         new_y = (canvas_h - text_h) / 2;
+        if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
     }
     *out_x = new_x;
     *out_y = new_y;
 }
 
-/* SPEC COPY — bbox_calibrate WIDEN rule from src/p3_pty.phc:502-510.
+/* SPEC COPY — bbox_calibrate WIDEN rule from src/p3_pty.phc.
  * Production path queries Tk for bbox; this tests the post-bbox math.
  * Returns new g_cell_w (== input if not widened, else effective). */
 static int bbox_calibrate_spec(int x1, int x2, int cols, int g_cell_w) {
@@ -84,89 +77,84 @@ int main(void) {
     int fail = 0;
     int x, y;
 
-    /* === compute_layout cold-start fallback (any zero input -> PADDING) === */
+    /* === Cold-start fallback (any zero/invalid input -> PADDING) === */
 
-    compute_layout_spec(0, 0, 0, 9, 18, 24, &x, &y);
+    compute_layout_spec(0, 0, 0, 24, 9, 18, &x, &y);
     fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: all zero");
 
-    compute_layout_spec(800, 0, 100, 9, 18, 24, &x, &y);
+    compute_layout_spec(800, 0, 80, 24, 9, 18, &x, &y);
     fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: canvas_h=0");
 
-    compute_layout_spec(0, 600, 100, 9, 18, 24, &x, &y);
+    compute_layout_spec(0, 600, 80, 24, 9, 18, &x, &y);
     fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: canvas_w=0");
 
-    compute_layout_spec(800, 600, 0, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: max_w=0 (no text)");
+    compute_layout_spec(800, 600, 0, 24, 9, 18, &x, &y);
+    fail += eq_xy(x, y, NBS_PADDING, NBS_PADDING, "cold start: cols=0");
 
-    /* === Narrow text (large half-margin) → cap to 2*g_cell_w === */
+    /* === Resize-tracking case: canvas_w ≈ cols * g_cell_w === */
 
-    /* Text 100px wide in 800px canvas: half = (800-100)/2 = 350.
-     * cap = 2*g_cell_w = 18. min(350, 18) = 18. */
-    compute_layout_spec(800, 600, 100, 9, 18, 24, &x, &y);
-    /* text_h = 24*18 = 432; new_y = (600-432)/2 = 84 */
-    fail += eq_xy(x, y, 18, 84, "narrow text -> 2*g_cell_w cap");
+    /* canvas_w=800, cols=88, g_cell_w=9 → grid_w=792. margin=(800-792)/2=4.
+     * text_h=24*18=432; new_y=(600-432)/2=84. */
+    compute_layout_spec(800, 600, 88, 24, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 4, 84, "canvas tracks grid: small symmetric margin");
 
-    /* === Wide text (small half-margin <= cap) → full center === */
+    /* canvas_w=800, cols=89, g_cell_w=9 → grid_w=801. margin=(800-801)/2=-1
+     * C integer division truncates toward zero → -1/2 = 0; clamp also 0. */
+    compute_layout_spec(800, 600, 89, 24, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 0, 84, "grid slightly wider than canvas: clamp 0");
 
-    /* Text 780px wide in 800px canvas: half = (800-780)/2 = 10.
-     * cap = 18; 10 < 18 → no cap applied, x = 10. */
-    compute_layout_spec(800, 600, 780, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 10, 84, "wide text -> half below cap, full center");
+    /* === Stale cols vs canvas (resize handler hasn't fired yet) === */
 
-    /* Edge: text exactly fills canvas: half = 0. */
-    compute_layout_spec(800, 600, 800, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 0, 84, "text fills canvas: x=0");
+    /* canvas_w=1600, cols=80, g_cell_w=9 → grid_w=720. margin=(1600-720)/2=440.
+     * Tests the formula; in production cols would resize to ~177 first. */
+    compute_layout_spec(1600, 600, 80, 24, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 440, 84, "stale cols, wide canvas: large symmetric margin");
 
-    /* === Overflow clamp (text wider than canvas) === */
+    /* === Overflow clamp (grid wider than canvas) === */
 
-    /* Text 900px wide in 800px canvas: half = -50 → clamp 0. */
-    compute_layout_spec(800, 600, 900, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 0, 84, "text overflows canvas: x clamped to 0");
+    /* canvas_w=100, cols=80, g_cell_w=9 → grid_w=720. margin=-310; clamp 0. */
+    compute_layout_spec(100, 600, 80, 24, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 0, 84, "grid overflows canvas: x clamped to 0");
 
-    /* === Vertical clamp (text taller than canvas) === */
+    /* === Vertical overflow clamp === */
 
     /* 100 rows * 18 = 1800 text_h; canvas_h=600 → -600 → clamp 0.
-     * cap = 18; half = 350; min = 18. */
-    compute_layout_spec(800, 600, 100, 9, 18, 100, &x, &y);
-    fail += eq_xy(x, y, 18, 0, "text taller than canvas: y clamped, x at cap");
+     * cols=80, g_cell_w=9 → grid_w=720; margin=(800-720)/2=40. */
+    compute_layout_spec(800, 600, 80, 100, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 40, 0, "text taller than canvas: y clamped to 0");
 
-    /* === Cap scales with g_cell_w (per-platform cell metric) === */
+    /* === Cell size variants === */
 
-    /* Tiny cell: cap=2. min(350, 2) = 2. */
-    compute_layout_spec(800, 600, 100, 1, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 2, 84, "tiny cell -> tiny cap (2*1)");
+    /* Tiny cell: g_cell_w=1, cols=80 → grid_w=80; margin=(800-80)/2=360. */
+    compute_layout_spec(800, 600, 80, 24, 1, 18, &x, &y);
+    fail += eq_xy(x, y, 360, 84, "tiny cell width: large margin");
 
-    /* Large cell: cap=200. min(350, 200) = 200. */
-    compute_layout_spec(800, 600, 100, 100, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 200, 84, "large cell -> large cap (2*100)");
+    /* Large cell: g_cell_w=100, cols=8 → grid_w=800; margin=0. */
+    compute_layout_spec(800, 600, 8, 24, 100, 18, &x, &y);
+    fail += eq_xy(x, y, 0, 84, "large cell, grid fills canvas: x=0");
 
-    /* === Wide canvas, exactly half-width text === */
+    /* === Row count edges === */
 
-    /* canvas_w=1600, max_w=800: half = 400; cap = 18; min = 18. */
-    compute_layout_spec(1600, 600, 800, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 18, 84, "wide canvas, half-width text -> 2*g_cell_w cap");
+    /* 0 rows: text_h=0; new_y=canvas_h/2=300. cols=80, g_cell_w=9 → x=40. */
+    compute_layout_spec(800, 600, 80, 0, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 40, 300, "zero rows: y center of canvas");
 
-    /* === Wide canvas, just-below-half === */
+    /* 1 row: text_h=18; new_y=(600-18)/2=291. */
+    compute_layout_spec(800, 600, 80, 1, 9, 18, &x, &y);
+    fail += eq_xy(x, y, 40, 291, "one row: y near center");
 
-    /* canvas_w=1600, max_w=799: half = (1600-799)/2 = 400; cap = 18. */
-    compute_layout_spec(1600, 600, 799, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 18, 84, "wide canvas, just-below-half -> 2*g_cell_w cap");
+    /* === Independence from content density (cols is the basis, not max_w) === */
 
-    /* === Tiny canvas + narrow text === */
-
-    /* canvas_w=80, max_w=20: half=30; cap=18; min=18. */
-    compute_layout_spec(80, 600, 20, 9, 18, 24, &x, &y);
-    fail += eq_xy(x, y, 18, 84, "tiny canvas + narrow -> cap");
-
-    /* === y-centering with various row counts === */
-
-    /* 0 rows: text_h = 0; new_y = canvas_h/2 = 300; x at cap=18 */
-    compute_layout_spec(800, 600, 100, 9, 18, 0, &x, &y);
-    fail += eq_xy(x, y, 18, 300, "zero rows -> y center of canvas");
-
-    /* 1 row: text_h = 18; new_y = (600-18)/2 = 291; x at cap=18 */
-    compute_layout_spec(800, 600, 100, 9, 18, 1, &x, &y);
-    fail += eq_xy(x, y, 18, 291, "one row -> y near center");
+    /* Same cols/rows/cells in two calls — no max_w parameter; result is
+     * a pure function of (canvas, cols, rows, cell metrics). Sparse vs
+     * dense painted content has zero effect on origin. */
+    int x2, y2;
+    compute_layout_spec(800, 600, 80, 24, 9, 18, &x, &y);
+    compute_layout_spec(800, 600, 80, 24, 9, 18, &x2, &y2);
+    if (x != x2 || y != y2) {
+        printf("FAIL determinism: (%d,%d) vs (%d,%d)\n", x, y, x2, y2);
+        fail++;
+    }
 
     /* === bbox_calibrate WIDEN (asymmetric) === */
 
@@ -192,7 +180,7 @@ int main(void) {
     if (new_w != 9) { printf("FAIL bbox eq-boundary: got %d want 9 (eq is not >)\n", new_w); fail++; }
 
     if (fail == 0) {
-        printf("test_compute_layout: PASS (21 cases)\n");
+        printf("test_compute_layout: PASS (19 cases)\n");
         return 0;
     }
     printf("test_compute_layout: FAIL (%d failures)\n", fail);

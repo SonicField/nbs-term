@@ -157,11 +157,6 @@ toggle has no effect.
 These are deliberately deferred and not bugs to investigate, but worth
 mentioning so you don't waste time on them:
 
-- The right-side border being wider than the left is still unresolved.
-  We had a question for you about whether the wide right area looks the
-  same colour as the text area or visibly different — your answer
-  decides which fix path. No code change since you stepped away.
-
 - If you saved a different font than Monaco at some point and want to go
   back to it, the variant-fallback only fires on missing faces, not on
   the family choice itself. Your saved choice is preserved unless you

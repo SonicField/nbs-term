@@ -706,15 +706,18 @@ static void row_sel_range(int r, int sr, int sc, int er, int ec, int cols,
     *out_c1 = c1;
 }
 
-/* A2 — origin centering per nbsterm.py:196-249. Builds the same
- * per-row codepoint sequence render_screen will paint, runs Tk
- * font measure on each row to find the widest, then centers the
- * text block in the canvas with a 2*g_cell_w slop cap on the
- * horizontal margin (alexie 2026-04-29 17:56:52 'slop too wide'
- * bound; d390acc + librarian D-1777362486-confirmed pattern;
- * theologian_branch_tree_bug_c.md trap — must NOT shrink to
- * char_width//8 of 60a1291). PADDING fallback when no text
- * (cold-start). Returns 1 if g_origin_x or g_origin_y changed. */
+/* A2 — origin centering on the cell grid. cols/rows track canvas on
+ * resize (do_pty_resize :1453, reflow path :1817 both recompute
+ * cols = canvas_w / g_cell_w + TIOCSWINSZ), so canvas_w ≈ cols *
+ * g_cell_w within g_cell_w-1 pixels. Centering on cols * g_cell_w
+ * gives symmetric margins ≤1 cell regardless of content density.
+ * Replaces prior 'centre on widest painted row, capped at 2 * g_cell_w'
+ * which pinned origin near the left edge on sparse rows and dumped
+ * the canvas-grid delta on the right (alexie 2026-05-20 09:26:53Z
+ * reframe: 'terminal is a variable size grid the size of which should
+ * be computed from the size of the window'; #5 right-slop fix).
+ * PADDING fallback when grid uninitialised (cold-start). Returns 1
+ * if g_origin_x or g_origin_y changed. */
 static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
     int canvas_w = 0, canvas_h = 0;
     if (Tcl_Eval(interp, "winfo width .c") == TCL_OK) {
@@ -723,61 +726,16 @@ static int compute_layout(Tcl_Interp *interp, const ScreenBuffer *scr) {
     if (Tcl_Eval(interp, "winfo height .c") == TCL_OK) {
         canvas_h = atoi(Tcl_GetStringResult(interp));
     }
-    /* Walk every row, build the same codepoint sequence render_screen
-     * builds, measure under font_normal, take the max — gives the
-     * actual painted text width regardless of per-cell-width drift
-     * on platforms where font.measure(M) under-counts. */
-    int max_w = 0;
-    char rowbuf[4096];
-    /* G — measure the COMPOSITE view (scrollback + screen) so layout
-     * stays consistent when scrolled back. view_row_cells returns the
-     * scrollback-sourced row when applicable. */
-    for (int r = 0; r < scr->rows; r++) {
-        int rowlen = 0;
-        const Cell *row = view_row_cells(g_term, r);
-        for (int c = 0; c < scr->cols && rowlen < (int)sizeof rowbuf - 4; c++) {
-            const Cell *cell = row ? &row[c] : NULL;
-            if (!cell) {
-                rowlen += utf8_emit(' ', rowbuf + rowlen,
-                                    (int)sizeof rowbuf - rowlen);
-                continue;
-            }
-            if (cell->wide_cont) continue;
-            uint32_t cp = cell->codepoint ? cell->codepoint : ' ';
-            rowlen += utf8_emit(cp, rowbuf + rowlen,
-                                (int)sizeof rowbuf - rowlen);
-        }
-        rowbuf[rowlen] = '\0';
-        if (rowlen == 0) continue;
-        const char *measure[] = {"font", "measure", "font_normal", rowbuf};
-        if (EVAL_ARGV(interp, measure) == TCL_OK) {
-            int w = atoi(Tcl_GetStringResult(interp));
-            if (w > max_w) max_w = w;
-        }
-    }
     int new_x, new_y;
-    if (max_w == 0 || canvas_w == 0 || canvas_h == 0) {
+    if (scr->cols < 1 || canvas_w == 0 || canvas_h == 0) {
         new_x = NBS_PADDING;
         new_y = NBS_PADDING;
     } else {
-        /* Centering with UNCONDITIONAL 2*g_cell_w cap on horizontal
-         * margin per legacy nbsterm.py:236
-         *     origin_x = min((canvas_w - text_w) // 2, 2 * char_width)
-         * Prior conditional cap (only when max_w < canvas_w/2) per
-         * supervisor 2026-05-13 15:36:28 + theologian 14:50:39
-         * option (iii) was supposed to keep dense rows full-centered,
-         * but alexie 2026-05-14 07:44:39 reports 'borders at the
-         * sides of the screen are still several characters wide' on
-         * Mac with that conditional. Port the legacy unconditional
-         * shape directly per [[feedback_legacy_port_as_spec]] +
-         * alexie's reference 'wide border issue ... you fixed it
-         * there so I am sure you can fix it here too'. */
-        new_x = (canvas_w - max_w) / 2;
-        int cap = 2 * g_cell_w;
-        if (new_x > cap) new_x = cap;
-        if (new_x < 0) new_x = 0;
+        int grid_w = scr->cols * g_cell_w;
         int text_h = scr->rows * g_cell_h;
+        new_x = (canvas_w - grid_w) / 2;
         new_y = (canvas_h - text_h) / 2;
+        if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
     }
     int changed = (new_x != g_origin_x) || (new_y != g_origin_y);
