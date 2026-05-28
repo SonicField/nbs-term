@@ -11,9 +11,9 @@ name: Pure-phc Build & Test
 
 on:
   push:
-    branches: [pure-phc-master]
+    branches: [pure-phc-master, master]
   pull_request:
-    branches: [pure-phc-master]
+    branches: [pure-phc-master, master]
 
 jobs:
   linux-build:
