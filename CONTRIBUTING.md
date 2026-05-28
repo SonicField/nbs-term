@@ -1,6 +1,6 @@
 # Contributing to nbs-term
 
-Thank you for your interest in nbs-term (terminal emulator with Phoenics-powered VT parser)!
+Thank you for your interest in nbs-term (standalone terminal emulator with Phoenics-powered VT parser)!
 
 ## How to Contribute
 
@@ -23,32 +23,34 @@ Pull requests are welcome, especially for:
 Before submitting a large PR, consider opening an issue first to discuss the approach.
 
 **PR Guidelines:**
-- All tests must pass (`make test`)
-- ASan/UBSan clean (`make test-asan` / `make test-ubsan`)
+- Canonical gate must pass: 14 per-`.phc` test entries + `make verify-phc-invariants`
 - Add tests for new functionality
 - Follow existing code style
 
 ## Development Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/SonicField/nbs-term.git
+# Clone the repository with the phc submodule
+git clone --recurse-submodules --branch pure-phc-master https://github.com/SonicField/nbs-term.git
 cd nbs-term
 
-# Build and test (requires phc for .phc source changes)
-make
-make test
+# One-time vendored Tcl/Tk build
+make tcl-tk
 
-# Install in development mode (also fetches nbs-ssh from GitHub)
-pip install -e .
+# Production binary
+make p3_pty
+
+# Canonical gate
+make verify-phc-invariants
 ```
 
 ## Architecture
 
 - `src/*.phc` — Phoenics (C11 superset) source files for the terminal engine
-- `generated/extension.c` — Pre-generated C from the phc pipeline (committed for users without phc)
-- `nbsterm.py` — Python orchestration layer (Tk + SSH wiring)
-- `tests/` — Test suites (C unit tests + Python integration tests)
+- `tests/*.phc` — Per-source unit tests (libc-only + Tk-linked + golden harness)
+- `deps/phc/` — phc compiler submodule
+- `deps/tcl/`, `deps/tk/` — vendored Tcl/Tk 8.6.15 source (built to `deps/tcl-build/`)
+- `scripts/{mac,windows}-setup-phc.{sh,ps1}` — one-line install scripts
 
 ## License
 

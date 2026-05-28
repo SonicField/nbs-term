@@ -7,13 +7,9 @@
 
 # phc preprocessor — built from deps/phc submodule or override with PHC_DIR
 PHC_DIR ?= deps/phc
-# nbs-ssh for SSH integration tests — override with NBS_SSH_DIR if needed
-NBS_SSH_DIR ?= $(wildcard ../nbs-ssh)
-NBS_SSH_PYTHONPATH := $(if $(NBS_SSH_DIR),$(NBS_SSH_DIR)/src:$(wildcard $(NBS_SSH_DIR)/venv/lib/python*/site-packages):,)
 PHC_BIN := $(PHC_DIR)/build/phc
 PHC := ASAN_OPTIONS=detect_leaks=0 $(PHC_BIN)
 CC ?= gcc
-PYTHON := python3
 
 # Vendored Tcl/Tk 8.6.15 — built from deps/{tcl,tk}/ source via tcl-tk target.
 # No system libtcl/libtk linkage (alexie 2026-05-05 D-1777978221, D-1777978497).
@@ -29,34 +25,21 @@ TK_VENDOR_LIB := $(TCL_BUILD_DIR)/lib/libtk8.6.$(TCL_LIB_EXT)
 TCL_VENDOR_PREFIX := $(abspath $(TCL_BUILD_DIR))
 
 # Flags
-PYTHON_CFLAGS := $(shell $(PYTHON)-config --cflags)
-PYTHON_LDFLAGS := $(shell $(PYTHON)-config --ldflags --embed 2>/dev/null || $(PYTHON)-config --ldflags)
-CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function -fPIC
-LDFLAGS := -shared -L$(TCL_BUILD_DIR)/lib -ltcl8.6 -Wl,-rpath,$(TCL_VENDOR_PREFIX)/lib
-
-# Sanitizer flags (for testing)
-ASAN_FLAGS := -fsanitize=address -fno-omit-frame-pointer
-UBSAN_FLAGS := -fsanitize=undefined
+CFLAGS := -std=c11 -Wall -Wextra -Werror -Wno-unused-function
 
 # Directories
 SRCDIR := src
 BUILDDIR := build
 TESTDIR := tests
 
-# Generated headers
-GEN_HEADERS := $(BUILDDIR)/sgr.h $(BUILDDIR)/screen.h $(BUILDDIR)/vt_parser.h $(BUILDDIR)/input.h $(BUILDDIR)/render.h
-
 # Type manifests (from files that define phc_descr types)
 SGR_TYPES := $(BUILDDIR)/sgr.phc-types
 VT_TYPES := $(BUILDDIR)/vt_parser.phc-types
 INPUT_TYPES := $(BUILDDIR)/input.phc-types
 
-# Output
-EXTENSION_SO := _nbsterm$(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+.PHONY: all clean phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_tab_dispatch test_render_state update-goldens
 
-.PHONY: all clean test test-asan test-ubsan regenerate verify-regenerate phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_tab_dispatch test_render_state update-goldens
-
-all: $(EXTENSION_SO)
+all: $(PHC_BINARIES)
 
 # --- Generated headers for tests (direct mode, no preprocessing) ---
 # Direct mode: phc transforms phc_descr/phc_match but does NOT expand #include.
@@ -72,22 +55,6 @@ $(BUILDDIR)/vt_parser.h $(VT_TYPES): $(SRCDIR)/vt_parser.phc $(BUILDDIR)/sgr.h $
 
 $(BUILDDIR)/input.h $(INPUT_TYPES): $(SRCDIR)/input.phc $(BUILDDIR)/sgr.h $(BUILDDIR)/screen.h | $(BUILDDIR)
 	$(PHC) --emit-types=$(INPUT_TYPES) < $< > $(BUILDDIR)/input.h
-
-$(BUILDDIR)/render.h: $(SRCDIR)/render.phc $(BUILDDIR)/sgr.h $(BUILDDIR)/screen.h $(SGR_TYPES) | $(BUILDDIR)
-	$(PHC) --type-manifest=$(SGR_TYPES) < $< > $@
-
-# --- Step 6: extension.phc (single translation unit) ---
-# extension.phc #includes all .phc sources directly.
-# Preprocessed as one unit so phc sees all phc_descr types.
-$(BUILDDIR)/extension.c: $(SRCDIR)/extension.phc $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/input.phc $(SRCDIR)/render.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -I$(TCL_BUILD_DIR)/include -I$(SRCDIR) -x c -E $< | $(PHC) > $@
-
-$(BUILDDIR)/extension.o: $(BUILDDIR)/extension.c
-	$(CC) $(CFLAGS) $(PYTHON_CFLAGS) -I$(TCL_BUILD_DIR)/include -c $< -o $@
-
-# --- Shared library ---
-$(EXTENSION_SO): $(BUILDDIR)/extension.o $(TK_VENDOR_LIB)
-	$(CC) $(LDFLAGS) $< -o $@
 
 # --- P1 calibration: standalone phc binary, no Python ---
 # Tcl/Tk C-API hello-world. Builds a native executable directly from .phc;
@@ -164,12 +131,6 @@ p3_pty: $(BUILDDIR)/p3_pty
 # Tests include .phc source files directly, so they go through the phc pipeline.
 # Uses test_framework.h from phc tests directory.
 TEST_INCLUDES := -I$(SRCDIR) -I$(PHC_DIR)/tests
-
-$(BUILDDIR)/test_parser: $(TESTDIR)/test_parser.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/input.phc | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_parser.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
-
-$(BUILDDIR)/test_screen: $(TESTDIR)/test_screen.c $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc | $(BUILDDIR)
-	$(CC) $(CFLAGS) $(TEST_INCLUDES) -x c -E $(TESTDIR)/test_screen.c | $(PHC) | $(CC) $(CFLAGS) $(TEST_INCLUDES) -x c - -o $@
 
 # test_pty_burst — programmatic byte-accounting for pty.phc (testkeeper
 # deferred spec D-1777640886). Validates POSIX read-pump-under-load and
@@ -411,27 +372,6 @@ update-goldens: $(BUILDDIR)/test_render_state
 		./$(BUILDDIR)/test_render_state $$s $(TESTDIR)/goldens/$$name.golden.txt --update; \
 	done
 
-test: $(BUILDDIR)/test_parser $(BUILDDIR)/test_screen $(EXTENSION_SO)
-	@exit_code=0; \
-	./$(BUILDDIR)/test_parser || exit_code=1; \
-	echo ""; \
-	./$(BUILDDIR)/test_screen || exit_code=1; \
-	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_integration.py || exit_code=1; \
-	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_gui_logic.py || exit_code=1; \
-	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_config.py || exit_code=1; \
-	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_color_functions.py || exit_code=1; \
-	echo ""; \
-	PYTHONPATH=$(NBS_SSH_PYTHONPATH)$$PYTHONPATH $(PYTHON) $(TESTDIR)/test_ssh_integration.py || exit_code=1; \
-	echo ""; \
-	$(PYTHON) $(TESTDIR)/test_orchestration.py || exit_code=1; \
-	echo ""; \
-	if [ $$exit_code -eq 0 ]; then echo "Gate: OPEN"; else echo "Gate: BLOCKED"; fi; \
-	exit $$exit_code
-
 # --- pure-phc invariant guards (testkeeper, per pythia #36) ---
 # Static-source assertions enforcing the B-shape doctrine on pure-phc-master.
 # Per testkeeper 2026-05-01 12:26:44 ack of pythia D-1777639528 + D-1777639551.
@@ -472,9 +412,7 @@ verify-no-eval-objex:
 
 # (3) No system libtcl/libtk linkage on phc binaries. Tcl/Tk must come from
 # the vendored build under deps/tcl-build/lib (alexie 2026-05-05
-# D-1777978221, D-1777978497; pure-source-code-dep doctrine). Mirrors
-# verify-no-python-link scope (phc binaries only; EXTENSION_SO legacy
-# build also links vendored via LDFLAGS, but is not asserted here).
+# D-1777978221, D-1777978497; pure-source-code-dep doctrine).
 verify-no-system-tcl-link: $(PHC_BINARIES)
 	@fail=0; \
 	if [ "$(UNAME_S)" = "Darwin" ]; then \
@@ -503,67 +441,8 @@ verify-no-system-tcl-link: $(PHC_BINARIES)
 # Roll-up: run all invariant guards.
 verify-phc-invariants: verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link
 
-test-asan: CC := clang
-test-asan: CFLAGS += $(ASAN_FLAGS)
-test-asan: clean test
-
-test-ubsan: CC := clang
-test-ubsan: CFLAGS += $(UBSAN_FLAGS)
-test-ubsan: clean test
-
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
-
-# Regenerate the committed generated/extension.c from .phc sources (requires phc)
-# Produces portable C: system #includes at top, phc-transformed source below.
-# No embedded system headers — compiles on any platform with Python + C11.
-regenerate:
-	@echo "Regenerating generated/extension.c from src/*.phc..."
-	@{ \
-		echo '/* Generated by phc from src .phc files -- do not edit */'; \
-		echo ''; \
-		echo '#include <Python.h>'; \
-		echo '#include <stdlib.h>'; \
-		echo '#include <string.h>'; \
-		echo '#include <stdint.h>'; \
-		echo '#include <stdio.h>'; \
-		echo '#include <assert.h>'; \
-		echo '#define USE_TCL_STUBS'; \
-		echo '#include <tcl.h>'; \
-		echo '#if !defined(__APPLE__)'; \
-		echo '#undef Tcl_InitStubs'; \
-		echo '#endif'; \
-		echo ''; \
-		echo '/* phc_assert macros — trust-level assertions */'; \
-		echo '#define phc_require(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "REQUIRE FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#ifndef PHC_STRIP_CHECK'; \
-		echo '#define phc_check(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "CHECK FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#else'; \
-		echo '#define phc_check(expr, msg) ((void)0)'; \
-		echo '#endif'; \
-		echo '#ifndef PHC_STRIP_INVARIANT'; \
-		echo '#define phc_invariant(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "INVARIANT FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#else'; \
-		echo '#define phc_invariant(expr, msg) ((void)0)'; \
-		echo '#endif'; \
-		echo ''; \
-		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
-			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/tk_render.phc $(SRCDIR)/selection.phc $(SRCDIR)/extension.phc | \
-		grep -v '^\s*#include' | \
-		grep -v '^\s*#ifndef NBSTERM_' | \
-		grep -v '^\s*#define NBSTERM_' | \
-		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
-		$(PHC); \
-	} > generated/extension.c
-	@echo "Done ($(shell wc -l < generated/extension.c) lines)"
 
 # Build phc from submodule (if not already built). Auto-init the submodule
 # so a fresh clone + make works without a manual `git submodule update --init`
@@ -588,63 +467,5 @@ $(PHC_BIN):
 	fi
 	$(MAKE) -C $(PHC_DIR)
 
-# Verify generated/extension.c matches current .phc sources
-verify-regenerate: $(PHC_BIN)
-	@echo "Verifying generated/extension.c is up to date..."
-	@{ \
-		echo '/* Generated by phc from src .phc files -- do not edit */'; \
-		echo ''; \
-		echo '#include <Python.h>'; \
-		echo '#include <stdlib.h>'; \
-		echo '#include <string.h>'; \
-		echo '#include <stdint.h>'; \
-		echo '#include <stdio.h>'; \
-		echo '#include <assert.h>'; \
-		echo '#define USE_TCL_STUBS'; \
-		echo '#include <tcl.h>'; \
-		echo '#if !defined(__APPLE__)'; \
-		echo '#undef Tcl_InitStubs'; \
-		echo '#endif'; \
-		echo ''; \
-		echo '/* phc_assert macros — trust-level assertions */'; \
-		echo '#define phc_require(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "REQUIRE FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#ifndef PHC_STRIP_CHECK'; \
-		echo '#define phc_check(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "CHECK FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#else'; \
-		echo '#define phc_check(expr, msg) ((void)0)'; \
-		echo '#endif'; \
-		echo '#ifndef PHC_STRIP_INVARIANT'; \
-		echo '#define phc_invariant(expr, msg) do { if (!(expr)) { \'; \
-		echo '    fprintf(stderr, "INVARIANT FAILED %s:%d: %s\\n", __FILE__, __LINE__, msg); \'; \
-		echo '    abort(); }} while(0)'; \
-		echo '#else'; \
-		echo '#define phc_invariant(expr, msg) ((void)0)'; \
-		echo '#endif'; \
-		echo ''; \
-		cat $(SRCDIR)/sgr.phc $(SRCDIR)/screen.phc $(SRCDIR)/vt_parser.phc \
-			$(SRCDIR)/input.phc $(SRCDIR)/render.phc \
-			$(SRCDIR)/color_utils.phc $(SRCDIR)/config_structs.phc \
-			$(SRCDIR)/tk_render.phc $(SRCDIR)/selection.phc $(SRCDIR)/extension.phc | \
-		grep -v '^\s*#include' | \
-		grep -v '^\s*#ifndef NBSTERM_' | \
-		grep -v '^\s*#define NBSTERM_' | \
-		grep -v '^\s*#endif.*/\*.*NBSTERM_' | \
-		$(PHC); \
-	} > $(BUILDDIR)/extension_verify.c
-	@diff -q generated/extension.c $(BUILDDIR)/extension_verify.c > /dev/null 2>&1 \
-		&& echo "OK — generated/extension.c is up to date" \
-		|| (echo "STALE — generated/extension.c differs from .phc sources. Run: make regenerate"; exit 1)
-
 clean:
-	rm -rf $(BUILDDIR) $(EXTENSION_SO)
-
-# Install: clean stale artifacts, purge pip cache, and install via pip
-install: clean
-	rm -f _nbsterm*.so
-	rm -rf build/
-	pip cache remove nbs_term 2>/dev/null || true
-	pip install -e .
+	rm -rf $(BUILDDIR)

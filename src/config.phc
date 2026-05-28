@@ -3,9 +3,7 @@
  *
  * Reads ~/.nbs/nbs-term.honest (POSIX) or
  * %LOCALAPPDATA%/nbs/nbs-term.honest (Win); applies defaults for any
- * missing field or missing file. No Python linkage — distinct from
- * src/config_structs.phc, which is the Python-coupled config layer
- * for the legacy EXTENSION_SO build.
+ * missing field or missing file. No Python linkage.
  *
  * Schema (matches the bytes nbs_config_load writes on first run, which
  * matches nbs_config_default in turn — first-run-with-file output is
