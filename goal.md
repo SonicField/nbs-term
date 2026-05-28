@@ -206,22 +206,36 @@ phc_descr ParseResult {
 ```
 nbs-term/
 ├── src/
-│   ├── vt_parser.phc      # VT state machine (phc_descr VTState)
+│   ├── p3_pty.phc          # Main: app bootstrap, Tk event loop, tabs, settings, render, dispatch
+│   ├── pty.phc             # forkpty / ConPTY abstraction; --ssh subprocess lifecycle
+│   ├── vt_parser.phc       # VT state machine (phc_descr VTState)
 │   ├── screen.phc          # Screen buffer, cursor, scrollback
 │   ├── sgr.phc             # SGR attributes, Color type
 │   ├── input.phc           # Input event encoding (phc_descr InputEvent)
-│   ├── render.phc          # Tk canvas rendering
-│   ├── tk_render.phc       # Tcl/Tk C-API binding for canvas draw
-│   ├── pty.phc             # forkpty / ConPTY abstraction; --ssh subprocess lifecycle
-│   ├── tabs.phc            # ttk::notebook driver
-│   ├── settings.phc        # Tk dialogs (font / cursor / color)
-│   ├── config.phc          # config-file parse/serialize
-│   ├── app.phc             # Application bootstrap, Tcl event loop
-│   └── main.phc            # main(), argv parse, --ssh dispatch
+│   ├── color.phc           # Indexed/RGB color types
+│   ├── render_color.phc    # Gamma + DIM render-side colour transforms
+│   ├── config.phc          # Pure-C config-file parse/serialize (~/.nbs/nbs-term.honest)
+│   ├── p1_hello.phc        # P1 calibration: Tcl/Tk hello (no Python)
+│   ├── p1_5_notebook.phc   # P1.5: ttk::notebook calibration
+│   └── p2_render.phc       # P2 calibration: standalone phc TerminalWidget renderer
 ├── tests/
-│   ├── test_parser.c       # VT parser unit tests
-│   ├── test_screen.c       # Screen buffer tests
-│   └── sessions/           # Recorded terminal sessions for replay
+│   ├── test_pty_burst.phc           # PTY ring-backpressure / byte-accounting
+│   ├── test_pixel_to_cell.phc       # F1 selection arithmetic
+│   ├── test_extract_utf8.phc        # F2 NbsCopy walk + utf8_emit
+│   ├── test_render_gamma.phc        # H gamma + DIM transforms
+│   ├── test_input_keys.phc          # D special-keys + modifiers
+│   ├── test_compute_layout.phc      # A2 origin + cell-grid centring
+│   ├── test_pty_resize.phc          # J-resize TIOCSWINSZ
+│   ├── test_blink_step.phc          # C cursor blink state machine
+│   ├── test_register_named_fonts.phc # variant-probe + fallback
+│   ├── test_bold_recolour.phc       # SGR 1 Bold + 0..7 -> 8..15 remap
+│   ├── test_palette_lookup.phc      # Configurable palette + Default override
+│   ├── test_tabs_logic.phc          # close_tab next-active picker + cycle
+│   ├── test_alt_mask.phc            # <Alt-Key> bind-path dispatch
+│   ├── test_tab_dispatch.phc        # Tabs.b cross-tab bind dispatch
+│   ├── test_render_state.phc        # Tk state-dump golden harness (Bucket B)
+│   ├── scripts/                     # Per-surface .tcl driver scripts for test_render_state
+│   └── goldens/                     # Per-platform golden text files
 ├── Makefile
 └── goal.md
 ```
