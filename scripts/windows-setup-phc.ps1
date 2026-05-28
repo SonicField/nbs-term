@@ -22,7 +22,40 @@
 
 $ErrorActionPreference = "Stop"
 
-$RepoDir = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { (Get-Location).Path }
+$RepoUrl = "https://github.com/SonicField/nbs-term.git"
+$Branch  = "pure-phc-master"
+
+# Resolve $RepoDir:
+#   * script lives in an existing clone (.git at script's parent) -> use it.
+#   * otherwise (iwr | iex, or run from a non-repo copy) -> clone the
+#     pure-phc-master branch into $env:USERPROFILE\nbs-term-phc and cd there.
+# This is the Windows companion to mac-setup-phc.sh:41-53 so a one-line
+# `iwr -useb <raw>/windows-setup-phc.ps1 | iex` bootstraps from nothing.
+$LocalRepo = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { $null }
+if ($LocalRepo -and (Test-Path (Join-Path $LocalRepo ".git"))) {
+    $RepoDir = $LocalRepo
+} else {
+    $RepoDir = Join-Path $env:USERPROFILE "nbs-term-phc"
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: git not found on PATH. Install Git for Windows from https://git-scm.com/download/win." -ForegroundColor Red
+        exit 1
+    }
+    if (Test-Path (Join-Path $RepoDir ".git")) {
+        Write-Host "Repo at $RepoDir exists - fetching $Branch..." -ForegroundColor Yellow
+        Push-Location $RepoDir
+        try {
+            & git fetch origin $Branch
+            if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: git fetch failed." -ForegroundColor Red; exit 1 }
+            & git checkout $Branch
+            & git reset --hard "origin/$Branch"
+        } finally { Pop-Location }
+    } else {
+        Write-Host "Cloning $Branch into $RepoDir..." -ForegroundColor Yellow
+        & git clone --branch $Branch --single-branch $RepoUrl $RepoDir
+        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: git clone failed." -ForegroundColor Red; exit 1 }
+    }
+    Set-Location $RepoDir
+}
 $BuildDir = Join-Path $RepoDir "build"
 $SrcDir = Join-Path $RepoDir "src"
 $DepsDir = Join-Path $RepoDir "deps"
@@ -249,6 +282,19 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PtyExe)) {
 }
 Write-Host "Built $PtyExe" -ForegroundColor Green
 
+# Copy Tcl/Tk runtime DLLs next to p3_pty.exe. Windows resolves DLL imports
+# from the .exe's directory before $env:PATH, so this makes p3_pty.exe portable
+# without requiring alexie to keep $TclBin on PATH in every fresh shell.
+$RuntimeDlls = Get-ChildItem -Path $TclBin -Filter "*.dll" -ErrorAction SilentlyContinue
+if (-not $RuntimeDlls) {
+    Write-Host "ERROR: no Tcl/Tk DLLs found under $TclBin to copy next to p3_pty.exe." -ForegroundColor Red
+    exit 1
+}
+foreach ($d in $RuntimeDlls) {
+    Copy-Item -Path $d.FullName -Destination $BuildDir -Force
+}
+Write-Host "Copied $($RuntimeDlls.Count) runtime DLL(s) to $BuildDir (p3_pty.exe portable)" -ForegroundColor Green
+
 # ---- Step 3.5: build build/test_pty_burst.exe ----
 # Programmatic byte-accounting test for pty.phc; isolates the PTY layer
 # from Tk/render so a self-test failure can be diagnosed (PTY ring vs Tk
@@ -429,8 +475,24 @@ if ($PyImport) {
 }
 Write-Host "PASS: phc binary has zero Python linkage" -ForegroundColor Green
 
+# ---- Build gate clear: print success + launch instructions BEFORE self-tests ----
+# Self-tests below may exit the script via the rc cascade (e.g. longstanding
+# Win-CI burst fail per testkeeper 2026-05-12 20:23:30). Printing the launch
+# path here means alexie sees how to run p3_pty.exe even if a downstream test
+# fail terminates the script. Test cascade still controls the overall exit code.
+Write-Host ""
+Write-Host "=== Build Complete ===" -ForegroundColor Green
+Write-Host "Run interactively:" -ForegroundColor Cyan
+Write-Host "  $PtyExe                          (local cmd.exe)" -ForegroundColor White
+Write-Host "  $PtyExe --ssh ssh user@host      (live SSH)" -ForegroundColor White
+Write-Host ""
+Write-Host "Running self-tests..." -ForegroundColor Yellow
+Write-Host ""
+
 # ---- Step 4: self-tests ----
-# Tcl/Tk runtime DLLs need to be on PATH; they live in deps/tcl-build/bin.
+# Tcl/Tk runtime DLLs need to be on PATH for test binaries that live outside
+# $BuildDir (the p3_pty.exe / test_*.exe binaries get DLLs from $BuildDir per
+# the copy step above, but PATH-prep is cheap defence-in-depth).
 $env:PATH = "$TclBin;$env:PATH"
 
 # Run the libc-only F1+F2 regression-anchor shims FIRST so their pass/fail
@@ -629,7 +691,4 @@ if ($burst_rc -ne 0) { exit $burst_rc }
 if ($selftest_rc -ne 0) { exit $selftest_rc }
 
 Write-Host ""
-Write-Host "=== Build Complete ===" -ForegroundColor Green
-Write-Host "Run interactively:" -ForegroundColor Cyan
-Write-Host "  $PtyExe                          (local cmd.exe)" -ForegroundColor White
-Write-Host "  $PtyExe --ssh ssh user@host      (live SSH)" -ForegroundColor White
+Write-Host "=== Self-tests passed ===" -ForegroundColor Green
