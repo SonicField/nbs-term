@@ -31,11 +31,10 @@ make install
 **Windows (automated):**
 
 ```powershell
-Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/SonicField/nbs-term/master/scripts/windows-setup.ps1' -OutFile windows-setup.ps1
-.\windows-setup.ps1
+iwr -useb 'https://raw.githubusercontent.com/SonicField/nbs-term/pure-phc-master/scripts/windows-setup-phc.ps1' | iex
 ```
 
-The script installs Python 3.12 (per-user, with Tk), Visual Studio Build Tools, creates a venv, clones the repo, builds, and runs tests. Run as Administrator if Build Tools need installing.
+Self-clones into `%USERPROFILE%\nbs-term-phc`, installs Visual Studio Build Tools if absent (admin required), builds vendored Tcl/Tk + the phc compiler + `build\p3_pty.exe`, and copies the Tcl/Tk runtime DLLs next to the binary so it's launchable from any shell. Launch with `%USERPROFILE%\nbs-term-phc\build\p3_pty.exe`.
 
 No C preprocessor needed — the C extension builds from pre-generated C.
 
