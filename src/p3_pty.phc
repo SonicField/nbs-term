@@ -116,6 +116,12 @@ static int        g_active_tab_idx = 0;
  * the build_child_argv() result here once at startup; NbsNewTab
  * re-uses it for each new tab's pty_open. */
 static char     **g_child_argv     = NULL;
+/* (alexie 2026-05-29) Cols locked at the shell-known value (initial
+ * terminal_new(g_config.cols)); PtyResize Configure handler skips the
+ * width-derived recompute so dragging the window wider centres the
+ * fixed grid in the wider canvas instead of growing cols to fill it
+ * (which defeated compute_layout's centring with LHS-pin + RHS-wide). */
+static int        g_cols_locked    = 0;
 
 /* C cursor blink (per legacy nbsterm.py:441-443 + 514-525): toggles
  * g_blink_visible on a 530ms cadence when g_config.cursor.blink set;
@@ -1412,18 +1418,29 @@ static int PtyResize(ClientData cd, Tcl_Interp *interp, int objc,
     int pw = 0, ph = 0;
     if (Tcl_GetIntFromObj(interp, objv[1], &pw) != TCL_OK) return TCL_ERROR;
     if (Tcl_GetIntFromObj(interp, objv[2], &ph) != TCL_OK) return TCL_ERROR;
-    int cols = pw / g_cell_w, rows = ph / g_cell_h;
+    /* (A) Lock cols at the shell-known value. Without this lock cols
+     * grows on every width-drag Configure, then compute_layout centres
+     * a grid that already fills the canvas (origin ~ 0), defeating
+     * centring (alexie 2026-05-29 LHS-pin / RHS-wide smoke). g_cols_locked
+     * latches on first Configure from the shell-initial cols set by
+     * terminal_new(g_config.cols). Rows still scale with canvas height. */
+    if (g_cols_locked == 0) g_cols_locked = g_term->active->cols;
+    int cols = g_cols_locked;
+    int rows = ph / g_cell_h;
     if (cols < 1) cols = 1;
     if (rows < 1) rows = 1;
-    if (cols == g_term->active->cols && rows == g_term->active->rows) {
-        /* Geometry-only resize (window dragged but cell grid unchanged):
-         * still recompute layout because canvas_w/canvas_h shifted. */
-        compute_layout(interp, g_term->active);
-        schedule_render();
-        return TCL_OK;
+    /* (B) Fan resize out to ALL active tabs. Configure fires when
+     * refresh_tab_strip packs/unpacks .strip; without per-tab fan-out
+     * inactive tabs retain pre-strip rows, so switching back paints
+     * past canvas bottom (alexie 2026-05-29 'new tab leaves bottom of
+     * original past screen'). Mirrors on_pty_data's per-tab dispatch. */
+    for (int i = 0; i < g_tab_count; i++) {
+        TabSession *t = &g_tabs[i];
+        if (!t->active || !t->term || !t->term->active) continue;
+        if (cols == t->term->active->cols && rows == t->term->active->rows) continue;
+        terminal_resize(t->term, rows, cols);
+        if (t->pty) pty_resize(t->pty, rows, cols);
     }
-    terminal_resize(g_term, rows, cols);
-    pty_resize(g_pty, rows, cols);
     compute_layout(interp, g_term->active);
     schedule_render();
     return TCL_OK;
@@ -2443,15 +2460,22 @@ static int install_interactive_bindings(Tcl_Interp *interp) {
          * <Control-Shift-Tab> spelling. Caught by test_tab_
          * dispatch.phc on Linux Xvfb empirical. */
         "bind . <Control-ISO_Left_Tab> {nbs_prev_tab; break};"
-        "bind . <Command-1>         {nbs_select_tab 0; break};"
-        "bind . <Command-2>         {nbs_select_tab 1; break};"
-        "bind . <Command-3>         {nbs_select_tab 2; break};"
-        "bind . <Command-4>         {nbs_select_tab 3; break};"
-        "bind . <Command-5>         {nbs_select_tab 4; break};"
-        "bind . <Command-6>         {nbs_select_tab 5; break};"
-        "bind . <Command-7>         {nbs_select_tab 6; break};"
-        "bind . <Command-8>         {nbs_select_tab 7; break};"
-        "bind . <Command-9>         {nbs_select_tab 8; break};"
+        /* <Command-N> (no 'Key' suffix) parses as <Command-Button-N>
+         * (mouse click), not the keyboard digit; spec-vs-keysym-delivery
+         * mismatch silently routes Cmd+digit to the canvas' default Key
+         * handler (digit goes to the PTY as a literal). Explicit
+         * <Command-Key-N> matches the keysym the OS actually delivers
+         * (alexie 2026-05-29 Cmd+digit-inert smoke; theologian 10:30:23Z
+         * root-cause). */
+        "bind . <Command-Key-1>     {nbs_select_tab 0; break};"
+        "bind . <Command-Key-2>     {nbs_select_tab 1; break};"
+        "bind . <Command-Key-3>     {nbs_select_tab 2; break};"
+        "bind . <Command-Key-4>     {nbs_select_tab 3; break};"
+        "bind . <Command-Key-5>     {nbs_select_tab 4; break};"
+        "bind . <Command-Key-6>     {nbs_select_tab 5; break};"
+        "bind . <Command-Key-7>     {nbs_select_tab 6; break};"
+        "bind . <Command-Key-8>     {nbs_select_tab 7; break};"
+        "bind . <Command-Key-9>     {nbs_select_tab 8; break};"
         "bind . <Control-Key-1>     {nbs_select_tab 0; break};"
         "bind . <Control-Key-2>     {nbs_select_tab 1; break};"
         "bind . <Control-Key-3>     {nbs_select_tab 2; break};"

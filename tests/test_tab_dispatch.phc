@@ -11,7 +11,7 @@
  * Discriminator scope:
  *  - if <Command-t> bind doesn't fire NbsNewTab -> Cmd+T does nothing
  *    on any platform; bind syntax broken or root-bind missing
- *  - if <Command-1>/<Control-Key-2>/<Control-Tab> doesn't update
+ *  - if <Command-Key-1>/<Control-Key-2>/<Control-Tab> doesn't update
  *    g_active_tab_idx -> tab switching dead despite tab strip render
  *  - if <Command-w> bind doesn't decrement g_tab_count -> tab close
  *    leaks slot
@@ -133,10 +133,14 @@ int main(int argc, char *argv[]) {
             "bind . <Control-Shift-Tab>     {nbs_prev_tab; break};"
             /* X11 sends ISO_Left_Tab for Shift+Tab; mirror prod. */
             "bind . <Control-ISO_Left_Tab>  {nbs_prev_tab; break};"
-            "bind . <Command-1>             {nbs_select_tab 0; break};"
-            "bind . <Command-2>             {nbs_select_tab 1; break};"
-            "bind . <Command-3>             {nbs_select_tab 2; break};"
-            "bind . <Command-9>             {nbs_select_tab 8; break};"
+            /* <Command-Key-N> matches production p3_pty.phc binds;
+             * bare <Command-N> parses as <Command-Button-N> (mouse) and
+             * never fires on real keystroke (theologian 2026-05-29
+             * 10:30:23Z root-cause of alexie Cmd+digit-inert smoke). */
+            "bind . <Command-Key-1>         {nbs_select_tab 0; break};"
+            "bind . <Command-Key-2>         {nbs_select_tab 1; break};"
+            "bind . <Command-Key-3>         {nbs_select_tab 2; break};"
+            "bind . <Command-Key-9>         {nbs_select_tab 8; break};"
             /* F11: wrap nbs_toggle_fullscreen in a counter-incrementing
              * Tcl proc so the test can verify bind dispatch (Xvfb has
              * no window manager so 'wm attributes . -fullscreen' won't
@@ -163,12 +167,12 @@ int main(int argc, char *argv[]) {
     fail += eq_int(g_tab_count, 2, "Cmd+T -> g_tab_count == 2");
     fail += eq_int(g_active_tab_idx, 1, "Cmd+T -> g_active_tab_idx == 1 (new tab is active)");
 
-    /* === Case 2: <Command-1> selects tab 0 === */
-    fail += fire(interp, "<Command-1>", "Cmd+1 fire");
+    /* === Case 2: <Command-Key-1> selects tab 0 === */
+    fail += fire(interp, "<Command-Key-1>", "Cmd+1 fire");
     fail += eq_int(g_active_tab_idx, 0, "Cmd+1 -> g_active_tab_idx == 0");
 
-    /* === Case 3: <Command-2> selects tab 1 === */
-    fail += fire(interp, "<Command-2>", "Cmd+2 fire");
+    /* === Case 3: <Command-Key-2> selects tab 1 === */
+    fail += fire(interp, "<Command-Key-2>", "Cmd+2 fire");
     fail += eq_int(g_active_tab_idx, 1, "Cmd+2 -> g_active_tab_idx == 1");
 
     /* === Case 4: <Control-Tab> cycles forward (1 -> 0 wraps) === */
@@ -184,10 +188,10 @@ int main(int argc, char *argv[]) {
                   "Ctrl+Shift+Tab fire (0 -> 1 wrap, X11 ISO_Left_Tab)");
     fail += eq_int(g_active_tab_idx, 1, "Ctrl+Shift+Tab from 0 -> 1 (wrap)");
 
-    /* === Case 6: spawn third tab; <Command-3> selects tab 2 === */
+    /* === Case 6: spawn third tab; <Command-Key-3> selects tab 2 === */
     fail += fire(interp, "<Command-t>", "Cmd+T fire (3rd tab)");
     fail += eq_int(g_tab_count, 3, "after 2nd Cmd+T -> g_tab_count == 3");
-    fail += fire(interp, "<Command-3>", "Cmd+3 fire");
+    fail += fire(interp, "<Command-Key-3>", "Cmd+3 fire");
     fail += eq_int(g_active_tab_idx, 2, "Cmd+3 -> g_active_tab_idx == 2");
 
     /* === Case 7: <Command-w> closes active tab 2; next active = 0 (wrap) === */
@@ -234,11 +238,11 @@ int main(int argc, char *argv[]) {
         fail++;
     }
 
-    /* === Case 11: <Command-9> on <9-tab seed -> no-op (idx 8 out of
-     *      range; NbsSelectTab guards on idx >= g_tab_count).
+    /* === Case 11: <Command-Key-9> on <9-tab seed -> no-op (idx 8 out
+     *      of range; NbsSelectTab guards on idx >= g_tab_count).
      *      g_active_tab_idx unchanged at 1. === */
     int idx_before = g_active_tab_idx;
-    fail += fire(interp, "<Command-9>", "Cmd+9 on <9-tab seed (boundary)");
+    fail += fire(interp, "<Command-Key-9>", "Cmd+9 on <9-tab seed (boundary)");
     fail += eq_int(g_active_tab_idx, idx_before,
                     "Cmd+9 OOR -> g_active_tab_idx unchanged");
 

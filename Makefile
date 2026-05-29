@@ -37,7 +37,7 @@ SGR_TYPES := $(BUILDDIR)/sgr.phc-types
 VT_TYPES := $(BUILDDIR)/vt_parser.phc-types
 INPUT_TYPES := $(BUILDDIR)/input.phc-types
 
-.PHONY: all clean phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_tab_dispatch test_render_state update-goldens
+.PHONY: all clean phc verify-no-python-link verify-no-eval-objex verify-no-system-tcl-link verify-phc-invariants tcl-tk test_pty_burst test_pixel_to_cell test_extract_utf8 test_render_gamma test_input_keys test_compute_layout test_pty_resize test_blink_step test_register_named_fonts test_bold_recolour test_alt_mask test_palette_lookup test_tabs_logic test_tab_dispatch test_render_state test_pty_configure update-goldens
 
 all: $(PHC_BINARIES)
 
@@ -351,6 +351,20 @@ $(BUILDDIR)/test_tab_dispatch: $(BUILDDIR)/test_tab_dispatch.c $(TK_VENDOR_LIB)
 	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
 
 test_tab_dispatch: $(BUILDDIR)/test_tab_dispatch
+
+# test_pty_configure — PtyResize Configure-handler regression anchor
+# (testkeeper 2026-05-29 10:30:57Z A cols-lock + B per-tab fan-out per
+# gatekeeper 10:37:37Z BLOCK). Same NBS_TEST_MODE include + Tk-link as
+# test_tab_dispatch. Fires `pty_resize <pw> <ph>` via Tcl_Eval to
+# exercise the production Configure handler; asserts cols stays locked
+# across width-drag (A) and all g_tabs[].active see rows updates (B).
+$(BUILDDIR)/test_pty_configure.c: $(TESTDIR)/test_pty_configure.phc $(SRCDIR)/p3_pty.phc $(SRCDIR)/pty.phc $(SRCDIR)/vt_parser.phc $(SRCDIR)/screen.phc $(SRCDIR)/sgr.phc $(SRCDIR)/config.phc $(SRCDIR)/render_color.phc $(SRCDIR)/input.phc $(TCL_VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) -I$(SRCDIR) -x c -E $< | $(PHC) > $@
+
+$(BUILDDIR)/test_pty_configure: $(BUILDDIR)/test_pty_configure.c $(TK_VENDOR_LIB)
+	$(CC) $(P1_CFLAGS) $(TCLTK_CFLAGS) $< $(TCLTK_LIBS) -lutil -lm -o $@
+
+test_pty_configure: $(BUILDDIR)/test_pty_configure
 
 # update-goldens — re-run all per-surface scripts in --update mode to
 # regenerate the platform-specific golden files. Invoke after an

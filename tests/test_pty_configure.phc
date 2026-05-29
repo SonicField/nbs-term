@@ -1,0 +1,172 @@
+/*
+ * tests/test_pty_configure.phc — PtyResize Configure-handler regression anchor
+ *
+ * Per testkeeper 2026-05-29 10:30:57Z (A cols-lock + B per-tab fan-out)
+ * + gatekeeper 10:37:37Z BLOCK on the A+B+C bundle requiring test
+ * coverage alongside production fixes. testkeeper's A proposal was to
+ * extend tests/test_pty_resize.phc, but that file is libc-only (SPEC COPY
+ * of pty_resize ioctl body); the Configure-handler logic lives in
+ * PtyResize (Tcl command in src/p3_pty.phc) and needs a Tcl/Tk-linked
+ * harness. New file with NBS_TEST_MODE include of p3_pty.phc — same
+ * shape as tests/test_alt_mask.phc + tests/test_tab_dispatch.phc.
+ *
+ * Discriminator scope:
+ *  - A: PtyResize Configure handler grows cols on every width-drag
+ *    (cols = pw / g_cell_w) → compute_layout centres a grid filling
+ *    the canvas → LHS-pin / RHS-wide (alexie 2026-05-29 smoke). Fix
+ *    latches g_cols_locked on first Configure.
+ *  - B: PtyResize fans out only to g_term->active; refresh_tab_strip
+ *    Configure leaves inactive tabs with pre-strip rows → switching
+ *    back paints past canvas bottom (alexie 2026-05-29 smoke). Fix
+ *    iterates g_tabs[i].active.
+ *
+ * Build: make build/test_pty_configure
+ * Run:   xvfb-run -a build/test_pty_configure (Linux requires DISPLAY)
+ *
+ * Exit codes: 0 = PASS / all cases match; 1 = FAIL; 2 = setup failure.
+ */
+#if !defined(_WIN32)
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#endif
+
+#define NBS_TEST_MODE
+#include "p3_pty.phc"
+
+#include <stdio.h>
+#include <string.h>
+
+static char *mock_argv_storage[2] = { (char *)"/bin/true", NULL };
+
+static int eq_int(int got, int want, const char *label) {
+    if (got == want) return 0;
+    printf("FAIL %s: got %d want %d\n", label, got, want);
+    return 1;
+}
+
+/* Fire PtyResize via the production Tcl command shape (bound by
+ * install_interactive_bindings as `pty_resize <pixel_w> <pixel_h>`). */
+static int call_pty_resize(Tcl_Interp *interp, int pw, int ph,
+                            const char *label) {
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "pty_resize %d %d", pw, ph);
+    if (Tcl_Eval(interp, cmd) != TCL_OK) {
+        printf("FAIL %s: pty_resize %d %d -> Tcl error: %s\n",
+               label, pw, ph, Tcl_GetStringResult(interp));
+        return 1;
+    }
+    while (Tcl_DoOneEvent(TCL_DONT_WAIT)) {}
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    (void)argc;
+    Tcl_FindExecutable(argv[0]);
+    g_interp = Tcl_CreateInterp();
+    if (!g_interp) {
+        fprintf(stderr, "test_pty_configure: Tcl_CreateInterp failed\n");
+        return 2;
+    }
+    if (Tcl_Init(g_interp) != TCL_OK ||
+        Tcl_Eval(g_interp, "package require Tk") != TCL_OK) {
+        fprintf(stderr, "test_pty_configure: init failed: %s\n",
+                Tcl_GetStringResult(g_interp));
+        return 2;
+    }
+    Tcl_Interp *interp = g_interp;
+    g_child_argv = mock_argv_storage;
+    nbs_config_load(&g_config);
+
+    /* Register the Tcl commands PtyResize + NbsNewTab need. */
+    Tcl_CreateObjCommand(interp, "pty_resize",   PtyResize,    NULL, NULL);
+    Tcl_CreateObjCommand(interp, "nbs_new_tab",  NbsNewTab,    NULL, NULL);
+    Tcl_CreateObjCommand(interp, "nbs_select_tab", NbsSelectTab, NULL, NULL);
+
+    /* Initial tab via add_tab — same path production main() takes. */
+    if (add_tab(interp, g_child_argv) < 0) {
+        fprintf(stderr, "test_pty_configure: initial add_tab failed\n");
+        return 2;
+    }
+
+    /* Canvas needed for compute_layout's winfo width/height queries. */
+    if (Tcl_Eval(interp,
+            "canvas .c -width 400 -height 200;"
+            "pack .c;"
+            "wm geometry . 400x200;"
+            "update") != TCL_OK) {
+        fprintf(stderr, "test_pty_configure: canvas setup failed: %s\n",
+                Tcl_GetStringResult(interp));
+        return 2;
+    }
+
+    int fail = 0;
+
+    /* === A: cols-lock cases === */
+
+    /* Baseline: shell-known cols comes from g_config.cols (default 80
+     * via nbs_config_default). Initial tab's screen buffer is allocated
+     * at that width. */
+    int initial_cols = g_term->active->cols;
+
+    /* (A1) First PtyResize at canvas matching initial cols. The
+     *      production lock mechanism (g_cols_locked) is internal; this
+     *      test asserts only the observable behaviour (cols stays at
+     *      initial_cols across width-drags), which is what makes it a
+     *      mechanism-agnostic regression anchor. */
+    fail += call_pty_resize(interp, initial_cols * g_cell_w, 24 * g_cell_h,
+                             "A1 first Configure (same width)");
+    fail += eq_int(g_term->active->cols, initial_cols,
+                   "A1 active cols == initial_cols");
+
+    /* (A2) Drag canvas WIDER (2x) — cols MUST stay locked, not grow.
+     *      This is the regression that defeats centring: pre-fix cols
+     *      grows to fill canvas; post-fix cols stays locked + compute_
+     *      layout centres the smaller grid in the wider canvas. */
+    fail += call_pty_resize(interp, initial_cols * g_cell_w * 2, 24 * g_cell_h,
+                             "A2 wide-drag (2x canvas_w)");
+    fail += eq_int(g_term->active->cols, initial_cols,
+                   "A2 cols locked at initial across 2x width drag");
+
+    /* (A3) Drag canvas EVEN WIDER (3x) — still locked. */
+    fail += call_pty_resize(interp, initial_cols * g_cell_w * 3, 24 * g_cell_h,
+                             "A3 wider-drag (3x canvas_w)");
+    fail += eq_int(g_term->active->cols, initial_cols,
+                   "A3 cols still locked at 3x");
+
+    /* === B: per-tab fan-out cases === */
+
+    /* (B1) Spawn 2nd tab via NbsNewTab; both tabs start at initial_cols
+     *      + initial_rows. */
+    int rows_before = g_term->active->rows;
+    if (Tcl_Eval(interp, "nbs_new_tab") != TCL_OK) {
+        printf("FAIL B1 nbs_new_tab: %s\n", Tcl_GetStringResult(interp));
+        fail++;
+    }
+    fail += eq_int(g_tab_count, 2, "B1 g_tab_count == 2 after nbs_new_tab");
+
+    /* (B2) Fire Configure with HALF the previous canvas height (simulates
+     *      refresh_tab_strip packing the strip widget + shrinking .c).
+     *      BOTH tabs must update rows; pre-fix only active (tab 1) sees
+     *      the new rows count, tab 0 retains rows_before. */
+    int new_rows_h = (rows_before / 2) * g_cell_h;
+    fail += call_pty_resize(interp, initial_cols * g_cell_w, new_rows_h,
+                             "B2 shrink-height Configure");
+
+    int expected_rows = rows_before / 2;
+    if (expected_rows < 1) expected_rows = 1;
+    fail += eq_int(g_tabs[0].term->active->rows, expected_rows,
+                   "B2 tab[0] rows updated (inactive fan-out)");
+    fail += eq_int(g_tabs[1].term->active->rows, expected_rows,
+                   "B2 tab[1] rows updated (active)");
+
+    if (fail == 0) {
+        printf("test_pty_configure: PASS (9 cases)\n");
+        return 0;
+    }
+    printf("test_pty_configure: FAIL (%d failures)\n", fail);
+    return 1;
+}
