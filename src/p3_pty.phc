@@ -2013,7 +2013,13 @@ static int NbsOpenPrefs(ClientData cd, Tcl_Interp *interp, int objc,
         "    set __col  .prefs.fpal.$__row.c$__ii;"
         "    frame $__col;"
         "    frame $__col.s -width 24 -height 24 -bg [set $__v] -relief raised -borderwidth 1;"
-        "    label $__col.l -text $__name -font {-size 8};"
+        /* -width 10 sized for widest label 'Br.Magenta'; -anchor center
+         * symmetrises label padding within the column. Without these
+         * the column frame inherits its width from the label's natural
+         * size, producing irregular swatch column widths ('higgledy-
+         * pigeldy' per alexie 2026-05-29 10:27:56Z + theologian
+         * 10:45:27Z root-cause). */
+        "    label $__col.l -text $__name -font {-size 8} -width 10 -anchor center;"
         "    bind $__col.s <Button-1> [list apply {{vn swatch} {"
         "      set c [tk_chooseColor -initialcolor [set $vn] -parent .prefs];"
         "      if {$c ne {}} { set $vn $c; $swatch configure -bg $c }"
